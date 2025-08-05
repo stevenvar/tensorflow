@@ -1078,5 +1078,45 @@ TEST_F(InstructionFusionTest, NoSkipScatterComputationsIfNoFusionEmitters) {
   EXPECT_TRUE(changed);
 }
 
+static constexpr absl::string_view kReduceModuleString = R"(
+  HloModule module
+
+  %reduce_max (param0: f32[], param1: f32[]) -> f32[] {
+    %lhs = f32[] parameter(0)
+    %rhs = f32[] parameter(1)
+    %maximum.1 = f32[] maximum(f32[] lhs, f32[] rhs)
+    %convert.8 = bf16[] convert(f32[] maximum.1)
+    ROOT %convert.9 = f32[] convert(bf16[] convert.8)
+  }
+
+  ENTRY %main (arg0: f32[13,5,10,62])
+      -> f32[13,5,10] {
+    %arg0 = f32[13,5,10,62]{3,2,1,0} parameter(0)
+    %init = f32[] constant(0)
+    ROOT %reduce = f32[13,5,10]{2,1,0} reduce(%arg0, %init),
+                     dimensions={3}, to_apply=reduce_max
+  }
+)";
+
+TEST_F(InstructionFusionTest, SkipReduceComputationsIfFusionEmitters) {
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(kReduceModuleString));
+  TF_ASSERT_OK_AND_ASSIGN(bool changed,
+                          CpuInstructionFusion().Run(module.get()));
+  EXPECT_FALSE(changed);
+}
+
+TEST_F(InstructionFusionTest, NoSkipReduceComputationsIfNoFusionEmitters) {
+  auto mod_config = GetModuleConfigForTest();
+  auto debug_options = GetDebugOptionsForTest();
+  (*debug_options.mutable_xla_backend_extra_options())
+      [options::kDisableNewFusionEmitters] = "true";
+  mod_config.set_debug_options(debug_options);
+  TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(
+                                           kReduceModuleString, mod_config));
+  TF_ASSERT_OK_AND_ASSIGN(bool changed,
+                          CpuInstructionFusion().Run(module.get()));
+  EXPECT_TRUE(changed);
+}
 }  // namespace
 }  // namespace xla::cpu

@@ -21,12 +21,17 @@ limitations under the License.
 #include <tuple>
 
 #include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
 #include "xla/service/hlo_module_config.h"
 
 // Helper functions for querying options that are specific to the CPU backend.
 
 namespace xla::cpu::options {
 
+inline constexpr absl::string_view kDisableNewFusionEmitters =
+    "xla_cpu_disable_new_fusion_emitters";
+inline constexpr absl::string_view kFlattenAfterFusion =
+    "xla_cpu_flatten_after_fusion";
 bool OptimizeForSizeRequested(const HloModuleConfig& config);
 bool VectorizedReduceDisabled(const HloModuleConfig& config);
 bool SlpVectorizerDisabled(const HloModuleConfig& config);
@@ -38,6 +43,8 @@ std::optional<std::tuple<int64_t, int64_t, int64_t>> LlvmIrGemmTileSize(
     const HloModuleConfig& config);
 absl::StatusOr<int64_t> SmallWhileLoopByteThreshold(
     const HloModuleConfig& config);
+bool UseExperimentalLoopFusion(const HloModuleConfig& config);
+bool FlattenAfterFusion(const HloModuleConfig& config);
 
 }  // namespace xla::cpu::options
 

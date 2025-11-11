@@ -144,13 +144,12 @@ absl::StatusOr<Shape> HloSharding::GetShardShape(const Shape& shape) const {
         "HloSharding %d",
         shape.dims().size(), xla_hlo_sharding_.TiledDataRank());
   }
-  const absl::Span<const int64_t> tile_assignment_dims =
-      xla_hlo_sharding_.tile_assignment().dimensions();
+  const absl::Span<const int64_t> sharding_dims =
+      xla_hlo_sharding_.dimensions();
   Shape::Dimensions tile_shape;
   tile_shape.reserve(shape.dims().size());
   for (int64_t i = 0; i < shape.dims().size(); ++i) {
-    tile_shape.push_back(
-        xla::CeilOfRatio(shape.dims()[i], tile_assignment_dims[i]));
+    tile_shape.push_back(xla::CeilOfRatio(shape.dims()[i], sharding_dims[i]));
   }
   return Shape(std::move(tile_shape));
 }
@@ -314,12 +313,12 @@ absl::StatusOr<std::vector<IndexDomain>> HloSharding::IndexDomains(
                                   single_device_shard_semantics);
     }
   }
-  if (xla_hlo_sharding_.tile_assignment().num_elements() != num_devices) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "sharding's tile_assignment_devices and device count does not "
-        "match: %d vs. %d; shape=%s, sharding=%s",
-        xla_hlo_sharding_.tile_assignment().num_elements(), num_devices,
-        shape.DebugString(), DebugString()));
+  if (xla_hlo_sharding_.num_devices() != num_devices) {
+    return absl::InvalidArgumentError(
+        absl::StrFormat("sharding's device count (%d) does not match provided "
+                        "device count (%d); shape=%s, sharding=%s",
+                        xla_hlo_sharding_.num_devices(), num_devices,
+                        shape.DebugString(), DebugString()));
   }
 
   const int64_t tiled_data_rank = xla_hlo_sharding_.TiledDataRank();

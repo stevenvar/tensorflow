@@ -1167,6 +1167,7 @@ cc_library(
         "//xla/stream_executor:stream_executor_h",
         "//xla/stream_executor/gpu:context",
         "//xla/stream_executor/gpu:gpu_executor_header",
+        "//xla/stream_executor/gpu:multicast_memory",
         "//xla/stream_executor/gpu:read_numa_node",
         "//xla/stream_executor/gpu:scoped_activate_context",
         "//xla/stream_executor/gpu:tma_metadata",

@@ -26,6 +26,7 @@ REGISTER_SYSTEM_OP("_Arg")
     .Output("output: T")
     .Attr("T: type")
     .Attr("index: int >= 0")
+    .Attr("is_batch: bool = false")
     .SetIsStateful()
     .SetShapeFn([](shape_inference::InferenceContext* context) {
       const AttrValue* dtype_attr = context->GetAttr("T");

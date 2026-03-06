@@ -720,6 +720,7 @@ cc_library(
         "//tensorflow/core/platform:statusor",
         "//tensorflow/core/util:overflow",
         "@eigen_archive//:eigen3",
+        "@local_xla//xla:shape_util",
     ],
     alwayslink = 1,
 )

@@ -49,6 +49,8 @@ class DynExpr {
   virtual bool is_constant() const = 0;
   virtual int64_t get_val() const { return -1; }
   virtual DynExpr* s() = 0; // simplify
+  virtual DynExpr* substitute(int id, DynExpr* v) = 0;
+
   bool is_dynamic() { return !is_constant(); }
 
   static DynExpr* zero;
@@ -81,6 +83,7 @@ class Constant : public DynExpr {
   }
   bool is_constant() const override { return true; }
   int64_t get_val() const override { return value; }
+  DynExpr* substitute(int id, DynExpr* v) { return this; }
   DynExpr* s() override;
 };
 
@@ -101,6 +104,7 @@ class Variable : public DynExpr {
   }
   bool is_constant() const override { return false; }
   int get_id() const { return id; }
+  DynExpr* substitute(int id, DynExpr* v) { return get_id() == id ? v : this;}
   DynExpr* s() override;
 };
 
@@ -134,6 +138,9 @@ class Add : public DynExpr {
 
   int64_t get_val() const override { return lhs->get_val() + rhs->get_val(); }
 
+  DynExpr* substitute(int id, DynExpr* v) {
+    return new Add(lhs->substitute(id, v), rhs->substitute(id, v));
+  }
   DynExpr* s() override;
 
   ~Add() {
@@ -171,6 +178,10 @@ class Sub : public DynExpr {
   }
 
   int64_t get_val() const override { return lhs->get_val() - rhs->get_val(); }
+
+  DynExpr* substitute(int id, DynExpr* v) {
+    return new Sub(lhs->substitute(id, v), rhs->substitute(id, v));
+  }
 
   DynExpr* s() override;
 
@@ -210,6 +221,10 @@ class Mul : public DynExpr {
 
   int64_t get_val() const override { return lhs->get_val() * rhs->get_val(); }
 
+  DynExpr* substitute(int id, DynExpr* v) {
+    return new Mul(lhs->substitute(id, v), rhs->substitute(id, v));
+  }
+
   DynExpr* s() override;
 
   ~Mul() {
@@ -247,6 +262,10 @@ class Div : public DynExpr {
   }
 
   int64_t get_val() const override { return lhs->get_val() / rhs->get_val(); }
+
+  DynExpr* substitute(int id, DynExpr* v) {
+    return new Div(lhs->substitute(id, v), rhs->substitute(id, v));
+  }
 
   DynExpr* s() override;
 

@@ -51,6 +51,7 @@ class DynExpr {
   virtual DynExpr* s() = 0; // simplify
   virtual DynExpr* substitute(int id, DynExpr* v) = 0;
   virtual std::set<int> get_all_ids() = 0;
+  virtual int64_t solve(int64_t x) = 0;
 
   bool is_dynamic() { return !is_constant(); }
 
@@ -86,6 +87,7 @@ class Constant : public DynExpr {
   int64_t get_val() const override { return value; }
   DynExpr* substitute(int id, DynExpr* v) { return this; }
   std::set<int> get_all_ids() { return {}; }
+  int64_t solve(int64_t x) { return -1; }
   DynExpr* s() override;
 };
 
@@ -108,6 +110,7 @@ class Variable : public DynExpr {
   int get_id() const { return id; }
   DynExpr* substitute(int id, DynExpr* v) { return get_id() == id ? v : this;}
   std::set<int> get_all_ids() { return {get_id()}; }
+  int64_t solve(int64_t x) { return x; }
   DynExpr* s() override;
 };
 
@@ -149,6 +152,21 @@ class Add : public DynExpr {
     auto s = lhs->get_all_ids();
     s.merge(rhs->get_all_ids());
     return s;
+  }
+
+  int64_t solve(int64_t x) {
+    // Cannot solve if both lhs and rhs are dynamic...
+    if (lhs->is_dynamic() && rhs->is_dynamic()) return -1;
+    if (lhs->get_all_ids().size() == 1) {
+      // (A + c) = x <=> A = x - c => solve A = y with y = x - c
+      return rhs->solve(x - rhs->get_val());
+    }
+    if (rhs->get_all_ids().size() == 1) {
+      // (c + A) = x <=> A = x - c => solve A = y with y = x - c
+      return lhs->solve(x - lhs->get_val());
+    }
+    // No solution
+    return -1;
   }
 
   DynExpr* s() override;
@@ -199,6 +217,21 @@ class Sub : public DynExpr {
     return s;
   }
 
+  int64_t solve(int64_t x) {
+    // Cannot solve if both lhs and rhs are dynamic...
+    if (lhs->is_dynamic() && rhs->is_dynamic()) return -1;
+    if (lhs->get_all_ids().size() == 1) {
+      // (A - c) = x <=> A = x + c => solve A = y with y = x + c
+      return rhs->solve(x + rhs->get_val());
+    }
+    if (rhs->get_all_ids().size() == 1) {
+      // (c + A) = x <=> A = x - c => solve A = y with y = x + c
+      return lhs->solve(x + lhs->get_val());
+    }
+    // No solution
+    return -1;
+  }
+
   DynExpr* s() override;
 
   ~Sub() {
@@ -245,6 +278,25 @@ class Mul : public DynExpr {
     auto s = lhs->get_all_ids();
     s.merge(rhs->get_all_ids());
     return s;
+  }
+
+  int64_t solve(int64_t x) {
+    // Cannot solve if both lhs and rhs are dynamic...
+    if (lhs->is_dynamic() && rhs->is_dynamic()) return -1;
+    if (lhs->get_all_ids().size() == 1) {
+      // (A * c) = x <=> A = x / c => solve A = y with y = x / c
+      int64_t c = rhs->get_val();
+      if (x % c != 0) return -1;
+      return rhs->solve(x / c);
+    }
+    if (rhs->get_all_ids().size() == 1) {
+      // (c * A) = x <=> A = x / c => solve A = y with y = x / c
+      int64_t c = lhs->get_val();
+      if (x % c != 0) return -1;
+      return lhs->solve(x / c);
+    }
+    // No solution
+    return -1;
   }
 
   DynExpr* s() override;
@@ -296,6 +348,23 @@ class Div : public DynExpr {
   }
 
   DynExpr* s() override;
+
+  int64_t solve(int64_t x) {
+    // Cannot solve if both lhs and rhs are dynamic...
+    if (lhs->is_dynamic() && rhs->is_dynamic()) return -1;
+    if (lhs->get_all_ids().size() == 1) {
+      // (A / c) = x <=> A = x * c => solve A = y with y = x * c
+      return rhs->solve(x * rhs->get_val());
+    }
+    if (rhs->get_all_ids().size() == 1) {
+      // (c / A) = x <=> A = c / x => solve A = y with y = c / x
+      int64_t c = lhs->get_val();
+      if (c % x != 0) return -1;
+      return lhs->solve(c / x);
+    }
+    // No solution
+    return -1;
+  }
 
   ~Div() {
     delete lhs;

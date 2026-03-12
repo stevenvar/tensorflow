@@ -50,6 +50,7 @@ class DynExpr {
   virtual int64_t get_val() const { return -1; }
   virtual DynExpr* s() = 0; // simplify
   virtual DynExpr* substitute(int id, DynExpr* v) = 0;
+  virtual std::set<int> get_all_ids() = 0;
 
   bool is_dynamic() { return !is_constant(); }
 
@@ -84,6 +85,7 @@ class Constant : public DynExpr {
   bool is_constant() const override { return true; }
   int64_t get_val() const override { return value; }
   DynExpr* substitute(int id, DynExpr* v) { return this; }
+  std::set<int> get_all_ids() { return {}; }
   DynExpr* s() override;
 };
 
@@ -105,6 +107,7 @@ class Variable : public DynExpr {
   bool is_constant() const override { return false; }
   int get_id() const { return id; }
   DynExpr* substitute(int id, DynExpr* v) { return get_id() == id ? v : this;}
+  std::set<int> get_all_ids() { return {get_id()}; }
   DynExpr* s() override;
 };
 
@@ -141,6 +144,13 @@ class Add : public DynExpr {
   DynExpr* substitute(int id, DynExpr* v) {
     return new Add(lhs->substitute(id, v), rhs->substitute(id, v));
   }
+
+  std::set<int> get_all_ids() {
+    auto s = lhs->get_all_ids();
+    s.merge(rhs->get_all_ids());
+    return s;
+  }
+
   DynExpr* s() override;
 
   ~Add() {
@@ -181,6 +191,12 @@ class Sub : public DynExpr {
 
   DynExpr* substitute(int id, DynExpr* v) {
     return new Sub(lhs->substitute(id, v), rhs->substitute(id, v));
+  }
+
+  std::set<int> get_all_ids() {
+    auto s = lhs->get_all_ids();
+    s.merge(rhs->get_all_ids());
+    return s;
   }
 
   DynExpr* s() override;
@@ -225,6 +241,12 @@ class Mul : public DynExpr {
     return new Mul(lhs->substitute(id, v), rhs->substitute(id, v));
   }
 
+  std::set<int> get_all_ids() {
+    auto s = lhs->get_all_ids();
+    s.merge(rhs->get_all_ids());
+    return s;
+  }
+
   DynExpr* s() override;
 
   ~Mul() {
@@ -265,6 +287,12 @@ class Div : public DynExpr {
 
   DynExpr* substitute(int id, DynExpr* v) {
     return new Div(lhs->substitute(id, v), rhs->substitute(id, v));
+  }
+
+  std::set<int> get_all_ids() {
+    auto s = lhs->get_all_ids();
+    s.merge(rhs->get_all_ids());
+    return s;
   }
 
   DynExpr* s() override;

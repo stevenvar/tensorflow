@@ -87,13 +87,13 @@ class TransposeOp : public XlaOpKernel {
           errors::InvalidArgument(i, " is missing from 'perm' argument."));
     }
 
-    xla::XlaOp transposed;
     // 0-D, 1-D, and identity transposes do nothing.
     if (dims <= 1 || is_identity) {
-      transposed = ctx->Input("x");
-    } else {
-      transposed = xla::Transpose(ctx->Input("x"), transposed_order);
+      ctx->SetOutputExpression(0, ctx->InputExpression("x"));
+      return;
     }
+
+    xla::XlaOp transposed = xla::Transpose(ctx->Input("x"), transposed_order);
 
     // Conjugate the transposed result if this is ConjugateTransposeOp.
     if (conjugate_) {

@@ -197,7 +197,7 @@ class ReshapeOp : public XlaOpKernel {
     for (int64_t i = 0; i < dims; ++i) {
       output_dim_sizes.push_back(
           xla::Reshape(xla::Slice(ctx->Input(1), {i}, {i + 1}, {1}), {}));
-      output_dim_exprs.push_back(xla::DynExpr::_(-10));
+      output_dim_exprs.push_back(xla::DynExpr::_(-111));
     }
     OP_REQUIRES_OK(
         ctx, ctx->ResolveInputDynamismIntoPredVector(1, &dims_are_dynamic));
@@ -216,17 +216,20 @@ class ReshapeOp : public XlaOpKernel {
       auto start = common_factors[i];
       auto end = common_factors[i + 1];
       bool input_is_dynamic = false;
-      xla::DynExpr* expression = xla::DynExpr::_(-20);
+      xla::DynExpr* unknown_dim_expr = xla::DynExpr::one;
       // product of all input dims in this group. E.g., in
       // reshape(Tensor([2, 3, 3]), [3, -1, 3]) product of the group
       // containing -1 will be 6.
       xla::XlaOp product = xla::One(ctx->builder(), xla::S32);
+      xla::DynExpr* product_expr = xla::DynExpr::one;
       for (int64_t dim = start.first; dim < end.first; ++dim) {
         if (input_xla_shape->is_dynamic_dimension(dim)) {
           input_is_dynamic = true;
         }
         product = xla::Mul(product, xla::GetDimensionSize(input, dim));
+        product_expr = (*product_expr * *input_shape.get_expression(dim))->s();
       }
+      unknown_dim_expr = product_expr;
       bool unknown_dim_in_group = false;
       // The real size for the -1 dimension in a reshape. E.g., in
       // reshape(Tensor([2, 3, 3]), [3, -1, 3]) this will be 2.
@@ -236,6 +239,8 @@ class ReshapeOp : public XlaOpKernel {
           unknown_dim_in_group = true;
         } else {
           unknown_dim_size = xla::Div(unknown_dim_size, output_dim_sizes[dim]);
+          unknown_dim_expr =
+              (*unknown_dim_expr / *output_dim_exprs[dim])->s();
         }
       }
 
@@ -243,7 +248,7 @@ class ReshapeOp : public XlaOpKernel {
         // If input dim is dynamic, output dim at the -1 position must be
         // dynamic. Similarly, if input dim is static, output dim has to be
         // static at the -1 dimension.
-        output_dim_exprs[unknown_index] = expression;
+        output_dim_exprs[unknown_index] = unknown_dim_expr;
         dims_are_dynamic[unknown_index] = input_is_dynamic;
         output_dim_sizes[unknown_index] = unknown_dim_size;
 

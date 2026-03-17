@@ -190,14 +190,14 @@ class ReshapeOp : public XlaOpKernel {
 
     std::vector<xla::XlaOp> output_dim_sizes;
     std::vector<bool> dims_are_dynamic;
-    std::vector<xla::DynExpr*> expressions;
+    std::vector<xla::DynExpr*> output_dim_exprs;
     const auto& dims = shape.dims();
     dims_are_dynamic.reserve(dims);
     output_dim_sizes.reserve(dims);
     for (int64_t i = 0; i < dims; ++i) {
       output_dim_sizes.push_back(
           xla::Reshape(xla::Slice(ctx->Input(1), {i}, {i + 1}, {1}), {}));
-      expressions.push_back(xla::DynExpr::_(-10));
+      output_dim_exprs.push_back(xla::DynExpr::_(-10));
     }
     OP_REQUIRES_OK(
         ctx, ctx->ResolveInputDynamismIntoPredVector(1, &dims_are_dynamic));
@@ -205,7 +205,7 @@ class ReshapeOp : public XlaOpKernel {
       // No unknown index.
       ctx->SetOutput(
           0, xla::DynamicReshape(input, output_dim_sizes, shape.dim_sizes(),
-                                 dims_are_dynamic, expressions));
+                                 dims_are_dynamic, output_dim_exprs));
       return;
     }
     auto common_factors =
@@ -243,13 +243,13 @@ class ReshapeOp : public XlaOpKernel {
         // If input dim is dynamic, output dim at the -1 position must be
         // dynamic. Similarly, if input dim is static, output dim has to be
         // static at the -1 dimension.
-        expressions[unknown_index] = expression;
+        output_dim_exprs[unknown_index] = expression;
         dims_are_dynamic[unknown_index] = input_is_dynamic;
         output_dim_sizes[unknown_index] = unknown_dim_size;
 
         ctx->SetOutput(
             0, xla::DynamicReshape(input, output_dim_sizes, shape.dim_sizes(),
-                                   dims_are_dynamic, expressions));
+                                   dims_are_dynamic, output_dim_exprs));
         VLOG(2) << "Reshape from " << ctx->InputXlaShape(0)->ToString()
                 << " to " << xla::VectorString(shape.dim_sizes())
                 << ", dynamic_dims=" << xla::VectorString(dims_are_dynamic);

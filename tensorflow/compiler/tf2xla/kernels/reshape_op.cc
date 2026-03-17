@@ -163,8 +163,9 @@ class ReshapeOp : public XlaOpKernel {
               0, 0, padded_input_num - input_num_elements);
           input_shape.set_dim(0, padded_input_num);
           input_shape.set_expression(
-              0, xla::DynExpr::_(
-                     padded_input_num));  // Issue here as it depends on ceil
+              0, ((*input_num_elements_expr / *product_expr) *
+                  *product_expr)
+                     ->s());
         }
       }
       shape.set_dim(unknown_index, missing);

@@ -79,8 +79,9 @@ struct XlaArgument {
   // host-memory tensor.
   Tensor constant_value;
 
-  // Symbolic expressions attached to the contents of a compile-time constant.
-  // Used for shape-like integer tensors crossing cluster boundaries.
+  // Symbolic expressions for each element of a compile-time constant.
+  // This is only used for shape-like integer tensors crossing cluster
+  // boundaries.
   std::vector<ExpressionProto> constant_value_expressions;
 
   // The upper bounds of the value.

@@ -341,6 +341,13 @@ absl::Status PartiallyDeclusterGraph(Graph* graph,
       bool must_compile_node;
       TF_RETURN_IF_ERROR(MustCompileNode(n, &must_compile_node));
       if (!must_compile_node) {
+        if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
+          LOG(INFO) << "[PartiallyDeclusterPass/reduce_recompilation] keeping "
+                    << n->type_string() << " clustered: " << n->name()
+                    << " compile_time_const=true"
+                    << " clustered=" << GetXlaClusterForNode(*n).has_value();
+          continue;
+        }
         if (n->IsConstant()) {
           // We must decluster Const nodes that have an input control edge from
           // a different device, because this node may be part of the
@@ -386,8 +393,9 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
     }
 
     if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
-      LOG(INFO) << "[PartiallyDeclusterPass/root_shape] keeping "
-                << n->type_string() << " clustered: " << n->name();
+      LOG(INFO) << "[PartiallyDeclusterPass/root_shape] leaving "
+                << n->type_string() << " unchanged: " << n->name()
+                << " clustered=" << GetXlaClusterForNode(*n).has_value();
       continue;
     }
 

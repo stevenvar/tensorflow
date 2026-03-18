@@ -1143,6 +1143,8 @@ absl::Status XlaCompiler::BuildArguments(
       case XlaCompiler::Argument::kConstant:
         arg_expression = XlaExpression::Constant(arg.constant_value);
         if (!arg.constant_value_expressions.empty()) {
+          // Preserve symbolic per-element metadata for shape-like constants so
+          // later tf2xla consumers can recover dynamic contents from them.
           std::vector<xla::DynExpr*> contents;
           contents.reserve(arg.constant_value_expressions.size());
           for (const ExpressionProto& expr : arg.constant_value_expressions) {

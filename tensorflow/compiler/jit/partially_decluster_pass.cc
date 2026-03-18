@@ -19,6 +19,7 @@ limitations under the License.
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/jit/device_util.h"
+#include "tensorflow/compiler/jit/encapsulate_util.h"
 #include "tensorflow/compiler/jit/xla_cluster_util.h"
 #include "tensorflow/compiler/tf2xla/const_analysis.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
@@ -26,7 +27,9 @@ limitations under the License.
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/memory_types.h"
 #include "tensorflow/core/framework/node_def.pb.h"
+#include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/graph/graph_node_util.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/public/version.h"
@@ -34,7 +37,54 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
+constexpr char kOutputShapesAttrName[] = "_output_shapes";
+
 bool NotBackedge(const Edge& edge) { return !edge.src()->IsNextIteration(); }
+
+bool PartialTensorShapeIsDynamic(const PartialTensorShape& shape) {
+  if (shape.unknown_rank()) {
+    return true;
+  }
+
+  for (int i = 0; i < shape.dims(); ++i) {
+    if (shape.dim_size(i) < 0) {
+      return true;
+    }
+    xla::DynExpr* expr = shape.get_expression(i);
+    if (expr != nullptr && expr->is_dynamic()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool OutputShapeAttrIsDynamic(const Node& node, int output_slot,
+                              absl::string_view attr_name) {
+  std::vector<PartialTensorShape> output_shapes;
+  if (!GetNodeAttr(node.attrs(), std::string(attr_name), &output_shapes).ok()) {
+    return false;
+  }
+  if (output_slot < 0 || output_slot >= output_shapes.size()) {
+    return false;
+  }
+  return PartialTensorShapeIsDynamic(output_shapes[output_slot]);
+}
+
+bool ShapeInputHasDynamicShapeMetadata(const Node& shape_node) {
+  if (shape_node.type_string() != "Shape") {
+    return false;
+  }
+
+  const Edge* input_edge = nullptr;
+  if (!shape_node.input_edge(0, &input_edge).ok()) {
+    return false;
+  }
+
+  return OutputShapeAttrIsDynamic(*input_edge->src(), input_edge->src_output(),
+                                  kOutputShapesAttrName) ||
+         OutputShapeAttrIsDynamic(*input_edge->src(), input_edge->src_output(),
+                                  kXlaInferredShapesAttrName);
+}
 
 namespace reduce_device_to_host_copies {
 absl::Status FindNodesToDecluster(const Graph& graph,
@@ -390,6 +440,13 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
     };
 
     if (absl::c_any_of(n->in_edges(), input_belongs_to_same_cluster)) {
+      continue;
+    }
+
+    if (ShapeInputHasDynamicShapeMetadata(*n)) {
+      VLOG(2) << "Keeping " << n->name()
+              << " clustered because its Shape input has dynamic shape "
+                 "metadata";
       continue;
     }
 

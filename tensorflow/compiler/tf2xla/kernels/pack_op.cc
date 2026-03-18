@@ -17,6 +17,7 @@ limitations under the License.
 
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "xla/hlo/builder/xla_builder.h"
@@ -27,6 +28,35 @@ limitations under the License.
 
 namespace tensorflow {
 namespace {
+
+constexpr int64_t kUnknownContentSentinel = -444;
+
+bool TryBuildPackedContents(XlaOpKernelContext* ctx, int num, int axis,
+                            std::vector<xla::DynExpr*>* contents) {
+  contents->clear();
+  if (axis != 0) {
+    return false;
+  }
+  for (int i = 0; i < num; ++i) {
+    if (ctx->InputShape(i).dims() != 0) {
+      contents->clear();
+      return false;
+    }
+    const auto& input_contents = ctx->InputExpression(i).contents();
+    if (!input_contents.empty()) {
+      if (input_contents.size() != 1) {
+        contents->clear();
+        return false;
+      }
+      contents->push_back(input_contents[0]);
+      continue;
+    }
+    contents->push_back(xla::DynExpr::_(kUnknownContentSentinel));
+  }
+  return absl::c_any_of(*contents, [](xla::DynExpr* expr) {
+    return expr != nullptr && expr->is_dynamic();
+  });
+}
 
 class PackOp : public XlaOpKernel {
  public:
@@ -73,13 +103,33 @@ class PackOp : public XlaOpKernel {
     }
     exprs.insert(exprs.begin() + axis, xla::DynExpr::one);
 
+    std::vector<xla::DynExpr*> output_contents;
+    const bool has_output_contents =
+        TryBuildPackedContents(ctx, num, axis, &output_contents);
+
     for (int i = 0; i < num; ++i) {
       // Reshape the inputs to have an extra dimension of size 1.
       reshaped_inputs[i] = xla::Reshape(values[i], child_shape.dim_sizes(),
                                         exprs);
+      if (has_output_contents) {
+        OP_REQUIRES_OK(
+            ctx, ctx->builder()->SetInstructionContents(
+                     reshaped_inputs[i],
+                     {output_contents[static_cast<size_t>(i)]}));
+      }
     }
 
-    ctx->SetOutput(0, xla::ConcatInDim(ctx->builder(), reshaped_inputs, axis));
+    auto output = xla::ConcatInDim(ctx->builder(), reshaped_inputs, axis);
+    if (has_output_contents) {
+      OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(
+                              output, output_contents));
+      auto output_expr =
+          XlaExpression::XlaOp(output, ctx->expected_output_dtype(0));
+      output_expr.set_contents(std::move(output_contents));
+      ctx->SetOutputExpression(0, output_expr);
+      return;
+    }
+    ctx->SetOutput(0, output);
   }
 
  private:

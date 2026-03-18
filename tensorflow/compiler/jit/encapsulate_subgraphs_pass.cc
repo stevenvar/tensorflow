@@ -70,6 +70,7 @@ const char* const kXlaNumResourceArgsAttr = "_XlaNumResourceArgs";
 const char* const kXlaHostTransferSequencerAttr =
     "_xla_host_transfer_sequencer";
 const char* const kXlaHasReferenceVarsAttr = "_XlaHasReferenceVars";
+const char* const kXlaConstantContentsAttr = "_constant_contents";
 
 namespace {
 
@@ -184,6 +185,8 @@ std::unique_ptr<DimExpr> ExprFromProto(const ExpressionProto& proto) {
   }
 }
 
+void ExprToProto(xla::DynExpr* expr, ExpressionProto* proto);
+
 static xla::DynExpr* DimExprToDynExpr(const DimExpr* e) {
   switch (e->kind()) {
     case DimExpr::Kind::kConstant: {
@@ -212,6 +215,66 @@ static xla::DynExpr* DimExprToDynExpr(const DimExpr* e) {
     }
   }
   return nullptr;
+}
+
+bool BuildOutputShapeProto(const Node& node, int output_slot,
+                           TensorShapeProto* proto) {
+  AttrSlice attrs = node.attrs();
+  auto shape_attr = attrs.FindByString("_output_shapes");
+  if (shape_attr == nullptr || !shape_attr->has_list() ||
+      shape_attr->list().shape_size() <= output_slot) {
+    return false;
+  }
+  *proto = shape_attr->list().shape(output_slot);
+  auto it = expr_map.find(node.name());
+  if (it != expr_map.end() && it->second.size() > output_slot) {
+    proto->clear_expressions();
+    for (const auto& expr : it->second[output_slot]) {
+      ExprToProto(DimExprToDynExpr(expr.get())->s(), proto->add_expressions());
+    }
+  }
+  return true;
+}
+
+absl::StatusOr<std::optional<TensorShapeProto>> BuildConstantContentsProto(
+    const Node& src_node, int src_slot) {
+  AttrSlice attrs = src_node.attrs();
+  auto contents_attr = attrs.FindByString(kXlaConstantContentsAttr);
+  if (contents_attr != nullptr && contents_attr->has_list() &&
+      contents_attr->list().shape_size() > 0) {
+    return contents_attr->list().shape(
+        contents_attr->list().shape_size() > src_slot ? src_slot : 0);
+  }
+
+  int input_index = -1;
+  if (src_node.type_string() == "Shape") {
+    input_index = 0;
+  } else if (src_node.type_string() == "ShapeN") {
+    input_index = src_slot;
+  } else {
+    return std::nullopt;
+  }
+
+  const Edge* input_edge;
+  TF_RETURN_IF_ERROR(src_node.input_edge(input_index, &input_edge));
+
+  TensorShapeProto input_shape_proto;
+  if (!BuildOutputShapeProto(*input_edge->src(), input_edge->src_output(),
+                             &input_shape_proto) ||
+      input_shape_proto.unknown_rank()) {
+    return std::nullopt;
+  }
+
+  TensorShapeProto contents_proto;
+  for (int i = 0; i < input_shape_proto.dim_size(); ++i) {
+    ExpressionProto* expr = contents_proto.add_expressions();
+    if (i < input_shape_proto.expressions_size()) {
+      *expr = input_shape_proto.expressions(i);
+    } else {
+      expr->set_constant_value(input_shape_proto.dim(i).size());
+    }
+  }
+  return contents_proto;
 }
 
 // Runs Grappler static inference and logs any ExpressionProto found in output
@@ -691,6 +754,11 @@ absl::Status Encapsulator::Subgraph::RecordArg(
                 << src_slot;
         builder.Attr("_dynamic_dim", *build_attr);
       }
+    }
+    TF_ASSIGN_OR_RETURN(auto constant_contents,
+                        BuildConstantContentsProto(*src_node, src_slot));
+    if (constant_contents.has_value()) {
+      builder.Attr(kXlaConstantContentsAttr, {*constant_contents});
     }
     absl::Status s = builder.Finalize(&arg_def);
     if (!s.ok()) return s;

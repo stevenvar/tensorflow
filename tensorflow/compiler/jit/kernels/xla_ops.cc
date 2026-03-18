@@ -106,6 +106,8 @@ auto* xla_launch_counter = monitoring::Counter<1>::New(
     "/tensorflow/core/xla_launch_counter",
     "The number of times a XlaLaunch is called.", "device");
 
+constexpr char kXlaConstantContentsAttr[] = "_constant_contents";
+
 // A closure describing how to run a compiled version of a TensorFlow function.
 //
 // It may seem unusual to stick the resource variable snapshots in this class.
@@ -549,11 +551,10 @@ absl::Status CompileToLocalExecutable(
             continue;
           }
           auto it = attr_map.find("_output_shapes");
-          if (it == attr_map.end()) continue;
-
-          const TensorShapeProto& proto = it->second.list().shape(0);
-          const auto& exp = proto.expressions();
-          TensorShape& shp = std::get<TensorShape>(norm_args[arg_index].shape);
+          if (it != attr_map.end()) {
+            const TensorShapeProto& proto = it->second.list().shape(0);
+            const auto& exp = proto.expressions();
+            TensorShape& shp = std::get<TensorShape>(norm_args[arg_index].shape);
 
           if (!filled_batch && xla_batch_matcher) {
             for (int idx = 0; idx < exp.size(); ++idx) {
@@ -580,6 +581,16 @@ absl::Status CompileToLocalExecutable(
             }
           }
           shp.set_expressions(dyn_exprs);
+
+          auto content_it = attr_map.find(kXlaConstantContentsAttr);
+          if (content_it != attr_map.end() &&
+              content_it->second.list().shape_size() > 0) {
+            norm_args[arg_index].constant_value_expressions.clear();
+            const TensorShapeProto& proto = content_it->second.list().shape(0);
+            for (const ExpressionProto& expr : proto.expressions()) {
+              norm_args[arg_index].constant_value_expressions.push_back(expr);
+            }
+          }
         }
       }
     }

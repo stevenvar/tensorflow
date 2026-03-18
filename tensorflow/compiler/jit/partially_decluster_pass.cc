@@ -38,6 +38,7 @@ namespace tensorflow {
 namespace {
 
 constexpr char kOutputShapesAttrName[] = "_output_shapes";
+constexpr char kXlaConstantContentsAttr[] = "_constant_contents";
 
 bool NotBackedge(const Edge& edge) { return !edge.src()->IsNextIteration(); }
 
@@ -70,6 +71,45 @@ bool OutputShapeAttrIsDynamic(const Node& node, int output_slot,
   return PartialTensorShapeIsDynamic(output_shapes[output_slot]);
 }
 
+bool ExpressionProtoIsDynamic(const ExpressionProto& expr) {
+  switch (expr.node_type_case()) {
+    case ExpressionProto::kVariableId:
+      return true;
+    case ExpressionProto::kAddNode:
+      return ExpressionProtoIsDynamic(expr.add_node().lhs()) ||
+             ExpressionProtoIsDynamic(expr.add_node().rhs());
+    case ExpressionProto::kSubNode:
+      return ExpressionProtoIsDynamic(expr.sub_node().lhs()) ||
+             ExpressionProtoIsDynamic(expr.sub_node().rhs());
+    case ExpressionProto::kMulNode:
+      return ExpressionProtoIsDynamic(expr.mul_node().lhs()) ||
+             ExpressionProtoIsDynamic(expr.mul_node().rhs());
+    case ExpressionProto::kDivNode:
+      return ExpressionProtoIsDynamic(expr.div_node().lhs()) ||
+             ExpressionProtoIsDynamic(expr.div_node().rhs());
+    case ExpressionProto::kConstantValue:
+    case ExpressionProto::NODE_TYPE_NOT_SET:
+      return false;
+  }
+}
+
+bool ConstantContentsAttrIsDynamic(const Node& node, int output_slot) {
+  AttrSlice attrs = node.attrs();
+  auto contents_attr = attrs.FindByString(kXlaConstantContentsAttr);
+  if (contents_attr == nullptr || !contents_attr->has_list() ||
+      contents_attr->list().shape_size() <= 0) {
+    return false;
+  }
+  const TensorShapeProto& proto = contents_attr->list().shape(
+      contents_attr->list().shape_size() > output_slot ? output_slot : 0);
+  for (const ExpressionProto& expr : proto.expressions()) {
+    if (ExpressionProtoIsDynamic(expr)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool ShapeInputHasDynamicShapeMetadata(const Node& shape_node) {
   if (shape_node.type_string() != "Shape") {
     return false;
@@ -84,6 +124,18 @@ bool ShapeInputHasDynamicShapeMetadata(const Node& shape_node) {
                                   kOutputShapesAttrName) ||
          OutputShapeAttrIsDynamic(*input_edge->src(), input_edge->src_output(),
                                   kXlaInferredShapesAttrName);
+}
+
+bool ShapeConsumerHasDynamicConstantContents(const Node& node) {
+  for (const Edge* edge : node.in_edges()) {
+    if (edge->IsControlEdge()) {
+      continue;
+    }
+    if (ConstantContentsAttrIsDynamic(*edge->src(), edge->src_output())) {
+      return true;
+    }
+  }
+  return false;
 }
 
 namespace reduce_device_to_host_copies {
@@ -447,6 +499,13 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
       VLOG(2) << "Keeping " << n->name()
               << " clustered because its Shape input has dynamic shape "
                  "metadata";
+      continue;
+    }
+
+    if (ShapeConsumerHasDynamicConstantContents(*n)) {
+      VLOG(2) << "Keeping " << n->name()
+              << " clustered because one of its inputs has dynamic "
+                 "_constant_contents";
       continue;
     }
 

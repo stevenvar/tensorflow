@@ -590,6 +590,7 @@ absl::Status CompileToLocalExecutable(
     struct SaveOldVar {
       int arg_index;
       int64_t dyn_dim;
+      int64_t constant_index;
       int64_t old_value;
     };
     std::vector<SaveOldVar> old_vars;
@@ -604,7 +605,7 @@ absl::Status CompileToLocalExecutable(
           auto e = shp.get_expression(j);
           if (e->is_dynamic()) {
             int64_t old = shp.dim_size(j);
-            old_vars.push_back({i, j, old});
+            old_vars.push_back({i, j, -1, old});
             shp.set_dim(j, filled_batch);
             // Necessary because set_dim removes the expression:
             shp.set_expression(j, e);
@@ -612,27 +613,41 @@ absl::Status CompileToLocalExecutable(
         }
         // constant argument rewrite otherwise it still store the incoming batch
         // request.
-        if (arg.kind == XlaCompiler::Argument::kConstant) {
-          // To deal with both int32 and int64
-          if (arg.constant_value.dtype() == DT_INT32) {
+        if (arg.kind == XlaCompiler::Argument::kConstant &&
+            !arg.constant_value_expressions.empty()) {
+          if (arg.constant_value.dtype() == DT_INT32 &&
+              arg.constant_value.dims() <= 1) {
             auto flat = arg.constant_value.flat<int32>();
-            int64_t old = flat(0);
-            // TODO: checking if this constant equals to batch number
-            // is just hacky. It may happen that this constant is not a shape
-            // size but happens to equal to batch number.
-            // The proper way is to have the compiler pass to explicitly
-            // mark which constant argument is used as shape size
-            // and need to be rewritten
-            if (old == old_batch) {
-              flat(0) = static_cast<int32>(filled_batch);
-              old_vars.push_back({i, -1, old});
+            if (flat.size() == arg.constant_value_expressions.size()) {
+              for (int64_t j = 0; j < flat.size(); ++j) {
+                auto e = DimExprToDynExpr(
+                             ExprFromProto(arg.constant_value_expressions[j])
+                                 .get())
+                             ->s();
+                if (!e->is_dynamic()) {
+                  continue;
+                }
+                int64_t old = flat(j);
+                flat(j) = static_cast<int32>(filled_batch);
+                old_vars.push_back({i, -1, j, old});
+              }
             }
-          } else if (arg.constant_value.dtype() == DT_INT64) {
-            auto flat = arg.constant_value.flat<int64>();
-            int64_t old = flat(0);
-            if (old == old_batch) {
-              flat(0) = static_cast<int64_t>(filled_batch);
-              old_vars.push_back({i, -1, old});
+          } else if (arg.constant_value.dtype() == DT_INT64 &&
+                     arg.constant_value.dims() <= 1) {
+            auto flat = arg.constant_value.flat<int64_t>();
+            if (flat.size() == arg.constant_value_expressions.size()) {
+              for (int64_t j = 0; j < flat.size(); ++j) {
+                auto e = DimExprToDynExpr(
+                             ExprFromProto(arg.constant_value_expressions[j])
+                                 .get())
+                             ->s();
+                if (!e->is_dynamic()) {
+                  continue;
+                }
+                int64_t old = flat(j);
+                flat(j) = static_cast<int64_t>(filled_batch);
+                old_vars.push_back({i, -1, j, old});
+              }
             }
           }
         }
@@ -649,13 +664,17 @@ absl::Status CompileToLocalExecutable(
           TensorShape& shp = std::get<TensorShape>(arg.shape);
           shp.set_dim(old_var.dyn_dim, old_var.old_value);
         }
-        if (arg.kind == XlaCompiler::Argument::kConstant) {
-          if (arg.constant_value.dtype() == DT_INT32) {
+        if (arg.kind == XlaCompiler::Argument::kConstant &&
+            old_var.constant_index != -1) {
+          if (arg.constant_value.dtype() == DT_INT32 &&
+              arg.constant_value.dims() <= 1) {
             auto flat = arg.constant_value.flat<int32>();
-            flat(0) = static_cast<int32>(old_var.old_value);
-          } else if (arg.constant_value.dtype() == DT_INT64) {
+            flat(old_var.constant_index) = static_cast<int32>(old_var.old_value);
+          } else if (arg.constant_value.dtype() == DT_INT64 &&
+                     arg.constant_value.dims() <= 1) {
             auto flat = arg.constant_value.flat<int64>();
-            flat(0) = static_cast<int64_t>(old_var.old_value);
+            flat(old_var.constant_index) =
+                static_cast<int64_t>(old_var.old_value);
           }
         }
       }

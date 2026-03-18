@@ -39,6 +39,8 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
+constexpr int64_t kUnknownContentSentinel = -444;
+
 absl::Status ValidateAssignUpdateVariableOpShapes(XlaOpKernelContext* ctx) {
   DataType variable_dtype;
   TensorShape variable_shape;
@@ -48,6 +50,18 @@ absl::Status ValidateAssignUpdateVariableOpShapes(XlaOpKernelContext* ctx) {
   TF_RETURN_IF_ERROR(
       ValidateAssignUpdateVariableOpShapes(variable_shape, value_shape));
   return absl::OkStatus();
+}
+
+std::vector<xla::DynExpr*> BuildVariableShapeContents(const TensorShape& shape) {
+  std::vector<xla::DynExpr*> contents;
+  contents.reserve(shape.dims());
+  for (int i = 0; i < shape.dims(); ++i) {
+    contents.push_back(shape.get_expression(i) != nullptr &&
+                               shape.get_expression(i)->is_dynamic()
+                           ? shape.get_expression(i)
+                           : xla::DynExpr::_(kUnknownContentSentinel));
+  }
+  return contents;
 }
 
 class VarIsInitializedOp : public XlaOpKernel {
@@ -75,7 +89,9 @@ class VariableShapeOp : public XlaOpKernel {
                    ctx->GetVariableTypeAndShape(0, &variable_dtype, &shape));
     Tensor shape_constant(out_dtype_, TensorShape({shape.dims()}));
     OP_REQUIRES_OK(ctx, TensorShapeToConstant(shape, &shape_constant));
-    ctx->SetConstantOutput(0, shape_constant);
+    auto output = XlaExpression::Constant(shape_constant);
+    output.set_contents(BuildVariableShapeContents(shape));
+    ctx->SetOutputExpression(0, output);
   }
 
  private:

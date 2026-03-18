@@ -17,7 +17,6 @@ limitations under the License.
 
 #include <cstdint>
 #include <type_traits>
-
 #include "absl/status/statusor.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
@@ -26,6 +25,7 @@ limitations under the License.
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/literal.h"
 #include "xla/primitive_util.h"
+#include "xla/shape_util.h"
 #include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/op_requires.h"
@@ -38,12 +38,67 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
+template <typename T>
+xla::DynExpr* GetScalarExpr(const XlaExpression& expression,
+                            const xla::LiteralSlice& literal) {
+  const auto& contents = expression.contents();
+  if (!contents.empty() && contents[0] != nullptr) {
+    return contents[0];
+  }
+  return xla::DynExpr::_(literal.Get<T>({}));
+}
+
+bool HasStaticScalarContent(const XlaExpression& expression) {
+  const auto& contents = expression.contents();
+  return contents.empty() ||
+         (contents[0] != nullptr && contents[0]->is_constant());
+}
+
+template <typename T>
+xla::DynExpr* BuildRangeSizeExpr(const XlaExpression& start_expr,
+                                 const XlaExpression& limit_expr,
+                                 const XlaExpression& delta_expr,
+                                 const xla::LiteralSlice& start,
+                                 const xla::LiteralSlice& limit,
+                                 const xla::LiteralSlice& delta,
+                                 int64_t fallback_size) {
+  T delta_value = delta.Get<T>({});
+  xla::DynExpr* start_symbol = GetScalarExpr<T>(start_expr, start);
+  xla::DynExpr* limit_symbol = GetScalarExpr<T>(limit_expr, limit);
+  xla::DynExpr* delta_symbol = GetScalarExpr<T>(delta_expr, delta);
+  if (start_symbol == nullptr || limit_symbol == nullptr ||
+      delta_symbol == nullptr) {
+    return xla::DynExpr::_(fallback_size);
+  }
+  if (delta_value > 0) {
+    xla::DynExpr* diff = (*limit_symbol - *start_symbol)->s();
+    if (diff == nullptr) return xla::DynExpr::_(fallback_size);
+    xla::DynExpr* adjusted = (*diff - 1)->s();
+    if (adjusted == nullptr) return xla::DynExpr::_(fallback_size);
+    xla::DynExpr* quotient = (*adjusted / *delta_symbol)->s();
+    if (quotient == nullptr) return xla::DynExpr::_(fallback_size);
+    xla::DynExpr* result = (*quotient + 1)->s();
+    return result != nullptr ? result : xla::DynExpr::_(fallback_size);
+  }
+  xla::DynExpr* step_symbol = (*xla::DynExpr::_(0) - *delta_symbol)->s();
+  if (step_symbol == nullptr) return xla::DynExpr::_(fallback_size);
+  xla::DynExpr* diff = (*start_symbol - *limit_symbol)->s();
+  if (diff == nullptr) return xla::DynExpr::_(fallback_size);
+  xla::DynExpr* adjusted = (*diff - 1)->s();
+  if (adjusted == nullptr) return xla::DynExpr::_(fallback_size);
+  xla::DynExpr* quotient = (*adjusted / *step_symbol)->s();
+  if (quotient == nullptr) return xla::DynExpr::_(fallback_size);
+  xla::DynExpr* result = (*quotient + 1)->s();
+  return result != nullptr ? result : xla::DynExpr::_(fallback_size);
+}
+
 // The type-specific part of the implementation of Range.
 template <typename T>
 absl::StatusOr<xla::XlaOp> CreateRangeTensor(
     const xla::LiteralSlice& start_literal,
     const xla::LiteralSlice& limit_literal,
-    const xla::LiteralSlice& delta_literal, xla::XlaBuilder* builder) {
+    const xla::LiteralSlice& delta_literal, xla::XlaBuilder* builder,
+    xla::DynExpr* size_expr = nullptr) {
   T start = start_literal.Get<T>({});
   T limit = limit_literal.Get<T>({});
   T delta = delta_literal.Get<T>({});
@@ -70,10 +125,17 @@ absl::StatusOr<xla::XlaOp> CreateRangeTensor(
                      : (std::abs(limit - start) - 1) / std::abs(delta) + 1)
            : std::ceil(std::abs((limit - start) / delta)));
 
-  return xla::ConstantR0(builder, start) +
-         xla::ConstantR0(builder, delta) *
-             xla::Iota(builder, xla::primitive_util::NativeToPrimitiveType<T>(),
-                       size);
+  xla::XlaOp iota =
+      (std::is_integral<T>::value && size_expr != nullptr)
+          ? xla::Iota(builder,
+                      xla::ShapeUtil::MakeShape(
+                          xla::primitive_util::NativeToPrimitiveType<T>(),
+                          {size}, {size_expr}),
+                      /*iota_dimension=*/0)
+          : xla::Iota(builder, xla::primitive_util::NativeToPrimitiveType<T>(),
+                      size);
+
+  return xla::ConstantR0(builder, start) + xla::ConstantR0(builder, delta) * iota;
 }
 
 class RangeOp : public XlaOpKernel {
@@ -103,13 +165,48 @@ class RangeOp : public XlaOpKernel {
     DataType type = input_type(0);
     absl::StatusOr<xla::XlaOp> output;
     switch (type) {
-      case DT_INT32:
-        output = CreateRangeTensor<int32>(start, limit, delta, ctx->builder());
+      case DT_INT32: {
+        int32 start_value = start.Get<int32>({});
+        int32 limit_value = limit.Get<int32>({});
+        int32 delta_value = delta.Get<int32>({});
+        int64_t size = static_cast<int32>(
+            limit_value == start_value
+                ? 0
+                : (std::abs(limit_value - start_value) - 1) /
+                          std::abs(delta_value) +
+                      1);
+        xla::DynExpr* size_expr =
+            HasStaticScalarContent(ctx->InputExpression(2))
+                ? BuildRangeSizeExpr<int32>(ctx->InputExpression(0),
+                                            ctx->InputExpression(1),
+                                            ctx->InputExpression(2), start,
+                                            limit, delta, size)
+                : xla::DynExpr::_(size);
+        output = CreateRangeTensor<int32>(start, limit, delta, ctx->builder(),
+                                          size_expr);
         break;
-      case DT_INT64:
-        output =
-            CreateRangeTensor<int64_t>(start, limit, delta, ctx->builder());
+      }
+      case DT_INT64: {
+        int64_t start_value = start.Get<int64_t>({});
+        int64_t limit_value = limit.Get<int64_t>({});
+        int64_t delta_value = delta.Get<int64_t>({});
+        int64_t size =
+            limit_value == start_value
+                ? 0
+                : (std::abs(limit_value - start_value) - 1) /
+                          std::abs(delta_value) +
+                      1;
+        xla::DynExpr* size_expr =
+            HasStaticScalarContent(ctx->InputExpression(2))
+                ? BuildRangeSizeExpr<int64_t>(ctx->InputExpression(0),
+                                              ctx->InputExpression(1),
+                                              ctx->InputExpression(2), start,
+                                              limit, delta, size)
+                : xla::DynExpr::_(size);
+        output = CreateRangeTensor<int64_t>(start, limit, delta, ctx->builder(),
+                                            size_expr);
         break;
+      }
       case DT_FLOAT:
         output = CreateRangeTensor<float>(start, limit, delta, ctx->builder());
         break;

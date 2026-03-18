@@ -46,6 +46,20 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
+constexpr int64_t kUnknownContentSentinel = -444;
+
+std::vector<xla::DynExpr*> BuildShapeContents(const TensorShape& input_shape) {
+  std::vector<xla::DynExpr*> contents;
+  contents.reserve(input_shape.dims());
+  for (int64_t i = 0; i < input_shape.dims(); ++i) {
+    xla::DynExpr* expr = input_shape.get_expression(i);
+    contents.push_back(expr != nullptr && expr->is_dynamic()
+                           ? expr
+                           : xla::DynExpr::_(kUnknownContentSentinel));
+  }
+  return contents;
+}
+
 class ShapeOp : public XlaOpKernel {
  public:
   explicit ShapeOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {
@@ -58,18 +72,36 @@ class ShapeOp : public XlaOpKernel {
     const int rank = input_shape.dims();
     if (rank != 0) {
       for (int64_t i = 0; i < rank; ++i) {
-        operands.push_back(xla::Broadcast(
-            xla::ConvertElementType(xla::GetDimensionSize(ctx->Input(0), i),
-                                    ctx->output_xla_type(0)),
-            {1}));
+        xla::DynExpr* expr = input_shape.get_expression(i);
+        std::vector<xla::DynExpr*> content = {
+            expr != nullptr && expr->is_dynamic()
+                ? expr
+                : xla::DynExpr::_(kUnknownContentSentinel)};
+        xla::XlaOp dim_size = xla::GetDimensionSize(ctx->Input(0), i);
+        OP_REQUIRES_OK(
+            ctx, ctx->builder()->SetInstructionContents(dim_size, content));
+        xla::XlaOp converted =
+            xla::ConvertElementType(dim_size, ctx->output_xla_type(0));
+        OP_REQUIRES_OK(
+            ctx, ctx->builder()->SetInstructionContents(converted, content));
+        xla::XlaOp broadcast = xla::Broadcast(converted, {1});
+        OP_REQUIRES_OK(
+            ctx, ctx->builder()->SetInstructionContents(broadcast, content));
+        operands.push_back(broadcast);
       }
 
-      ctx->SetOutput(0, xla::ConcatInDim(ctx->builder(), operands, 0));
+      xla::XlaOp concat = xla::ConcatInDim(ctx->builder(), operands, 0);
+      XlaExpression output =
+          XlaExpression::XlaOp(concat, ctx->expected_output_dtype(0));
+      output.set_contents(BuildShapeContents(input_shape));
+      ctx->SetOutputExpression(0, output);
     } else {
       // Rank 0 won't have dynamic size dimension, use constant output.
       Tensor shape_constant(out_dtype_, TensorShape({input_shape.dims()}));
       OP_REQUIRES_OK(ctx, TensorShapeToConstant(input_shape, &shape_constant));
-      ctx->SetConstantOutput(0, shape_constant);
+      XlaExpression output = XlaExpression::Constant(shape_constant);
+      output.set_contents(BuildShapeContents(input_shape));
+      ctx->SetOutputExpression(0, output);
     }
   }
 
@@ -196,19 +228,37 @@ class ShapeNOp : public XlaOpKernel {
         // Each dimension can be dynamic, so use GetDimensionSize to get the
         // runtime dimension.
         for (int64_t dim = 0; dim < rank; ++dim) {
-          operands.push_back(xla::Broadcast(
-              xla::ConvertElementType(xla::GetDimensionSize(ctx->Input(i), dim),
-                                      ctx->output_xla_type(i)),
-              {1}));
+          xla::DynExpr* expr = input_shape.get_expression(dim);
+          std::vector<xla::DynExpr*> content = {
+              expr != nullptr && expr->is_dynamic()
+                  ? expr
+                  : xla::DynExpr::_(kUnknownContentSentinel)};
+          xla::XlaOp dim_size = xla::GetDimensionSize(ctx->Input(i), dim);
+          OP_REQUIRES_OK(
+              ctx, ctx->builder()->SetInstructionContents(dim_size, content));
+          xla::XlaOp converted =
+              xla::ConvertElementType(dim_size, ctx->output_xla_type(i));
+          OP_REQUIRES_OK(
+              ctx, ctx->builder()->SetInstructionContents(converted, content));
+          xla::XlaOp broadcast = xla::Broadcast(converted, {1});
+          OP_REQUIRES_OK(
+              ctx, ctx->builder()->SetInstructionContents(broadcast, content));
+          operands.push_back(broadcast);
         }
 
-        ctx->SetOutput(i, xla::ConcatInDim(ctx->builder(), operands, 0));
+        XlaExpression output =
+            XlaExpression::XlaOp(xla::ConcatInDim(ctx->builder(), operands, 0),
+                                 ctx->expected_output_dtype(i));
+        output.set_contents(BuildShapeContents(input_shape));
+        ctx->SetOutputExpression(i, output);
       } else {
         // Rank 0 won't have dynamic size dimension, use constant output.
         Tensor shape_constant(out_dtype_, TensorShape({input_shape.dims()}));
         OP_REQUIRES_OK(ctx,
                        TensorShapeToConstant(input_shape, &shape_constant));
-        ctx->SetConstantOutput(i, shape_constant);
+        XlaExpression output = XlaExpression::Constant(shape_constant);
+        output.set_contents(BuildShapeContents(input_shape));
+        ctx->SetOutputExpression(i, output);
       }
     }
   }
@@ -340,6 +390,7 @@ class SqueezeOp : public XlaOpKernel {
     absl::flat_hash_set<int32_t> wrapped_squeeze_dims;
     wrapped_squeeze_dims.reserve(squeeze_dims_.size());
     std::vector<int64_t> new_shape;
+    std::vector<xla::DynExpr*> new_exprs;
     // Validate squeeze dims against the input.
     for (int32_t dim : squeeze_dims_) {
       OP_REQUIRES(
@@ -367,6 +418,7 @@ class SqueezeOp : public XlaOpKernel {
         } else {
           // This dimension is not being squeezed.
           new_shape.push_back(existing_dim);
+          new_exprs.push_back(shape.expressions(i));
         }
       } else {
         OP_REQUIRES(
@@ -377,11 +429,12 @@ class SqueezeOp : public XlaOpKernel {
         // Copy over all non-1-length dimensions.
         if (existing_dim != 1) {
           new_shape.push_back(existing_dim);
+          new_exprs.push_back(shape.expressions(i));
         }
       }
     }
 
-    ctx->SetOutput(0, xla::Reshape(ctx->Input(0), new_shape));
+    ctx->SetOutput(0, xla::Reshape(ctx->Input(0), new_shape, new_exprs));
   }
 
  private:

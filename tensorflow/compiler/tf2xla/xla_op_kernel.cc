@@ -30,6 +30,7 @@ limitations under the License.
 #include "xla/status_macros.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"
 #include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/util/overflow.h"
 
 namespace tensorflow {
@@ -464,6 +465,12 @@ absl::Status XlaOpKernelContext::ConstantInputAsShape(
           ", result: ", num_elements);
   }
   *shape = TensorShape(dims);
+  const auto& contents = InputExpression(index).contents();
+  for (int i = 0; i < shape->dims() && i < contents.size(); ++i) {
+    if (contents[i] != nullptr && contents[i]->is_dynamic()) {
+      shape->set_expression(i, contents[i]);
+    }
+  }
   return absl::OkStatus();
 }
 

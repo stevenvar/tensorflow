@@ -475,8 +475,7 @@ absl::Status CompileToLocalExecutable(
           // Special case for _dynamic_dim...
           auto dyn_dim_attr = attr_map.find("_dynamic_dim");
           if (dyn_dim_attr != attr_map.end()) {
-            TensorShape& shp =
-                std::get<TensorShape>(norm_args[arg_index].shape);
+            TensorShape& shp = std::get<TensorShape>(norm_args[arg_index].shape);
             const AttrValue& v = dyn_dim_attr->second;
             int64_t idx = v.i();
             if (!filled_batch && xla_batch_matcher) {
@@ -615,8 +614,7 @@ absl::Status CompileToLocalExecutable(
     auto status = xla_device_compiler->CompileIfNeeded(
         options, function, norm_args, compile_options, compile_mode, profiler,
         compilation_result, executable);
-    // Restore the old argument shapes and constant values if filled_batch is
-    // not zero.
+    // Restore the old argument shapes and constant values if filled_batch is not zero.
     if (filled_batch) {
       for (const auto& old_var : old_vars) {
         auto& arg = norm_args[old_var.arg_index];
@@ -629,8 +627,7 @@ absl::Status CompileToLocalExecutable(
           if (arg.constant_value.dtype() == DT_INT32 &&
               arg.constant_value.dims() <= 1) {
             auto flat = arg.constant_value.flat<int32>();
-            flat(old_var.constant_index) =
-                static_cast<int32>(old_var.old_value);
+            flat(old_var.constant_index) = static_cast<int32>(old_var.old_value);
           } else if (arg.constant_value.dtype() == DT_INT64 &&
                      arg.constant_value.dims() <= 1) {
             auto flat = arg.constant_value.flat<int64>();
@@ -1201,7 +1198,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
           VLOG(1) << "input shape is " << ctx->input(input_idx).shape()
                   << ", corresponding xla input shape is " << xla_shape;
           int64_t size = ctx->input(input_idx).shape().dim_size(dim);
-          int64_t dyn_val = expr->solve(size);  // TODO: Validate this later.
+          int64_t dyn_val = expr->solve(size); // TODO: check if the result is correct later.
           VLOG(1) << "Found dynamic input. Real size is: " << size
                         << ", solved dynamic value is " << dyn_val;
           if (dyn_val == -1) {

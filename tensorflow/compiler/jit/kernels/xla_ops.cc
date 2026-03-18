@@ -108,6 +108,27 @@ auto* xla_launch_counter = monitoring::Counter<1>::New(
 
 constexpr char kXlaConstantContentsAttr[] = "_constant_contents";
 
+bool ExpressionProtoIsDynamic(const ExpressionProto& expr) {
+  switch (expr.node_type_case()) {
+    case ExpressionProto::kVariableId:
+      return true;
+    case ExpressionProto::kAddNode:
+      return ExpressionProtoIsDynamic(expr.add_node().lhs()) ||
+             ExpressionProtoIsDynamic(expr.add_node().rhs());
+    case ExpressionProto::kSubNode:
+      return ExpressionProtoIsDynamic(expr.sub_node().lhs()) ||
+             ExpressionProtoIsDynamic(expr.sub_node().rhs());
+    case ExpressionProto::kMulNode:
+      return ExpressionProtoIsDynamic(expr.mul_node().lhs()) ||
+             ExpressionProtoIsDynamic(expr.mul_node().rhs());
+    case ExpressionProto::kDivNode:
+      return ExpressionProtoIsDynamic(expr.div_node().lhs()) ||
+             ExpressionProtoIsDynamic(expr.div_node().rhs());
+    case ExpressionProto::kConstantValue:
+    case ExpressionProto::NODE_TYPE_NOT_SET:
+      return false;
+  }
+}
 // A closure describing how to run a compiled version of a TensorFlow function.
 //
 // It may seem unusual to stick the resource variable snapshots in this class.
@@ -616,6 +637,10 @@ absl::Status CompileToLocalExecutable(
       const bool is_vector = TensorShapeUtils::IsVector(arg.constant_value.shape()) &&
                              arg.constant_value.NumElements() > 0;
       if (!is_scalar && !is_vector) {
+        return;
+      }
+      if (arg.constant_value_expressions.size() != 1 ||
+          !ExpressionProtoIsDynamic(arg.constant_value_expressions[0])) {
         return;
       }
 

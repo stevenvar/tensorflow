@@ -6162,6 +6162,11 @@ absl::Status AlgebraicSimplifierVisitor::HandleReshape(
                                                operand->mutable_operand(0)));
   }
 
+  if (operand->opcode() == HloOpcode::kRng && operand->user_count() == 1) {
+    *operand->mutable_shape() = reshape->shape();
+    return ReplaceInstruction(reshape, operand);
+  }
+
   if (options_.is_layout_sensitive()) {
     // Try to reorder copy-reshape to reshape-copy.
     HloInstruction* copy_before = nullptr;

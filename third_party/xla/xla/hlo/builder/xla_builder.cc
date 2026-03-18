@@ -742,32 +742,6 @@ absl::Status XlaBuilder::SetInstructionFrontendAttribute(const XlaOp op,
   return absl::OkStatus();
 }
 
-absl::Status XlaBuilder::SetInstructionFrontendAttributeRecursively(
-    const XlaOp op, std::string attribute, std::string value) {
-  absl::flat_hash_set<int64_t> visited;
-  std::vector<int64_t> stack = {op.handle()};
-  while (!stack.empty()) {
-    int64_t handle = stack.back();
-    stack.pop_back();
-    if (!visited.insert(handle).second) {
-      continue;
-    }
-    TF_ASSIGN_OR_RETURN(auto instr_proto, LookUpMutableInstructionByHandle(handle));
-    auto opcode = StringToHloOpcode(instr_proto->opcode());
-    if (!opcode.ok()) {
-      continue;
-    }
-    if (opcode.value() != HloOpcode::kParameter) {
-      auto* frontend_attributes = instr_proto->mutable_frontend_attributes();
-      (*frontend_attributes->mutable_map())[attribute] = value;
-    }
-    for (int64_t operand_id : instr_proto->operand_ids()) {
-      stack.push_back(operand_id);
-    }
-  }
-  return absl::OkStatus();
-}
-
 absl::Status XlaBuilder::SetInstructionContents(XlaOp op,
                                                 std::vector<DynExpr*> contents) {
   auto it = handle_to_index_.find(op.handle());

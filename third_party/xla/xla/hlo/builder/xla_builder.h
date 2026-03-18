@@ -481,12 +481,6 @@ class XlaBuilder {
   absl::Status SetInstructionFrontendAttribute(XlaOp op, std::string attribute,
                                                std::string value);
 
-  // Looks up the HloInstruction and sets the frontend attribute "attribute" to
-  // "value" on the instruction and the generated subgraph reachable through
-  // its operands. Parameter instructions are left untouched.
-  absl::Status SetInstructionFrontendAttributeRecursively(
-      XlaOp op, std::string attribute, std::string value);
-
   // Associates symbolic contents metadata with a specific instruction.
   absl::Status SetInstructionContents(XlaOp op,
                                       std::vector<DynExpr*> contents);

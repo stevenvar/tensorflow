@@ -32,6 +32,8 @@ limitations under the License.
 
 namespace tensorflow {
 
+xla::DynExpr* DynExprFromProto(const ExpressionProto& proto);
+
 // START_SKIP_DOXYGEN
 template <class Shape>
 class TensorShapeIter;

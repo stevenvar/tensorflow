@@ -572,7 +572,7 @@ absl::Status CompileToLocalExecutable(
               for (int idx = 0; idx < exp.size(); ++idx) {
                 // Look for dynamic expression. If found then compute padding
                 // value and exit loop.
-                auto e = DimExprToDynExpr(ExprFromProto(exp[idx]).get())->s();
+                auto e = DynExprFromProto(exp[idx])->s();
                 if (e->is_dynamic()) {
                   const std::string& node_name =
                       fdef->signature().input_arg(arg_index).name();
@@ -589,7 +589,7 @@ absl::Status CompileToLocalExecutable(
               dyn_exprs.push_back(xla::DynExpr::_(d));
             }
             for (int j = 0; j < exp.size(); ++j) {
-              auto e = DimExprToDynExpr(ExprFromProto(exp[j]).get())->s();
+              auto e = DynExprFromProto(exp[j])->s();
               if (e->is_dynamic()) {
                 dyn_exprs[j] = e;
               }

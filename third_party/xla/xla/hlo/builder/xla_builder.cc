@@ -537,28 +537,12 @@ static std::string ContentsToString(absl::Span<DynExpr* const> contents) {
       "]");
 }
 
-std::ostream& operator<<(std::ostream& out, XlaOp op) {
-  if (op.builder_ == nullptr || !op.valid()) {
-    out << op.handle();
-    return out;
-  }
-  out << op.builder_->OpToString(op);
-  return out;
-}
-
 void XlaBuilder::ToStringHelper(std::string* out, int ident,
                                 int64_t op_handle) const {
   const HloInstructionProto& instr =
       *(LookUpInstructionByHandle(op_handle).value());
   absl::StrAppend(out, std::string(ident, ' '), instr.opcode(),
                   ", shape=", ShapeToString(instr.shape()));
-  auto it = handle_to_index_.find(op_handle);
-  if (it != handle_to_index_.end()) {
-    const std::vector<DynExpr*>& contents = instruction_contents_.at(it->second);
-    if (!contents.empty()) {
-      absl::StrAppend(out, ", contents=", ContentsToString(contents));
-    }
-  }
   if (instr.has_metadata()) {
     absl::StrAppend(out, ", metadata={", instr.metadata().source_file(), ":",
                     instr.metadata().source_line(), "}");

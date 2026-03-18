@@ -188,7 +188,10 @@ class XlaOp {
     return handle_ == rhs.handle_ && builder_ == rhs.builder_;
   }
 
-  friend std::ostream& operator<<(std::ostream& out, XlaOp op);
+  friend std::ostream& operator<<(std::ostream& out, XlaOp op) {
+    out << op.handle();
+    return out;
+  }
 
  private:
   explicit XlaOp(XlaBuilder* builder) : handle_(-1), builder_(builder) {}

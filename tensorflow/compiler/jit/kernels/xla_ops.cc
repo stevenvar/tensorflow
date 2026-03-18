@@ -598,6 +598,7 @@ absl::Status CompileToLocalExecutable(
     struct SaveOldVar {
       int arg_index;
       int64_t dyn_dim;
+      int64_t constant_index;
       int64_t old_value;
     };
     std::vector<SaveOldVar> old_vars;
@@ -657,7 +658,7 @@ absl::Status CompileToLocalExecutable(
           auto e = shp.get_expression(j);
           if (e->is_dynamic()) {
             int64_t old = shp.dim_size(j);
-            old_vars.push_back({i, j, old});
+            old_vars.push_back({i, j, -1, old});
             shp.set_dim(j, filled_batch);
             // Necessary because set_dim removes the expression:
             shp.set_expression(j, e);

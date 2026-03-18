@@ -126,7 +126,7 @@ bool ShapeInputHasDynamicShapeMetadata(const Node& shape_node) {
                                   kXlaInferredShapesAttrName);
 }
 
-bool ShapeConsumerHasDynamicConstantContents(const Node& node) {
+bool ShapeHasDynamicConstantContents(const Node& node) {
   if (node.type_string() != "Shape") {
     return false;
   }
@@ -453,6 +453,11 @@ absl::Status PartiallyDeclusterGraph(Graph* graph,
             }
           }
         } else {
+          if (ShapeHasDynamicConstantContents(*n)) {
+            VLOG(3) << "Keeping must-be-constant Shape node " << n->name()
+                    << " clustered because it has dynamic _constant_contents";
+            continue;
+          }
           VLOG(3) << "Declustering must-be-constant node " << n->name();
           RemoveFromXlaCluster(n);
         }
@@ -494,13 +499,6 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
       VLOG(2) << "Keeping " << n->name()
               << " clustered because its Shape input has dynamic shape "
                  "metadata";
-      continue;
-    }
-
-    if (ShapeConsumerHasDynamicConstantContents(*n)) {
-      VLOG(2) << "Keeping " << n->name()
-              << " clustered because one of its inputs has dynamic "
-                 "_constant_contents";
       continue;
     }
 

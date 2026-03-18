@@ -36,10 +36,6 @@ namespace {
 
 bool NotBackedge(const Edge& edge) { return !edge.src()->IsNextIteration(); }
 
-bool IsShapeProducerOp(const Node& node) {
-  return node.type_string() == "Shape" || node.type_string() == "ShapeN";
-}
-
 namespace reduce_device_to_host_copies {
 absl::Status FindNodesToDecluster(const Graph& graph,
                                   absl::flat_hash_set<Node*>* result,
@@ -52,19 +48,7 @@ absl::Status FindNodesToDecluster(const Graph& graph,
 
   for (Node* n : post_order) {
     std::optional<absl::string_view> from_cluster = GetXlaClusterForNode(*n);
-    if (IsShapeProducerOp(*n)) {
-      LOG(INFO) << "[PartiallyDeclusterPass/reduce_device_to_host_copies] saw "
-                << n->name() << " op=" << n->type_string()
-                << " clustered=" << from_cluster.has_value();
-    }
     if (!from_cluster) {
-      continue;
-    }
-
-    if (IsShapeProducerOp(*n)) {
-      LOG(INFO) << "[PartiallyDeclusterPass/reduce_device_to_host_copies] "
-                   "keeping shape producer clustered: "
-                << n->name();
       continue;
     }
 
@@ -321,12 +305,6 @@ absl::Status PartiallyDeclusterGraph(Graph* graph,
   GetReversePostOrder(*graph, &rpo, /*stable_comparator=*/NodeComparatorName(),
                       /*edge_filter=*/NotBackedge);
   for (Node* n : rpo) {
-    if (IsShapeProducerOp(*n)) {
-      LOG(INFO) << "[PartiallyDeclusterPass/reduce_recompilation] saw "
-                << n->name() << " op=" << n->type_string()
-                << " compile_time_const=" << compile_time_const_nodes[n->id()]
-                << " clustered=" << GetXlaClusterForNode(*n).has_value();
-    }
     if (!compile_time_const_nodes[n->id()]) {
       continue;
     }
@@ -363,12 +341,6 @@ absl::Status PartiallyDeclusterGraph(Graph* graph,
       bool must_compile_node;
       TF_RETURN_IF_ERROR(MustCompileNode(n, &must_compile_node));
       if (!must_compile_node) {
-        if (IsShapeProducerOp(*n)) {
-          LOG(INFO) << "[PartiallyDeclusterPass/reduce_recompilation] "
-                       "keeping shape producer clustered: "
-                    << n->name();
-          continue;
-        }
         if (n->IsConstant()) {
           // We must decluster Const nodes that have an input control edge from
           // a different device, because this node may be part of the
@@ -404,12 +376,14 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
                       /*edge_filter=*/NotBackedge);
 
   for (Node* n : reverse_post_order) {
-    if (IsShapeProducerOp(*n)) {
-      LOG(INFO) << "[PartiallyDeclusterPass/decluster_root_shape_consumers] saw "
-                << n->name() << " op=" << n->type_string()
-                << " clustered=" << GetXlaClusterForNode(*n).has_value();
-    }
     if (!IsShapeConsumerOp(*n)) {
+      continue;
+    }
+
+    if (n->type_string() == "Shape") {
+      LOG(INFO) << "[PartiallyDeclusterPass/decluster_root_shape_consumers] "
+                   "keeping Shape clustered: "
+                << n->name();
       continue;
     }
 

@@ -52,7 +52,8 @@ absl::Status ValidateAssignUpdateVariableOpShapes(XlaOpKernelContext* ctx) {
   return absl::OkStatus();
 }
 
-std::vector<xla::DynExpr*> BuildVariableShapeContents(const TensorShape& shape) {
+std::vector<xla::DynExpr*> BuildVariableShapeContents(
+    const TensorShape& shape) {
   std::vector<xla::DynExpr*> contents;
   contents.reserve(shape.dims());
   for (int i = 0; i < shape.dims(); ++i) {

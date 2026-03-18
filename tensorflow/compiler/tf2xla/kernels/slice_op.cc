@@ -61,8 +61,9 @@ bool TryBuildSlicedContents(const XlaExpression& input_expr,
       return false;
     }
     xla::DynExpr* expr = input_contents[index];
-    output_contents->push_back(expr != nullptr ? expr
-                                               : xla::DynExpr::_(kUnknownContentSentinel));
+    output_contents->push_back(
+        expr != nullptr ? expr
+                        : xla::DynExpr::_(kUnknownContentSentinel));
   }
   return absl::c_any_of(*output_contents, [](xla::DynExpr* expr) {
     return expr != nullptr && expr->is_dynamic();

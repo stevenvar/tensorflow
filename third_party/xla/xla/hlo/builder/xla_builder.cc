@@ -554,7 +554,8 @@ void XlaBuilder::ToStringHelper(std::string* out, int ident,
                   ", shape=", ShapeToString(instr.shape()));
   auto it = handle_to_index_.find(op_handle);
   if (it != handle_to_index_.end()) {
-    const std::vector<DynExpr*>& contents = instruction_contents_.at(it->second);
+    const std::vector<DynExpr*>& contents =
+        instruction_contents_.at(it->second);
     if (!contents.empty()) {
       absl::StrAppend(out, ", contents=", ContentsToString(contents));
     }
@@ -742,8 +743,8 @@ absl::Status XlaBuilder::SetInstructionFrontendAttribute(const XlaOp op,
   return absl::OkStatus();
 }
 
-absl::Status XlaBuilder::SetInstructionContents(XlaOp op,
-                                                std::vector<DynExpr*> contents) {
+absl::Status XlaBuilder::SetInstructionContents(
+    XlaOp op, std::vector<DynExpr*> contents) {
   auto it = handle_to_index_.find(op.handle());
   if (it == handle_to_index_.end()) {
     return InvalidArgument("No XlaOp with handle %d", op.handle());

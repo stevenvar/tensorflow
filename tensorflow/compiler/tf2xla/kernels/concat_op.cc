@@ -132,11 +132,13 @@ class ConcatBaseOp : public XlaOpKernel {
           input_contents[i].push_back(output_contents.back());
         } else if (shapes[i].dims() == 1) {
           input_contents[i].insert(input_contents[i].end(),
-                                   output_contents.end() - shapes[i].dim_size(0),
+                                   output_contents.end() -
+                                       shapes[i].dim_size(0),
                                    output_contents.end());
         }
       }
-      has_output_contents = has_output_contents && HasDynamicContents(output_contents);
+      has_output_contents =
+          has_output_contents && HasDynamicContents(output_contents);
     }
     int output_concat_dim = 0;
     for (int i = 0; i < N; ++i) {

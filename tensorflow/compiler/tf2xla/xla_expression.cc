@@ -80,7 +80,8 @@ void XlaExpression::set_contents(std::vector<xla::DynExpr*> contents) {
     case Kind::kTensorList:
       if (handle_.valid() && !handle_.IsUninitialized()) {
         auto status =
-            handle_.builder()->SetInstructionContents(handle_, std::move(contents));
+            handle_.builder()->SetInstructionContents(handle_,
+                                                     std::move(contents));
         if (!status.ok()) {
           LOG(INFO) << "Failed to set XlaOp contents: " << status;
         }

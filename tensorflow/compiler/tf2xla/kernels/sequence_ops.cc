@@ -135,7 +135,8 @@ absl::StatusOr<xla::XlaOp> CreateRangeTensor(
           : xla::Iota(builder, xla::primitive_util::NativeToPrimitiveType<T>(),
                       size);
 
-  return xla::ConstantR0(builder, start) + xla::ConstantR0(builder, delta) * iota;
+  return xla::ConstantR0(builder, start) +
+         xla::ConstantR0(builder, delta) * iota;
 }
 
 class RangeOp : public XlaOpKernel {

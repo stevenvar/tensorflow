@@ -138,7 +138,7 @@ class MarkForCompilationPassImpl {
 
     bool enable_cluster_parallel;
 
-    bool cluster_single_dynamic_dim;  // New flag to control single dynamic dim clustering
+    bool cluster_single_dynamic_dim;  // Control single dynamic dim clustering.
   };
 
   MarkForCompilationPassImpl(DebugOptions debug_options, Graph* graph,
@@ -1857,16 +1857,17 @@ absl::Status MarkForCompilationPassImpl::AssignDimVars(void) {
           continue;
       }
 
-      const tensorflow::Node* input = edge->src(); // Source node of the edge
+      const tensorflow::Node* input = edge->src();  // Source node of the edge.
       auto it = expr_map.find(input->name());
       if (it == expr_map.end()) {
         VLOG(2) << "No expression found for node " << input->name();
         continue;
       }
 
-      auto output_index = edge->src_output(); // Output index of the source node
+      auto output_index = edge->src_output();  // Source node output index.
       if (output_index >= (it->second).size()) {
-        LOG(INFO) << "Warning: Output index " << output_index << " is out of bounds for node " << input->name();
+        LOG(INFO) << "Warning: Output index " << output_index
+                  << " is out of bounds for node " << input->name();
         continue;
       }
       for (auto& pDim: (it->second)[output_index]) {
@@ -1889,7 +1890,8 @@ absl::Status MarkForCompilationPassImpl::AssignDimVars(void) {
         for (auto id : cluster->dim_vars()) {
           id_str += "Dim var " + std::to_string(id) + ", ";
         }
-        VLOG(2) << "Cluster of node " << node_name << " has dim vars:\n" << id_str;
+        VLOG(2) << "Cluster of node " << node_name
+                << " has dim vars:\n" << id_str;
       }
     }
   }
@@ -1902,7 +1904,8 @@ bool MarkForCompilationPassImpl::LogNotContractableAndReturnFalse(
   return false;
 }
 
-void MarkForCompilationPassImpl::collectInputNodes(std::set<Node*> &path_nodes) {
+void MarkForCompilationPassImpl::collectInputNodes(
+    std::set<Node*>& path_nodes) {
   std::unordered_map<Node*, int> out_degree_count;
 
   // 4. Initialize the queue and add nodes from path_nodes
@@ -2010,7 +2013,8 @@ void MarkForCompilationPassImpl::collectPathNodes(
 
 // collectParallelNode
 // Search the serial merger nodes based on the parallel matmul starting points
-// Search along the output edge to get the boundary from start to all merger points
+// Search along the output edge to get the boundary from start to merger
+// points.
 // Search along the input edge to get the entire parallel computation graph
 std::map<Node*, std::vector<Node*>>
 MarkForCompilationPassImpl::collectParallelNode(
@@ -2057,7 +2061,8 @@ absl::Status MarkForCompilationPassImpl::AssignParallelChains() {
     for (const Edge* e : node->out_edges()) {
       if (e->IsControlEdge()) continue;
       Node* succ = e->dst();
-      VLOG(4) << "Find matmul node: " << succ->type_string() << " : " << succ->DebugString();
+      VLOG(4) << "Find matmul node: " << succ->type_string()
+              << " : " << succ->DebugString();
       if (succ->type_string() == "MatMul")
         matmul_nodes.push_back(succ);
     }
@@ -2117,7 +2122,8 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
     return false;
   }
 
-  if (debug_options_.annotate_cluster_id && from->annotated_id() != to->annotated_id()) {
+  if (debug_options_.annotate_cluster_id &&
+      from->annotated_id() != to->annotated_id()) {
     return LogNotContractableAndReturnFalse(
         from, to, "the two nodes do not have same annotated ids");
   }
@@ -2133,8 +2139,9 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
         to_str += std::to_string(id) + ", ";
       }
       return LogNotContractableAndReturnFalse(
-        from, to, absl::StrCat("the two nodes have multiple dynamic dimensions: ",
-        from_str, " and ", to_str));
+          from, to,
+          absl::StrCat("the two nodes have multiple dynamic dimensions: ",
+                       from_str, " and ", to_str));
     }
     if (from->dim_vars().size() == 1 && to->dim_vars().size() == 1 &&
         from->dim_vars() != to->dim_vars()) {

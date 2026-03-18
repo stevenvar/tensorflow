@@ -376,14 +376,18 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
                       /*edge_filter=*/NotBackedge);
 
   for (Node* n : reverse_post_order) {
+    if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
+      LOG(INFO) << "[PartiallyDeclusterPass/root_shape] saw " << n->name()
+                << " op=" << n->type_string()
+                << " clustered=" << GetXlaClusterForNode(*n).has_value();
+    }
     if (!IsShapeConsumerOp(*n)) {
       continue;
     }
 
-    if (n->type_string() == "Shape") {
-      LOG(INFO) << "[PartiallyDeclusterPass/decluster_root_shape_consumers] "
-                   "keeping Shape clustered: "
-                << n->name();
+    if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
+      LOG(INFO) << "[PartiallyDeclusterPass/root_shape] keeping "
+                << n->type_string() << " clustered: " << n->name();
       continue;
     }
 

@@ -61,6 +61,7 @@ limitations under the License.
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/control_flow.h"
+#include "tensorflow/core/graph/tensor_id.h"
 #include "tensorflow/core/lib/gtl/cleanup.h"
 #include "tensorflow/core/lib/gtl/flatmap.h"
 #include "tensorflow/core/lib/strings/stringprintf.h"
@@ -96,6 +97,7 @@ using jit::DeviceSet;
 // the PartitionedCall kernel that tells it to not rerun auto-clustering on the
 // cluster.
 const char* kXlaAlreadyClustered = "_XlaAlreadyClustered";
+const char* kXlaDynamicContentAttr = "_xla_dynamic_content";
 
 class MarkForCompilationPassImpl {
  public:
@@ -524,6 +526,7 @@ class MarkForCompilationPassImpl {
   std::unique_ptr<DeadnessAnalysis> deadness_analysis_;
   int64_t iteration_count_ = 0;
   absl::flat_hash_set<std::pair<int, int>> unsafe_resource_deps_;
+  absl::flat_hash_set<string> dynamic_content_shape_nodes_;
 };
 
 std::vector<int> MarkForCompilationPassImpl::FindAlternatePathForDebugging(
@@ -780,7 +783,9 @@ static xla::DynExpr* DimExprToDynExpr(const DimExpr* e) {
 
 // Runs Grappler static inference and logs any ExpressionProto found in output
 // tensor shapes (from GraphProperties, not from _output_shapes attrs).
-void LogExpressionsViaGraphProperties(const tensorflow::Graph& graph) {
+void LogExpressionsViaGraphProperties(
+    const tensorflow::Graph& graph,
+    absl::flat_hash_set<string>* dynamic_content_shape_nodes) {
   using tensorflow::ExpressionProto;
   using tensorflow::GraphDef;
   using tensorflow::NodeDef;
@@ -846,6 +851,42 @@ void LogExpressionsViaGraphProperties(const tensorflow::Graph& graph) {
     }
     expr_map[n.name()] = std::move(list_exprs);
 
+    if ((n.op() == "Shape" || n.op() == "ShapeN") && !n.input().empty()) {
+      bool has_dynamic_input = false;
+      int limit = n.op() == "Shape" ? 1 : n.input_size();
+      for (int input_idx = 0; input_idx < limit && !has_dynamic_input;
+           ++input_idx) {
+        TensorId input = ParseTensorName(n.input(input_idx));
+        if (!props.HasOutputProperties(input.node())) {
+          continue;
+        }
+        const auto& input_outs = props.GetOutputProperties(input.node());
+        if (input.index() < 0 || input.index() >= input_outs.size()) {
+          continue;
+        }
+        const TensorShapeProto& shp = input_outs[input.index()].shape();
+        if (shp.unknown_rank()) {
+          has_dynamic_input = true;
+          break;
+        }
+        for (int d = 0; d < shp.dim_size(); ++d) {
+          if (shp.dim(d).size() < 0) {
+            has_dynamic_input = true;
+            break;
+          }
+          const ExpressionProto& expr = shp.dim(d).expr();
+          if (expr.node_type_case() != ExpressionProto::NODE_TYPE_NOT_SET &&
+              expr.node_type_case() != ExpressionProto::kConstantValue) {
+            has_dynamic_input = true;
+            break;
+          }
+        }
+      }
+      if (has_dynamic_input) {
+        dynamic_content_shape_nodes->insert(n.name());
+      }
+    }
+
   }
 
   VLOG(1) << "[EXPR][GP] === Found " << found
@@ -893,7 +934,8 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
     TF_RETURN_IF_ERROR(AssignAnnotatedClusterIDs());
   }
   if (debug_options_.cluster_single_dynamic_dim) {
-    LogExpressionsViaGraphProperties(*graph_);
+    dynamic_content_shape_nodes_.clear();
+    LogExpressionsViaGraphProperties(*graph_, &dynamic_content_shape_nodes_);
     TF_RETURN_IF_ERROR(AssignDimVars());
   }
   if (debug_options_.enable_cluster_parallel) {
@@ -1228,6 +1270,9 @@ absl::Status MarkForCompilationPassImpl::CreateClusters() {
   //   only if compilation is enabled, otherwise there will be no such
   //   candidates).
   for (Node* n : compilation_candidates_) {
+    if (dynamic_content_shape_nodes_.contains(n->name())) {
+      n->AddAttr(kXlaDynamicContentAttr, true);
+    }
     Cluster* cluster = GetClusterForNode(n);
     TF_ASSIGN_OR_RETURN(bool should_compile_cluster,
                         ShouldCompileCluster(*cluster));

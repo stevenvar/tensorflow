@@ -25,6 +25,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/memory_types.h"
+#include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/graph/graph_node_util.h"
 #include "tensorflow/core/lib/core/errors.h"
@@ -34,6 +35,7 @@ namespace tensorflow {
 namespace {
 
 bool NotBackedge(const Edge& edge) { return !edge.src()->IsNextIteration(); }
+constexpr char kXlaDynamicContentAttr[] = "_xla_dynamic_content";
 
 namespace reduce_device_to_host_copies {
 absl::Status FindNodesToDecluster(const Graph& graph,
@@ -341,7 +343,15 @@ absl::Status PartiallyDeclusterGraph(Graph* graph,
       TF_RETURN_IF_ERROR(MustCompileNode(n, &must_compile_node));
       if (!must_compile_node) {
         if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
-          continue;
+          // MarkForCompilationPass stamps Shape/ShapeN nodes whose outputs feed
+          // symbolic shape computations. Keep those clustered so later tf2xla
+          // lowering can still recover dynamic contents from them.
+          bool dynamic_content = false;
+          if (GetNodeAttr(n->attrs(), kXlaDynamicContentAttr, &dynamic_content)
+                  .ok() &&
+              dynamic_content) {
+            continue;
+          }
         }
         if (n->IsConstant()) {
           // We must decluster Const nodes that have an input control edge from
@@ -383,7 +393,14 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
     }
 
     if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
-      continue;
+      // Root metadata declustering is usually helpful, but not for Shape
+      // nodes that were explicitly marked as producing symbolic contents.
+      bool dynamic_content = false;
+      if (GetNodeAttr(n->attrs(), kXlaDynamicContentAttr, &dynamic_content)
+              .ok() &&
+          dynamic_content) {
+        continue;
+      }
     }
 
     std::optional<absl::string_view> cluster = GetXlaClusterForNode(*n);

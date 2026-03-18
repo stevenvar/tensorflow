@@ -151,71 +151,7 @@ std::string ExprProtoToString(const ExpressionProto& e) {
 std::map<std::string, std::vector<std::vector<std::unique_ptr<DimExpr>>>>
     expr_map;
 
-std::unique_ptr<DimExpr> ExprFromProto(const ExpressionProto& proto) {
-  switch (proto.node_type_case()) {
-    case ExpressionProto::kConstantValue:
-      return DimExpr::Cons(proto.constant_value());
-    case ExpressionProto::kVariableId:
-      return DimExpr::Var(proto.variable_id());
-    case ExpressionProto::kAddNode: {
-      auto lhs = ExprFromProto(proto.add_node().lhs());
-      auto rhs = ExprFromProto(proto.add_node().rhs());
-      // Note: These are owning pointers, but ExprAdd takes raw pointers.
-      // The caller must manage lifetime appropriately.
-      return std::make_unique<ExprAdd>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kSubNode: {
-      auto lhs = ExprFromProto(proto.sub_node().lhs());
-      auto rhs = ExprFromProto(proto.sub_node().rhs());
-      return std::make_unique<ExprSub>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kMulNode: {
-      auto lhs = ExprFromProto(proto.mul_node().lhs());
-      auto rhs = ExprFromProto(proto.mul_node().rhs());
-      return std::make_unique<ExprMul>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kDivNode: {
-      auto lhs = ExprFromProto(proto.div_node().lhs());
-      auto rhs = ExprFromProto(proto.div_node().rhs());
-      return std::make_unique<ExprDiv>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::NODE_TYPE_NOT_SET:
-    default:
-      return nullptr;
-  }
-}
-
 void ExprToProto(xla::DynExpr* expr, ExpressionProto* proto);
-
-static xla::DynExpr* DimExprToDynExpr(const DimExpr* e) {
-  switch (e->kind()) {
-    case DimExpr::Kind::kConstant: {
-      auto* ac = static_cast<const Constant*>(e);
-      return xla::DynExpr::_(ac->value());
-    }
-    case DimExpr::Kind::kVariable: {
-      auto* av = static_cast<const Variable*>(e);
-      return xla::DynExpr::V(1);  // Use 1 all the time for now
-    }
-    case DimExpr::Kind::kAdd: {
-      auto* ee = static_cast<const ExprAdd*>(e);
-      return *DimExprToDynExpr(ee->lhs()) + *DimExprToDynExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kSub: {
-      auto* ee = static_cast<const ExprSub*>(e);
-      return *DimExprToDynExpr(ee->lhs()) - *DimExprToDynExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kMul: {
-      auto* ee = static_cast<const ExprMul*>(e);
-      return *DimExprToDynExpr(ee->lhs()) * *DimExprToDynExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kDiv: {
-      auto* ee = static_cast<const ExprDiv*>(e);
-      return *DimExprToDynExpr(ee->lhs()) / *DimExprToDynExpr(ee->rhs());
-    }
-  }
-  return nullptr;
-}
 
 bool BuildOutputShapeProto(const Node& node, int output_slot,
                            TensorShapeProto* proto) {
@@ -230,7 +166,9 @@ bool BuildOutputShapeProto(const Node& node, int output_slot,
   if (it != expr_map.end() && it->second.size() > output_slot) {
     proto->clear_expressions();
     for (const auto& expr : it->second[output_slot]) {
-      ExprToProto(DimExprToDynExpr(expr.get())->s(), proto->add_expressions());
+      ExprToProto(
+          DynExprFromDimExpr(expr.get(), /*variable_id_override=*/1)->s(),
+          proto->add_expressions());
     }
   }
   return true;
@@ -330,7 +268,7 @@ void LogExpressionsViaGraphProperties(const tensorflow::Graph& graph) {
         VLOG(1) << "Node " << n.name() << " is inferred to have expression "
                 << ExprProtoToString(expr) << " on dimension #" << d;
 
-        auto ex = ExprFromProto(expr);
+        auto ex = DimExpr::FromProto(expr);
         exprs.push_back(std::move(ex));
 
         ++found;
@@ -739,7 +677,10 @@ absl::Status Encapsulator::Subgraph::RecordArg(
           std::move(expr_map[src_node->name()][src_slot]);
 
       for (int i = 0; i < expressions.size(); i++) {
-        auto ee = DimExprToDynExpr(std::move(expressions[i]).get())->s();
+        auto ee =
+            DynExprFromDimExpr(std::move(expressions[i]).get(),
+                               /*variable_id_override=*/1)
+                ->s();
         ExpressionProto* eproto = tsp->add_expressions();
         ExprToProto(ee, eproto);
       }

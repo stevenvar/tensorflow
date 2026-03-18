@@ -717,70 +717,6 @@ std::string ExprProtoToString(const ExpressionProto& e) {
   }
 }
 
-std::unique_ptr<DimExpr> ExprFromProto(const ExpressionProto& proto) {
-  switch (proto.node_type_case()) {
-    case ExpressionProto::kConstantValue:
-      return DimExpr::Cons(proto.constant_value());
-    case ExpressionProto::kVariableId:
-      return DimExpr::Var(proto.variable_id());
-    case ExpressionProto::kAddNode: {
-      auto lhs = ExprFromProto(proto.add_node().lhs());
-      auto rhs = ExprFromProto(proto.add_node().rhs());
-      // Note: These are owning pointers, but ExprAdd takes raw pointers.
-      // The caller must manage lifetime appropriately.
-      return std::make_unique<ExprAdd>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kSubNode: {
-      auto lhs = ExprFromProto(proto.sub_node().lhs());
-      auto rhs = ExprFromProto(proto.sub_node().rhs());
-      return std::make_unique<ExprSub>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kMulNode: {
-      auto lhs = ExprFromProto(proto.mul_node().lhs());
-      auto rhs = ExprFromProto(proto.mul_node().rhs());
-      return std::make_unique<ExprMul>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kDivNode: {
-      auto lhs = ExprFromProto(proto.div_node().lhs());
-      auto rhs = ExprFromProto(proto.div_node().rhs());
-      return std::make_unique<ExprDiv>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::NODE_TYPE_NOT_SET:
-    default:
-      return nullptr;
-  }
-}
-
-static xla::DynExpr* DimExprToDynExpr(const DimExpr* e) {
-  switch (e->kind()) {
-    case DimExpr::Kind::kConstant: {
-      auto* ac = static_cast<const Constant*>(e);
-      return xla::DynExpr::_(ac->value());
-    }
-    case DimExpr::Kind::kVariable: {
-      auto* av = static_cast<const Variable*>(e);
-      return xla::DynExpr::V(av->id());  // Use 1 all the time for now
-    }
-    case DimExpr::Kind::kAdd: {
-      auto* ee = static_cast<const ExprAdd*>(e);
-      return *DimExprToDynExpr(ee->lhs()) + *DimExprToDynExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kSub: {
-      auto* ee = static_cast<const ExprSub*>(e);
-      return *DimExprToDynExpr(ee->lhs()) - *DimExprToDynExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kMul: {
-      auto* ee = static_cast<const ExprMul*>(e);
-      return *DimExprToDynExpr(ee->lhs()) * *DimExprToDynExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kDiv: {
-      auto* ee = static_cast<const ExprDiv*>(e);
-      return *DimExprToDynExpr(ee->lhs()) / *DimExprToDynExpr(ee->rhs());
-    }
-  }
-  return nullptr;
-}
-
 // Runs Grappler static inference and logs any ExpressionProto found in output
 // tensor shapes (from GraphProperties, not from _output_shapes attrs).
 void LogExpressionsViaGraphProperties(
@@ -836,7 +772,7 @@ void LogExpressionsViaGraphProperties(
         VLOG(1) << "Node " << n.name() << " has expression "
                 << ExprProtoToString(expr);
 
-        auto ex = ExprFromProto(expr);
+        auto ex = DimExpr::FromProto(expr);
         exprs.push_back(std::move(ex));
 
         ++found;
@@ -1876,7 +1812,7 @@ absl::Status MarkForCompilationPassImpl::AssignDimVars(void) {
       }
       for (auto& pDim: (it->second)[output_index]) {
         DimExpr * d= pDim.get();
-        xla::DynExpr * dyn = DimExprToDynExpr(d);
+        xla::DynExpr* dyn = DynExprFromDimExpr(d);
         auto new_ids = dyn->get_all_ids();
         for (auto id : new_ids) {
           cluster->add_dim_var(id);

@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "tensorflow/core/framework/tensor_shape.pb.h"
+#include "xla/shape_dynexpr.h"
 
 namespace tensorflow {
 
@@ -63,6 +64,9 @@ class DimExpr {
  protected:
   DimExpr() = default;
 };
+
+xla::DynExpr* DynExprFromDimExpr(const DimExpr* expr,
+                                 int32_t variable_id_override = -1);
 
 // Constant expression node: represents a known integer value
 class Constant final : public DimExpr {

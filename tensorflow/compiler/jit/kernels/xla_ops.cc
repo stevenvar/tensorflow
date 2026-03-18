@@ -487,8 +487,7 @@ absl::Status CompileToLocalExecutable(
           // Special case for _dynamic_dim...
           auto dyn_dim_attr = attr_map.find("_dynamic_dim");
           if (dyn_dim_attr != attr_map.end()) {
-            TensorShape& shp =
-                std::get<TensorShape>(norm_args[arg_index].shape);
+            TensorShape& shp = std::get<TensorShape>(norm_args[arg_index].shape);
             const AttrValue& v = dyn_dim_attr->second;
             int64_t idx = v.i();
             record_dynamic_dim_value(shp.dim_size(idx));

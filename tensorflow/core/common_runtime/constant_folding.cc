@@ -30,6 +30,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/memory_types.h"
 #include "tensorflow/core/common_runtime/rendezvous_mgr.h"
 #include "tensorflow/core/framework/log_memory.h"
+#include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
@@ -49,6 +50,8 @@ namespace tensorflow {
 namespace {
 
 const char kScopedAllocatorAttrName[] = "_scoped_allocator";
+const char kOutputShapesAttrName[] = "_output_shapes";
+const char kXlaInferredShapesAttrName[] = "_xla_inferred_shapes";
 
 // For stateless RNGs ops, they are pure but device-dependent. Those ops are not
 // constant-foldable.
@@ -74,6 +77,66 @@ static absl::flat_hash_set<std::string>* kAllowList =
 bool IsShapeOp(const Node* n) {
   const auto& ts = n->type_string();
   return ts == "Shape" || ts == "ShapeN" || ts == "Rank" || ts == "Size";
+}
+
+bool ExprProtoIsConstant(const ExpressionProto& expr) {
+  switch (expr.node_type_case()) {
+    case ExpressionProto::kConstantValue:
+      return true;
+    case ExpressionProto::kVariableId:
+      return false;
+    case ExpressionProto::kAddNode:
+      return ExprProtoIsConstant(expr.add_node().lhs()) &&
+             ExprProtoIsConstant(expr.add_node().rhs());
+    case ExpressionProto::kSubNode:
+      return ExprProtoIsConstant(expr.sub_node().lhs()) &&
+             ExprProtoIsConstant(expr.sub_node().rhs());
+    case ExpressionProto::kMulNode:
+      return ExprProtoIsConstant(expr.mul_node().lhs()) &&
+             ExprProtoIsConstant(expr.mul_node().rhs());
+    case ExpressionProto::kDivNode:
+      return ExprProtoIsConstant(expr.div_node().lhs()) &&
+             ExprProtoIsConstant(expr.div_node().rhs());
+    case ExpressionProto::NODE_TYPE_NOT_SET:
+      return true;
+  }
+}
+
+bool ShapeProtoHasNonConstantExpr(const TensorShapeProto& shape_proto) {
+  for (const auto& dim : shape_proto.dim()) {
+    if (dim.has_expr() && !ExprProtoIsConstant(dim.expr())) {
+      return true;
+    }
+  }
+  for (const auto& expr : shape_proto.expressions()) {
+    if (!ExprProtoIsConstant(expr)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool InputHasSymbolicShapeAttr(const Node* n, absl::string_view attr_name) {
+  for (const Edge* in : n->in_edges()) {
+    if (in->IsControlEdge()) continue;
+    std::vector<TensorShapeProto> inferred_shapes;
+    if (!GetNodeAttr(in->src()->attrs(), std::string(attr_name), &inferred_shapes)
+             .ok()) {
+      continue;
+    }
+    if (in->src_output() < 0 || in->src_output() >= inferred_shapes.size()) {
+      continue;
+    }
+    if (ShapeProtoHasNonConstantExpr(inferred_shapes[in->src_output()])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool InputHasSymbolicShapeMetadata(const Node* n) {
+  return InputHasSymbolicShapeAttr(n, kOutputShapesAttrName) ||
+         InputHasSymbolicShapeAttr(n, kXlaInferredShapesAttrName);
 }
 
 // Reads the partially-known shape of each of n's inputs from shape_map, and
@@ -204,6 +267,9 @@ bool MaybeReplaceShapeOp(
     std::unordered_map<const Node*, std::vector<Tensor>>*
         shape_replacement_map) {
   if (shape_map == nullptr || !IsShapeOp(n)) {
+    return false;
+  }
+  if (InputHasSymbolicShapeMetadata(n)) {
     return false;
   }
   // input_shapes will contain the shapes of each of n's inputs.

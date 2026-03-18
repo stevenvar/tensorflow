@@ -18,6 +18,7 @@ limitations under the License.
 #include <cstdint>
 #include <vector>
 
+#include "absl/algorithm/container.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
@@ -36,6 +37,37 @@ limitations under the License.
 
 namespace tensorflow {
 namespace {
+
+constexpr int64_t kUnknownContentSentinel = -444;
+
+bool TryBuildSlicedContents(const XlaExpression& input_expr,
+                            const TensorShape& input_shape,
+                            absl::Span<const int64_t> begin,
+                            absl::Span<const int64_t> size,
+                            std::vector<xla::DynExpr*>* output_contents) {
+  output_contents->clear();
+  const auto& input_contents = input_expr.contents();
+  if (input_contents.empty() || input_shape.dims() != 1 || begin.size() != 1 ||
+      size.size() != 1) {
+    return false;
+  }
+  const int64_t start = begin[0];
+  const int64_t count =
+      size[0] == -1 ? input_shape.dim_size(0) - start : size[0];
+  for (int64_t i = 0; i < count; ++i) {
+    const int64_t index = start + i;
+    if (index < 0 || index >= input_contents.size()) {
+      output_contents->clear();
+      return false;
+    }
+    xla::DynExpr* expr = input_contents[index];
+    output_contents->push_back(expr != nullptr ? expr
+                                               : xla::DynExpr::_(kUnknownContentSentinel));
+  }
+  return absl::c_any_of(*output_contents, [](xla::DynExpr* expr) {
+    return expr != nullptr && expr->is_dynamic();
+  });
+}
 
 class SliceOp : public XlaOpKernel {
  public:
@@ -112,6 +144,14 @@ class SliceOp : public XlaOpKernel {
       std::vector<int64_t> strides(begin.size(), 1);
       auto slice =
           xla::Slice(ctx->Input(0), begin, limits, begin_exprs, exprs, strides);
+      std::vector<xla::DynExpr*> output_contents;
+      const bool has_output_contents = TryBuildSlicedContents(
+          ctx->InputExpression(0), input_shape, begin, size, &output_contents);
+      if (has_output_contents) {
+        OP_REQUIRES_OK(ctx,
+                       ctx->builder()->SetInstructionContents(slice,
+                                                              output_contents));
+      }
       // Check for slice on dynamic dimensions.
       std::vector<bool> size_is_dynamic;
       OP_REQUIRES_OK(
@@ -128,8 +168,20 @@ class SliceOp : public XlaOpKernel {
                 {});
 
             slice = xla::SetDimensionSize(slice, dynamic_size, i);
+            if (has_output_contents) {
+              OP_REQUIRES_OK(ctx,
+                             ctx->builder()->SetInstructionContents(
+                                 slice, output_contents));
+            }
           }
         }
+      }
+      if (has_output_contents) {
+        auto output_expr =
+            XlaExpression::XlaOp(slice, ctx->expected_output_dtype(0));
+        output_expr.set_contents(std::move(output_contents));
+        ctx->SetOutputExpression(0, output_expr);
+        return;
       }
       ctx->SetOutput(0, slice);
     } else {

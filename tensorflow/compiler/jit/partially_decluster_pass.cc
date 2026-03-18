@@ -127,15 +127,10 @@ bool ShapeInputHasDynamicShapeMetadata(const Node& shape_node) {
 }
 
 bool ShapeConsumerHasDynamicConstantContents(const Node& node) {
-  for (const Edge* edge : node.in_edges()) {
-    if (edge->IsControlEdge()) {
-      continue;
-    }
-    if (ConstantContentsAttrIsDynamic(*edge->src(), edge->src_output())) {
-      return true;
-    }
+  if (node.type_string() != "Shape") {
+    return false;
   }
-  return false;
+  return ConstantContentsAttrIsDynamic(node, /*output_slot=*/0);
 }
 
 namespace reduce_device_to_host_copies {

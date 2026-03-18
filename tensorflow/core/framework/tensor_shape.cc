@@ -26,7 +26,7 @@ limitations under the License.
 
 namespace tensorflow {
 
-xla::DynExpr* ExprFromProto(const ExpressionProto& proto) {
+xla::DynExpr* DynExprFromProto(const ExpressionProto& proto) {
   switch (proto.node_type_case()) {
     case ExpressionProto::kConstantValue:
       return xla::DynExpr::_(proto.constant_value());
@@ -36,22 +36,22 @@ xla::DynExpr* ExprFromProto(const ExpressionProto& proto) {
 
     case ExpressionProto::kAddNode: {
       const auto& add = proto.add_node();
-      return *ExprFromProto(add.lhs()) + *ExprFromProto(add.rhs());
+      return *DynExprFromProto(add.lhs()) + *DynExprFromProto(add.rhs());
     }
 
     case ExpressionProto::kSubNode: {
       const auto& sub = proto.sub_node();
-      return *ExprFromProto(sub.lhs()) - *ExprFromProto(sub.rhs());
+      return *DynExprFromProto(sub.lhs()) - *DynExprFromProto(sub.rhs());
     }
 
     case ExpressionProto::kMulNode: {
       const auto& mul = proto.mul_node();
-      return *ExprFromProto(mul.lhs()) * *ExprFromProto(mul.rhs());
+      return *DynExprFromProto(mul.lhs()) * *DynExprFromProto(mul.rhs());
     }
 
     case ExpressionProto::kDivNode: {
       const auto& div = proto.div_node();
-      return *ExprFromProto(div.lhs()) / *ExprFromProto(div.rhs());
+      return *DynExprFromProto(div.lhs()) / *DynExprFromProto(div.rhs());
     }
 
     case ExpressionProto::NODE_TYPE_NOT_SET:
@@ -252,7 +252,7 @@ TensorShapeBase<Shape>::TensorShapeBase(const TensorShapeProto& proto) {
       AddDim(d.size());
     }
     for (const auto& e : proto.expressions()) {
-      AddExpression(ExprFromProto(e));
+      AddExpression(DynExprFromProto(e));
     }
   }
 }
@@ -294,7 +294,7 @@ absl::Status TensorShapeBase<Shape>::BuildTensorShapeBase(
       }
     }
     for (const auto& e : proto.expressions()) {
-      out->AddExpression(ExprFromProto(e));
+      out->AddExpression(DynExprFromProto(e));
     }
   }
   return absl::OkStatus();
@@ -922,7 +922,7 @@ string TensorShapeRep::DebugString(const TensorShapeProto& proto) {
   first = true;
   for (const auto& e : proto.expressions()) {
     if (!first) strings::StrAppend(&s, ",");
-    auto exp = ExprFromProto(e);
+    auto exp = DynExprFromProto(e);
     strings::StrAppend(&s, ExprToString(exp));
     first = false;
   }

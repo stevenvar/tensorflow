@@ -577,31 +577,32 @@ absl::Status CompileToLocalExecutable(
             const auto& exp = proto.expressions();
             TensorShape& shp = std::get<TensorShape>(norm_args[arg_index].shape);
 
-          if (!filled_batch && xla_batch_matcher) {
-            for (int idx = 0; idx < exp.size(); ++idx) {
-              // Look for dynamic expression. If found then compute padding
-              // value and exit loop.
-              auto e = DimExprToDynExpr(ExprFromProto(exp[idx]).get())->s();
-              if (e->is_dynamic()) {
-                record_dynamic_dim_value(shp.dim_size(idx));
-                filled_batch =
-                    xla_batch_matcher->get_xla_compile_batch(shp.dim_size(idx));
-                break;
+            if (!filled_batch && xla_batch_matcher) {
+              for (int idx = 0; idx < exp.size(); ++idx) {
+                // Look for dynamic expression. If found then compute padding
+                // value and exit loop.
+                auto e = DynExprFromProto(exp[idx])->s();
+                if (e->is_dynamic()) {
+                  record_dynamic_dim_value(shp.dim_size(idx));
+                  filled_batch =
+                      xla_batch_matcher->get_xla_compile_batch(
+                          shp.dim_size(idx));
+                  break;
+                }
               }
             }
-          }
 
-          std::vector<xla::DynExpr*> dyn_exprs;
-          for (int d : shp.dim_sizes()) {
-            dyn_exprs.push_back(xla::DynExpr::_(d));
-          }
-          for (int j = 0; j < exp.size(); ++j) {
-            auto e = DimExprToDynExpr(ExprFromProto(exp[j]).get())->s();
-            if (e->is_dynamic()) {
-              dyn_exprs[j] = e;
+            std::vector<xla::DynExpr*> dyn_exprs;
+            for (int d : shp.dim_sizes()) {
+              dyn_exprs.push_back(xla::DynExpr::_(d));
             }
-          }
-          shp.set_expressions(dyn_exprs);
+            for (int j = 0; j < exp.size(); ++j) {
+              auto e = DynExprFromProto(exp[j])->s();
+              if (e->is_dynamic()) {
+                dyn_exprs[j] = e;
+              }
+            }
+            shp.set_expressions(dyn_exprs);
 
           auto content_it = attr_map.find(kXlaConstantContentsAttr);
           if (content_it != attr_map.end() &&

@@ -17,7 +17,6 @@ limitations under the License.
 
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_set.h"
-#include "absl/log/log.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/jit/device_util.h"
 #include "tensorflow/compiler/jit/xla_cluster_util.h"
@@ -342,10 +341,6 @@ absl::Status PartiallyDeclusterGraph(Graph* graph,
       TF_RETURN_IF_ERROR(MustCompileNode(n, &must_compile_node));
       if (!must_compile_node) {
         if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
-          LOG(INFO) << "[PartiallyDeclusterPass/reduce_recompilation] keeping "
-                    << n->type_string() << " clustered: " << n->name()
-                    << " compile_time_const=true"
-                    << " clustered=" << GetXlaClusterForNode(*n).has_value();
           continue;
         }
         if (n->IsConstant()) {
@@ -383,19 +378,11 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
                       /*edge_filter=*/NotBackedge);
 
   for (Node* n : reverse_post_order) {
-    if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
-      LOG(INFO) << "[PartiallyDeclusterPass/root_shape] saw " << n->name()
-                << " op=" << n->type_string()
-                << " clustered=" << GetXlaClusterForNode(*n).has_value();
-    }
     if (!IsShapeConsumerOp(*n)) {
       continue;
     }
 
     if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
-      LOG(INFO) << "[PartiallyDeclusterPass/root_shape] leaving "
-                << n->type_string() << " unchanged: " << n->name()
-                << " clustered=" << GetXlaClusterForNode(*n).has_value();
       continue;
     }
 

@@ -66,30 +66,17 @@ xla::DynExpr* BuildRangeSizeExpr(const XlaExpression& start_expr,
   xla::DynExpr* limit_symbol = GetScalarExpr<T>(limit_expr, limit);
   xla::DynExpr* delta_symbol = GetScalarExpr<T>(delta_expr, delta);
 
-  auto or_fallback = [fallback_size](xla::DynExpr* expr) {
-    return expr != nullptr ? expr : xla::DynExpr::_(fallback_size);
-  };
-
   if (delta.Get<T>({}) > 0) {
     xla::DynExpr* diff = (*limit_symbol - *start_symbol)->s();
-    if (diff == nullptr) return xla::DynExpr::_(fallback_size);
     xla::DynExpr* adjusted = (*diff - 1)->s();
-    if (adjusted == nullptr) return xla::DynExpr::_(fallback_size);
     xla::DynExpr* quotient = (*adjusted / *delta_symbol)->s();
-    if (quotient == nullptr) return xla::DynExpr::_(fallback_size);
-    xla::DynExpr* result = (*quotient + 1)->s();
-    return or_fallback(result);
+    return (*quotient + 1)->s();
   }
   xla::DynExpr* step_symbol = (*xla::DynExpr::_(0) - *delta_symbol)->s();
-  if (step_symbol == nullptr) return xla::DynExpr::_(fallback_size);
   xla::DynExpr* diff = (*start_symbol - *limit_symbol)->s();
-  if (diff == nullptr) return xla::DynExpr::_(fallback_size);
   xla::DynExpr* adjusted = (*diff - 1)->s();
-  if (adjusted == nullptr) return xla::DynExpr::_(fallback_size);
   xla::DynExpr* quotient = (*adjusted / *step_symbol)->s();
-  if (quotient == nullptr) return xla::DynExpr::_(fallback_size);
-  xla::DynExpr* result = (*quotient + 1)->s();
-  return or_fallback(result);
+  return (*quotient + 1)->s();
 }
 
 // The type-specific part of the implementation of Range.

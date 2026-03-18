@@ -35,6 +35,10 @@ namespace {
 
 bool NotBackedge(const Edge& edge) { return !edge.src()->IsNextIteration(); }
 
+bool IsShapeProducerOp(const Node& node) {
+  return node.type_string() == "Shape" || node.type_string() == "ShapeN";
+}
+
 namespace reduce_device_to_host_copies {
 absl::Status FindNodesToDecluster(const Graph& graph,
                                   absl::flat_hash_set<Node*>* result,
@@ -48,6 +52,10 @@ absl::Status FindNodesToDecluster(const Graph& graph,
   for (Node* n : post_order) {
     std::optional<absl::string_view> from_cluster = GetXlaClusterForNode(*n);
     if (!from_cluster) {
+      continue;
+    }
+
+    if (IsShapeProducerOp(*n)) {
       continue;
     }
 
@@ -340,6 +348,9 @@ absl::Status PartiallyDeclusterGraph(Graph* graph,
       bool must_compile_node;
       TF_RETURN_IF_ERROR(MustCompileNode(n, &must_compile_node));
       if (!must_compile_node) {
+        if (IsShapeProducerOp(*n)) {
+          continue;
+        }
         if (n->IsConstant()) {
           // We must decluster Const nodes that have an input control edge from
           // a different device, because this node may be part of the

@@ -108,6 +108,80 @@ auto* xla_launch_counter = monitoring::Counter<1>::New(
 
 constexpr char kXlaConstantContentsAttr[] = "_constant_contents";
 
+bool ExpressionProtoIsDynamic(const ExpressionProto& expr) {
+  switch (expr.node_type_case()) {
+    case ExpressionProto::kVariableId:
+      return true;
+    case ExpressionProto::kAddNode:
+      return ExpressionProtoIsDynamic(expr.add_node().lhs()) ||
+             ExpressionProtoIsDynamic(expr.add_node().rhs());
+    case ExpressionProto::kSubNode:
+      return ExpressionProtoIsDynamic(expr.sub_node().lhs()) ||
+             ExpressionProtoIsDynamic(expr.sub_node().rhs());
+    case ExpressionProto::kMulNode:
+      return ExpressionProtoIsDynamic(expr.mul_node().lhs()) ||
+             ExpressionProtoIsDynamic(expr.mul_node().rhs());
+    case ExpressionProto::kDivNode:
+      return ExpressionProtoIsDynamic(expr.div_node().lhs()) ||
+             ExpressionProtoIsDynamic(expr.div_node().rhs());
+    case ExpressionProto::kConstantValue:
+    case ExpressionProto::NODE_TYPE_NOT_SET:
+      return false;
+  }
+}
+
+std::optional<int64_t> EvaluateExpressionProtoForBatch(
+    const ExpressionProto& expr, int64_t filled_batch) {
+  switch (expr.node_type_case()) {
+    case ExpressionProto::kConstantValue:
+      return expr.constant_value();
+    case ExpressionProto::kVariableId:
+      return filled_batch;
+    case ExpressionProto::kAddNode: {
+      auto lhs = EvaluateExpressionProtoForBatch(expr.add_node().lhs(),
+                                                 filled_batch);
+      auto rhs = EvaluateExpressionProtoForBatch(expr.add_node().rhs(),
+                                                 filled_batch);
+      if (!lhs.has_value() || !rhs.has_value()) {
+        return std::nullopt;
+      }
+      return *lhs + *rhs;
+    }
+    case ExpressionProto::kSubNode: {
+      auto lhs = EvaluateExpressionProtoForBatch(expr.sub_node().lhs(),
+                                                 filled_batch);
+      auto rhs = EvaluateExpressionProtoForBatch(expr.sub_node().rhs(),
+                                                 filled_batch);
+      if (!lhs.has_value() || !rhs.has_value()) {
+        return std::nullopt;
+      }
+      return *lhs - *rhs;
+    }
+    case ExpressionProto::kMulNode: {
+      auto lhs = EvaluateExpressionProtoForBatch(expr.mul_node().lhs(),
+                                                 filled_batch);
+      auto rhs = EvaluateExpressionProtoForBatch(expr.mul_node().rhs(),
+                                                 filled_batch);
+      if (!lhs.has_value() || !rhs.has_value()) {
+        return std::nullopt;
+      }
+      return *lhs * *rhs;
+    }
+    case ExpressionProto::kDivNode: {
+      auto lhs = EvaluateExpressionProtoForBatch(expr.div_node().lhs(),
+                                                 filled_batch);
+      auto rhs = EvaluateExpressionProtoForBatch(expr.div_node().rhs(),
+                                                 filled_batch);
+      if (!lhs.has_value() || !rhs.has_value() || *rhs == 0) {
+        return std::nullopt;
+      }
+      return *lhs / *rhs;
+    }
+    case ExpressionProto::NODE_TYPE_NOT_SET:
+      return std::nullopt;
+  }
+}
+
 // A closure describing how to run a compiled version of a TensorFlow function.
 //
 // It may seem unusual to stick the resource variable snapshots in this class.
@@ -620,15 +694,18 @@ absl::Status CompileToLocalExecutable(
             auto flat = arg.constant_value.flat<int32>();
             if (flat.size() == arg.constant_value_expressions.size()) {
               for (int64_t j = 0; j < flat.size(); ++j) {
-                auto e = DimExprToDynExpr(
-                             ExprFromProto(arg.constant_value_expressions[j])
-                                 .get())
-                             ->s();
-                if (!e->is_dynamic()) {
+                const ExpressionProto& expr =
+                    arg.constant_value_expressions[j];
+                if (!ExpressionProtoIsDynamic(expr)) {
+                  continue;
+                }
+                auto rewritten =
+                    EvaluateExpressionProtoForBatch(expr, filled_batch);
+                if (!rewritten.has_value()) {
                   continue;
                 }
                 int64_t old = flat(j);
-                flat(j) = static_cast<int32>(filled_batch);
+                flat(j) = static_cast<int32>(*rewritten);
                 old_vars.push_back({i, -1, j, old});
               }
             }
@@ -637,15 +714,18 @@ absl::Status CompileToLocalExecutable(
             auto flat = arg.constant_value.flat<int64_t>();
             if (flat.size() == arg.constant_value_expressions.size()) {
               for (int64_t j = 0; j < flat.size(); ++j) {
-                auto e = DimExprToDynExpr(
-                             ExprFromProto(arg.constant_value_expressions[j])
-                                 .get())
-                             ->s();
-                if (!e->is_dynamic()) {
+                const ExpressionProto& expr =
+                    arg.constant_value_expressions[j];
+                if (!ExpressionProtoIsDynamic(expr)) {
+                  continue;
+                }
+                auto rewritten =
+                    EvaluateExpressionProtoForBatch(expr, filled_batch);
+                if (!rewritten.has_value()) {
                   continue;
                 }
                 int64_t old = flat(j);
-                flat(j) = static_cast<int64_t>(filled_batch);
+                flat(j) = static_cast<int64_t>(*rewritten);
                 old_vars.push_back({i, -1, j, old});
               }
             }

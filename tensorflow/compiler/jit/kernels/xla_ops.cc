@@ -106,6 +106,8 @@ auto* xla_launch_counter = monitoring::Counter<1>::New(
     "/tensorflow/core/xla_launch_counter",
     "The number of times a XlaLaunch is called.", "device");
 
+constexpr char kXlaConstantContentsAttr[] = "_constant_contents";
+
 // A closure describing how to run a compiled version of a TensorFlow function.
 //
 // It may seem unusual to stick the resource variable snapshots in this class.
@@ -538,39 +540,49 @@ absl::Status CompileToLocalExecutable(
             continue;
           }
           auto it = attr_map.find("_output_shapes");
-          if (it == attr_map.end()) continue;
+          if (it != attr_map.end()) {
+            const TensorShapeProto& proto = it->second.list().shape(0);
+            const auto& exp = proto.expressions();
+            TensorShape& shp = std::get<TensorShape>(norm_args[arg_index].shape);
 
-          const TensorShapeProto& proto = it->second.list().shape(0);
-          const auto& exp = proto.expressions();
-          TensorShape& shp = std::get<TensorShape>(norm_args[arg_index].shape);
-
-          if (!filled_batch && xla_batch_matcher) {
-            for (int idx = 0; idx < exp.size(); ++idx) {
-              // Look for dynamic expression. If found then compute padding
-              // value and exit loop.
-              auto e = DimExprToDynExpr(ExprFromProto(exp[idx]).get())->s();
-              if (e->is_dynamic()) {
-                const std::string& node_name =
-                    fdef->signature().input_arg(arg_index).name();
-                old_batch = shp.dim_size(idx);
-                filled_batch =
-                    xla_batch_matcher->get_xla_compile_batch(old_batch);
-                break;
+            if (!filled_batch && xla_batch_matcher) {
+              for (int idx = 0; idx < exp.size(); ++idx) {
+                // Look for dynamic expression. If found then compute padding
+                // value and exit loop.
+                auto e = DimExprToDynExpr(ExprFromProto(exp[idx]).get())->s();
+                if (e->is_dynamic()) {
+                  const std::string& node_name =
+                      fdef->signature().input_arg(arg_index).name();
+                  old_batch = shp.dim_size(idx);
+                  filled_batch =
+                      xla_batch_matcher->get_xla_compile_batch(old_batch);
+                  break;
+                }
               }
             }
+
+            std::vector<xla::DynExpr*> dyn_exprs;
+            for (int d : shp.dim_sizes()) {
+              dyn_exprs.push_back(xla::DynExpr::_(d));
+            }
+            for (int j = 0; j < exp.size(); ++j) {
+              auto e = DimExprToDynExpr(ExprFromProto(exp[j]).get())->s();
+              if (e->is_dynamic()) {
+                dyn_exprs[j] = e;
+              }
+            }
+            shp.set_expressions(dyn_exprs);
           }
 
-          std::vector<xla::DynExpr*> dyn_exprs;
-          for (int d : shp.dim_sizes()) {
-            dyn_exprs.push_back(xla::DynExpr::_(d));
-          }
-          for (int j = 0; j < exp.size(); ++j) {
-            auto e = DimExprToDynExpr(ExprFromProto(exp[j]).get())->s();
-            if (e->is_dynamic()) {
-              dyn_exprs[j] = e;
+          auto content_it = attr_map.find(kXlaConstantContentsAttr);
+          if (content_it != attr_map.end() &&
+              content_it->second.list().shape_size() > 0) {
+            norm_args[arg_index].constant_value_expressions.clear();
+            const TensorShapeProto& proto = content_it->second.list().shape(0);
+            for (const ExpressionProto& expr : proto.expressions()) {
+              norm_args[arg_index].constant_value_expressions.push_back(expr);
             }
           }
-          shp.set_expressions(dyn_exprs);
         }
       }
     }

@@ -16,6 +16,8 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_TF2XLA_XLA_ARGUMENT_H_
 #define TENSORFLOW_COMPILER_TF2XLA_XLA_ARGUMENT_H_
 
+#include <vector>
+
 #include "absl/types/optional.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/host_compute_metadata.pb.h"
@@ -23,6 +25,7 @@ limitations under the License.
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/ir/hlo_sharding.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.pb.h"
 
 namespace tensorflow {
 
@@ -75,6 +78,10 @@ struct XlaArgument {
   // The value of the argument, if it is a compile-time constant. Must be a
   // host-memory tensor.
   Tensor constant_value;
+
+  // Symbolic expressions attached to the contents of a compile-time constant.
+  // Used for shape-like integer tensors crossing cluster boundaries.
+  std::vector<ExpressionProto> constant_value_expressions;
 
   // The upper bounds of the value.
   std::optional<Tensor> value_bound;

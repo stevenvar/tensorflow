@@ -130,58 +130,6 @@ bool ExpressionProtoIsDynamic(const ExpressionProto& expr) {
   }
 }
 
-std::optional<int64_t> EvaluateExpressionProtoForBatch(
-    const ExpressionProto& expr, int64_t filled_batch) {
-  switch (expr.node_type_case()) {
-    case ExpressionProto::kConstantValue:
-      return expr.constant_value();
-    case ExpressionProto::kVariableId:
-      return filled_batch;
-    case ExpressionProto::kAddNode: {
-      auto lhs = EvaluateExpressionProtoForBatch(expr.add_node().lhs(),
-                                                 filled_batch);
-      auto rhs = EvaluateExpressionProtoForBatch(expr.add_node().rhs(),
-                                                 filled_batch);
-      if (!lhs.has_value() || !rhs.has_value()) {
-        return std::nullopt;
-      }
-      return *lhs + *rhs;
-    }
-    case ExpressionProto::kSubNode: {
-      auto lhs = EvaluateExpressionProtoForBatch(expr.sub_node().lhs(),
-                                                 filled_batch);
-      auto rhs = EvaluateExpressionProtoForBatch(expr.sub_node().rhs(),
-                                                 filled_batch);
-      if (!lhs.has_value() || !rhs.has_value()) {
-        return std::nullopt;
-      }
-      return *lhs - *rhs;
-    }
-    case ExpressionProto::kMulNode: {
-      auto lhs = EvaluateExpressionProtoForBatch(expr.mul_node().lhs(),
-                                                 filled_batch);
-      auto rhs = EvaluateExpressionProtoForBatch(expr.mul_node().rhs(),
-                                                 filled_batch);
-      if (!lhs.has_value() || !rhs.has_value()) {
-        return std::nullopt;
-      }
-      return *lhs * *rhs;
-    }
-    case ExpressionProto::kDivNode: {
-      auto lhs = EvaluateExpressionProtoForBatch(expr.div_node().lhs(),
-                                                 filled_batch);
-      auto rhs = EvaluateExpressionProtoForBatch(expr.div_node().rhs(),
-                                                 filled_batch);
-      if (!lhs.has_value() || !rhs.has_value() || *rhs == 0) {
-        return std::nullopt;
-      }
-      return *lhs / *rhs;
-    }
-    case ExpressionProto::NODE_TYPE_NOT_SET:
-      return std::nullopt;
-  }
-}
-
 // A closure describing how to run a compiled version of a TensorFlow function.
 //
 // It may seem unusual to stick the resource variable snapshots in this class.
@@ -699,13 +647,11 @@ absl::Status CompileToLocalExecutable(
                 if (!ExpressionProtoIsDynamic(expr)) {
                   continue;
                 }
-                auto rewritten =
-                    EvaluateExpressionProtoForBatch(expr, filled_batch);
-                if (!rewritten.has_value()) {
+                int64_t old = flat(j);
+                if (old != old_batch) {
                   continue;
                 }
-                int64_t old = flat(j);
-                flat(j) = static_cast<int32>(*rewritten);
+                flat(j) = static_cast<int32>(filled_batch);
                 old_vars.push_back({i, -1, j, old});
               }
             }
@@ -719,13 +665,11 @@ absl::Status CompileToLocalExecutable(
                 if (!ExpressionProtoIsDynamic(expr)) {
                   continue;
                 }
-                auto rewritten =
-                    EvaluateExpressionProtoForBatch(expr, filled_batch);
-                if (!rewritten.has_value()) {
+                int64_t old = flat(j);
+                if (old != old_batch) {
                   continue;
                 }
-                int64_t old = flat(j);
-                flat(j) = static_cast<int64_t>(*rewritten);
+                flat(j) = static_cast<int64_t>(filled_batch);
                 old_vars.push_back({i, -1, j, old});
               }
             }

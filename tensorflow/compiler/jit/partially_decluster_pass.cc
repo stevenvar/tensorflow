@@ -17,6 +17,7 @@ limitations under the License.
 
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/log.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/jit/device_util.h"
 #include "tensorflow/compiler/jit/xla_cluster_util.h"
@@ -51,11 +52,19 @@ absl::Status FindNodesToDecluster(const Graph& graph,
 
   for (Node* n : post_order) {
     std::optional<absl::string_view> from_cluster = GetXlaClusterForNode(*n);
+    if (IsShapeProducerOp(*n)) {
+      LOG(INFO) << "[PartiallyDeclusterPass/reduce_device_to_host_copies] saw "
+                << n->name() << " op=" << n->type_string()
+                << " clustered=" << from_cluster.has_value();
+    }
     if (!from_cluster) {
       continue;
     }
 
     if (IsShapeProducerOp(*n)) {
+      LOG(INFO) << "[PartiallyDeclusterPass/reduce_device_to_host_copies] "
+                   "keeping shape producer clustered: "
+                << n->name();
       continue;
     }
 
@@ -312,6 +321,12 @@ absl::Status PartiallyDeclusterGraph(Graph* graph,
   GetReversePostOrder(*graph, &rpo, /*stable_comparator=*/NodeComparatorName(),
                       /*edge_filter=*/NotBackedge);
   for (Node* n : rpo) {
+    if (IsShapeProducerOp(*n)) {
+      LOG(INFO) << "[PartiallyDeclusterPass/reduce_recompilation] saw "
+                << n->name() << " op=" << n->type_string()
+                << " compile_time_const=" << compile_time_const_nodes[n->id()]
+                << " clustered=" << GetXlaClusterForNode(*n).has_value();
+    }
     if (!compile_time_const_nodes[n->id()]) {
       continue;
     }
@@ -349,6 +364,9 @@ absl::Status PartiallyDeclusterGraph(Graph* graph,
       TF_RETURN_IF_ERROR(MustCompileNode(n, &must_compile_node));
       if (!must_compile_node) {
         if (IsShapeProducerOp(*n)) {
+          LOG(INFO) << "[PartiallyDeclusterPass/reduce_recompilation] "
+                       "keeping shape producer clustered: "
+                    << n->name();
           continue;
         }
         if (n->IsConstant()) {
@@ -386,6 +404,11 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
                       /*edge_filter=*/NotBackedge);
 
   for (Node* n : reverse_post_order) {
+    if (IsShapeProducerOp(*n)) {
+      LOG(INFO) << "[PartiallyDeclusterPass/decluster_root_shape_consumers] saw "
+                << n->name() << " op=" << n->type_string()
+                << " clustered=" << GetXlaClusterForNode(*n).has_value();
+    }
     if (!IsShapeConsumerOp(*n)) {
       continue;
     }

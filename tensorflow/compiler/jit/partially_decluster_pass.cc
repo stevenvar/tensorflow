@@ -115,6 +115,10 @@ absl::Status FindNodesToDecluster(const Graph& graph,
       std::optional<absl::string_view> dst_cluster =
           result->count(dst) ? std::nullopt : GetXlaClusterForNode(*dst);
       if (from_cluster != dst_cluster) {
+        LOG(INFO) << "PartiallyDeclusterPass reduce_device_to_host_copies "
+                  << "declustering " << n->name() << " op="
+                  << n->type_string() << " due to edge into " << dst->name()
+                  << " op=" << dst->type_string();
         CHECK(result->insert(n).second);
         break;
       }
@@ -367,12 +371,20 @@ absl::Status PartiallyDeclusterGraph(Graph* graph,
                     n->assigned_device_name()) {
               VLOG(3) << "Declustering Const with cross-device control input "
                       << n->name();
+              LOG(INFO)
+                  << "PartiallyDeclusterPass reduce_recompilation "
+                  << "declustering const " << n->name() << " op="
+                  << n->type_string()
+                  << " due to cross-device control input";
               RemoveFromXlaCluster(n);
               break;
             }
           }
         } else {
           VLOG(3) << "Declustering must-be-constant node " << n->name();
+          LOG(INFO) << "PartiallyDeclusterPass reduce_recompilation "
+                    << "declustering must-be-constant node " << n->name()
+                    << " op=" << n->type_string();
           RemoveFromXlaCluster(n);
         }
       }
@@ -420,6 +432,9 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
 
     VLOG(2) << "Declustering " << n->name()
             << " because it is a root shape consumer";
+    LOG(INFO) << "PartiallyDeclusterPass decluster_root_shape_consumers "
+              << "declustering " << n->name() << " op="
+              << n->type_string();
     RemoveFromXlaCluster(n);
   }
   return absl::OkStatus();

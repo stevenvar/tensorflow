@@ -793,10 +793,11 @@ void LogExpressionsViaGraphProperties(
       for (int input_idx = 0; input_idx < limit && !has_dynamic_input;
            ++input_idx) {
         TensorId input = ParseTensorName(n.input(input_idx));
-        if (!props.HasOutputProperties(input.node())) {
+        const string input_node(input.node());
+        if (!props.HasOutputProperties(input_node)) {
           continue;
         }
-        const auto& input_outs = props.GetOutputProperties(input.node());
+        const auto& input_outs = props.GetOutputProperties(input_node);
         if (input.index() < 0 || input.index() >= input_outs.size()) {
           continue;
         }

@@ -62,6 +62,12 @@ absl::Status FindNodesToDecluster(const Graph& graph,
     if (IsShapeConsumerOp(*n)) {
       continue;
     }
+    bool dynamic_content = false;
+    if (GetNodeAttr(n->attrs(), kXlaDynamicContentAttr, &dynamic_content)
+            .ok() &&
+        dynamic_content) {
+      continue;
+    }
     // We assume the only XLA-auto-clusterable operations with side effects are
     // resource variable updates.  We can't execute these twice.
     if (HasResourceInputOrOutput(*n)) {
@@ -342,10 +348,13 @@ absl::Status PartiallyDeclusterGraph(Graph* graph,
       bool must_compile_node;
       TF_RETURN_IF_ERROR(MustCompileNode(n, &must_compile_node));
       if (!must_compile_node) {
-        if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
-          // Keep Shape producers clustered. They may feed symbolic shape
-          // computations later even when earlier passes fail to preserve the
-          // more specific metadata we would ideally use here.
+        bool dynamic_content = false;
+        if (GetNodeAttr(n->attrs(), kXlaDynamicContentAttr, &dynamic_content)
+                .ok() &&
+            dynamic_content) {
+          // MarkForCompilationPass stamps nodes whose outputs carry dynamic
+          // symbolic contents. Keep those clustered so later tf2xla lowering
+          // can still recover and propagate that metadata.
           continue;
         }
         if (n->IsConstant()) {
@@ -387,8 +396,12 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
       continue;
     }
 
-    if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
-      // Do not peel Shape producers out of clusters in this pass.
+    bool dynamic_content = false;
+    if (GetNodeAttr(n->attrs(), kXlaDynamicContentAttr, &dynamic_content)
+            .ok() &&
+        dynamic_content) {
+      // Do not peel symbolic-content producers/consumers out of clusters in
+      // this pass.
       continue;
     }
 

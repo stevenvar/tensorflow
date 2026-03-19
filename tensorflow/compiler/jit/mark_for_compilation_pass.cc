@@ -787,41 +787,26 @@ void LogExpressionsViaGraphProperties(
     }
     expr_map[n.name()] = std::move(list_exprs);
 
-    if ((n.op() == "Shape" || n.op() == "ShapeN") && !n.input().empty()) {
-      bool has_dynamic_input = false;
-      int limit = n.op() == "Shape" ? 1 : n.input_size();
-      for (int input_idx = 0; input_idx < limit && !has_dynamic_input;
-           ++input_idx) {
-        TensorId input = ParseTensorName(n.input(input_idx));
-        const string input_node(input.node());
-        if (!props.HasOutputProperties(input_node)) {
-          continue;
-        }
-        const auto& input_outs = props.GetOutputProperties(input_node);
-        if (input.index() < 0 || input.index() >= input_outs.size()) {
-          continue;
-        }
-        const TensorShapeProto& shp = input_outs[input.index()].shape();
-        if (shp.unknown_rank()) {
-          has_dynamic_input = true;
+    bool has_dynamic_output = false;
+    for (int out_idx = 0; out_idx < static_cast<int>(outs.size()) &&
+                          !has_dynamic_output;
+         ++out_idx) {
+      const TensorShapeProto& shp = outs[out_idx].shape();
+      if (shp.unknown_rank()) {
+        has_dynamic_output = true;
+        break;
+      }
+      for (int d = 0; d < shp.dim_size(); ++d) {
+        const ExpressionProto& expr = shp.dim(d).expr();
+        if (expr.node_type_case() != ExpressionProto::NODE_TYPE_NOT_SET &&
+            expr.node_type_case() != ExpressionProto::kConstantValue) {
+          has_dynamic_output = true;
           break;
         }
-        for (int d = 0; d < shp.dim_size(); ++d) {
-          if (shp.dim(d).size() < 0) {
-            has_dynamic_input = true;
-            break;
-          }
-          const ExpressionProto& expr = shp.dim(d).expr();
-          if (expr.node_type_case() != ExpressionProto::NODE_TYPE_NOT_SET &&
-              expr.node_type_case() != ExpressionProto::kConstantValue) {
-            has_dynamic_input = true;
-            break;
-          }
-        }
       }
-      if (has_dynamic_input) {
-        dynamic_content_shape_nodes->insert(n.name());
-      }
+    }
+    if (has_dynamic_output) {
+      dynamic_content_shape_nodes->insert(n.name());
     }
 
   }

@@ -28,6 +28,11 @@ namespace tensorflow {
 // a list of PartialTensorShape objects.
 extern const char kXlaInferredShapesAttrName[];
 
+// Attribute marking Grappler-inferred output TensorShapeProtos. Attribute
+// value is a list of TensorShapeProto objects and may include ExpressionProto
+// annotations when available.
+extern const char kXlaInferredOutputTensorShapesAttrName[];
+
 // Infers output shapes for all nodes in graph `g`. The output shapes will be
 // stored in node attribute `kXlaInferredShapesAttrName`.
 //

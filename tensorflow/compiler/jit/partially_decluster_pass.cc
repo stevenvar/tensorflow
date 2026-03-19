@@ -39,8 +39,7 @@ constexpr char kXlaDynamicContentAttr[] = "_xla_dynamic_content";
 
 bool IsSymbolicContentChainOp(const Node& n) {
   return n.type_string() == "Shape" || n.type_string() == "ShapeN" ||
-         n.type_string() == "Pack" || n.type_string() == "Cast" ||
-         n.type_string() == "Slice" || n.type_string() == "StridedSlice";
+         n.type_string() == "Cast";
 }
 
 namespace reduce_device_to_host_copies {

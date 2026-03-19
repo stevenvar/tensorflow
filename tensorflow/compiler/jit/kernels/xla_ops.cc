@@ -568,14 +568,16 @@ absl::Status CompileToLocalExecutable(
     // restore the original runtime sizes after compilation.
     if (filled_batch) {
       LOG(INFO) << "XlaCompileOp using filled_batch=" << filled_batch
-                << " old_batch=" << old_batch;
+                << " dynamic_dim_value=" << dynamic_dim_value
+                << " saw_dynamic_dim_value=" << saw_dynamic_dim_value
+                << " has_multiple_dynamic_dim_values="
+                << has_multiple_dynamic_dim_values;
       for (int i = 0; i < norm_args.size(); ++i) {
         TensorShape& shp = std::get<TensorShape>(norm_args[i].shape);
         for (int j = 0; j < shp.get_expressions().size(); ++j) {
           auto e = shp.get_expression(j);
           if (e->is_dynamic()) {
             int64_t old = shp.dim_size(j);
-            old_vars.push_back({i, j, -1, old});
             LOG(INFO) << "XlaCompileOp rewriting arg " << i << " dim " << j
                       << " from " << old << " to " << filled_batch;
             old_vars.push_back({i, j, -1, old});

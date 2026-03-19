@@ -37,6 +37,12 @@ namespace {
 bool NotBackedge(const Edge& edge) { return !edge.src()->IsNextIteration(); }
 constexpr char kXlaDynamicContentAttr[] = "_xla_dynamic_content";
 
+bool IsSymbolicContentChainOp(const Node& n) {
+  return n.type_string() == "Shape" || n.type_string() == "ShapeN" ||
+         n.type_string() == "Pack" || n.type_string() == "Cast" ||
+         n.type_string() == "Slice" || n.type_string() == "StridedSlice";
+}
+
 namespace reduce_device_to_host_copies {
 absl::Status FindNodesToDecluster(const Graph& graph,
                                   absl::flat_hash_set<Node*>* result,
@@ -60,6 +66,9 @@ absl::Status FindNodesToDecluster(const Graph& graph,
     // TODO(tpopp): See if XlaRun can be modified to avoid this issue
     // completely.
     if (IsShapeConsumerOp(*n)) {
+      continue;
+    }
+    if (IsSymbolicContentChainOp(*n)) {
       continue;
     }
     bool dynamic_content = false;
@@ -352,6 +361,9 @@ absl::Status PartiallyDeclusterGraph(Graph* graph,
       bool must_compile_node;
       TF_RETURN_IF_ERROR(MustCompileNode(n, &must_compile_node));
       if (!must_compile_node) {
+        if (IsSymbolicContentChainOp(*n)) {
+          continue;
+        }
         bool dynamic_content = false;
         if (GetNodeAttr(n->attrs(), kXlaDynamicContentAttr, &dynamic_content)
                 .ok() &&
@@ -408,6 +420,9 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
       continue;
     }
 
+    if (IsSymbolicContentChainOp(*n)) {
+      continue;
+    }
     bool dynamic_content = false;
     if (GetNodeAttr(n->attrs(), kXlaDynamicContentAttr, &dynamic_content)
             .ok() &&

@@ -834,6 +834,11 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
   TF_RET_CHECK(!initialized_ && !edges_contracted_ && !clusters_created_);
   initialized_ = true;
 
+  if (debug_options_.cluster_single_dynamic_dim) {
+    dynamic_content_shape_nodes_.clear();
+    LogExpressionsViaGraphProperties(*graph_, &dynamic_content_shape_nodes_);
+  }
+
   TF_RETURN_IF_ERROR(FindCompilationCandidates());
 
   if (compilation_candidates_.empty()) {
@@ -871,8 +876,6 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
     TF_RETURN_IF_ERROR(AssignAnnotatedClusterIDs());
   }
   if (debug_options_.cluster_single_dynamic_dim) {
-    dynamic_content_shape_nodes_.clear();
-    LogExpressionsViaGraphProperties(*graph_, &dynamic_content_shape_nodes_);
     TF_RETURN_IF_ERROR(AssignDimVars());
   }
   if (debug_options_.enable_cluster_parallel) {
@@ -1523,6 +1526,9 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
   // iterator_traits defined and so on.
   std::vector<Node*> sorted_nodes;
   for (Node* node : graph_->op_nodes()) {
+    if (dynamic_content_shape_nodes_.contains(node->name())) {
+      node->AddAttr(kXlaDynamicContentAttr, true);
+    }
     sorted_nodes.push_back(node);
   }
   std::sort(sorted_nodes.begin(), sorted_nodes.end(), NodeComparatorID());

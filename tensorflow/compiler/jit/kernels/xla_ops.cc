@@ -520,6 +520,10 @@ absl::Status CompileToLocalExecutable(
                   filled_batch =
                       xla_batch_matcher->get_xla_compile_batch(
                           shp.dim_size(idx));
+                  LOG(INFO) << "XlaCompileOp padding dynamic arg "
+                            << arg_index << " dim " << idx << " from "
+                            << shp.dim_size(idx) << " to compile batch "
+                            << filled_batch;
                   break;
                 }
               }
@@ -563,12 +567,17 @@ absl::Status CompileToLocalExecutable(
     // We rewrite only dynamic dimensions to the padded compile batch and then
     // restore the original runtime sizes after compilation.
     if (filled_batch) {
+      LOG(INFO) << "XlaCompileOp using filled_batch=" << filled_batch
+                << " old_batch=" << old_batch;
       for (int i = 0; i < norm_args.size(); ++i) {
         TensorShape& shp = std::get<TensorShape>(norm_args[i].shape);
         for (int j = 0; j < shp.get_expressions().size(); ++j) {
           auto e = shp.get_expression(j);
           if (e->is_dynamic()) {
             int64_t old = shp.dim_size(j);
+            old_vars.push_back({i, j, -1, old});
+            LOG(INFO) << "XlaCompileOp rewriting arg " << i << " dim " << j
+                      << " from " << old << " to " << filled_batch;
             old_vars.push_back({i, j, -1, old});
             shp.set_dim(j, filled_batch);
             // Necessary because set_dim removes the expression:
@@ -585,6 +594,9 @@ absl::Status CompileToLocalExecutable(
       for (const auto& old_var : old_vars) {
         TensorShape& shp =
             std::get<TensorShape>(norm_args[old_var.arg_index].shape);
+        LOG(INFO) << "XlaCompileOp restoring arg " << old_var.arg_index
+                  << " dim " << old_var.dyn_dim << " to "
+                  << old_var.old_value;
         shp.set_dim(old_var.dyn_dim, old_var.old_value);
       }
     }

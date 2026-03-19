@@ -739,6 +739,7 @@ cc_library(
     ],
     deps = [
         ":tensor_shape_proto_cc",
+        "@local_xla//xla:shape_util",
     ],
     alwayslink = 1,
 )

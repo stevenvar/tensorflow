@@ -343,15 +343,10 @@ absl::Status PartiallyDeclusterGraph(Graph* graph,
       TF_RETURN_IF_ERROR(MustCompileNode(n, &must_compile_node));
       if (!must_compile_node) {
         if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
-          // MarkForCompilationPass stamps Shape/ShapeN nodes whose outputs feed
-          // symbolic shape computations. Keep those clustered so later tf2xla
-          // lowering can still recover dynamic contents from them.
-          bool dynamic_content = false;
-          if (GetNodeAttr(n->attrs(), kXlaDynamicContentAttr, &dynamic_content)
-                  .ok() &&
-              dynamic_content) {
-            continue;
-          }
+          // Keep Shape producers clustered. They may feed symbolic shape
+          // computations later even when earlier passes fail to preserve the
+          // more specific metadata we would ideally use here.
+          continue;
         }
         if (n->IsConstant()) {
           // We must decluster Const nodes that have an input control edge from
@@ -393,14 +388,8 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
     }
 
     if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
-      // Root metadata declustering is usually helpful, but not for Shape
-      // nodes that were explicitly marked as producing symbolic contents.
-      bool dynamic_content = false;
-      if (GetNodeAttr(n->attrs(), kXlaDynamicContentAttr, &dynamic_content)
-              .ok() &&
-          dynamic_content) {
-        continue;
-      }
+      // Do not peel Shape producers out of clusters in this pass.
+      continue;
     }
 
     std::optional<absl::string_view> cluster = GetXlaClusterForNode(*n);

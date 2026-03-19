@@ -787,26 +787,41 @@ void LogExpressionsViaGraphProperties(
     }
     expr_map[n.name()] = std::move(list_exprs);
 
-    bool has_dynamic_output = false;
-    for (int out_idx = 0; out_idx < static_cast<int>(outs.size()) &&
-                          !has_dynamic_output;
-         ++out_idx) {
-      const TensorShapeProto& shp = outs[out_idx].shape();
+    auto has_dynamic_shape = [](const TensorShapeProto& shp) {
       if (shp.unknown_rank()) {
-        has_dynamic_output = true;
-        break;
+        return true;
       }
       for (int d = 0; d < shp.dim_size(); ++d) {
         const ExpressionProto& expr = shp.dim(d).expr();
         if (expr.node_type_case() != ExpressionProto::NODE_TYPE_NOT_SET &&
             expr.node_type_case() != ExpressionProto::kConstantValue) {
-          has_dynamic_output = true;
-          break;
+          return true;
         }
       }
+      return false;
+    };
+
+    bool has_dynamic_output = false;
+    for (int out_idx = 0; out_idx < static_cast<int>(outs.size()) &&
+                          !has_dynamic_output;
+         ++out_idx) {
+      has_dynamic_output = has_dynamic_shape(outs[out_idx].shape());
     }
     if (has_dynamic_output) {
       dynamic_content_shape_nodes->insert(n.name());
+      continue;
+    }
+
+    if (n.op() == "Cast" && !n.input().empty()) {
+      TensorId input = ParseTensorName(n.input(0));
+      const string input_node(input.node());
+      if (props.HasOutputProperties(input_node)) {
+        const auto& input_outs = props.GetOutputProperties(input_node);
+        if (input.index() >= 0 && input.index() < input_outs.size() &&
+            has_dynamic_shape(input_outs[input.index()].shape())) {
+          dynamic_content_shape_nodes->insert(n.name());
+        }
+      }
     }
 
   }

@@ -491,9 +491,14 @@ absl::Status CompileToLocalExecutable(
             const AttrValue& v = dyn_dim_attr->second;
             int64_t idx = v.i();
             record_dynamic_dim_value(shp.dim_size(idx));
+            LOG(INFO) << "XlaCompileOp found _dynamic_dim for arg "
+                      << arg_index << " at dim " << idx << " value "
+                      << shp.dim_size(idx);
             if (!filled_batch && xla_batch_matcher) {
               filled_batch =
                   xla_batch_matcher->get_xla_compile_batch(shp.dim_size(idx));
+              LOG(INFO) << "XlaCompileOp _dynamic_dim arg " << arg_index
+                        << " uses compile batch " << filled_batch;
             }
 
             std::vector<xla::DynExpr*> dyn_exprs;
@@ -552,6 +557,10 @@ absl::Status CompileToLocalExecutable(
             for (const ExpressionProto& expr : proto.expressions()) {
               norm_args[arg_index].constant_value_expressions.push_back(expr);
             }
+            LOG(INFO) << "XlaCompileOp imported " << kXlaConstantContentsAttr
+                      << " for constant arg " << arg_index << " with "
+                      << norm_args[arg_index].constant_value_expressions.size()
+                      << " expressions";
           }
         }
       }
@@ -564,8 +573,79 @@ absl::Status CompileToLocalExecutable(
       int64_t old_value;
     };
     std::vector<SaveOldVar> old_vars;
+    auto maybe_rewrite_scalar_constant = [&](int arg_index) {
+      if (!saw_dynamic_dim_value || has_multiple_dynamic_dim_values) {
+        return;
+      }
+
+      auto& arg = norm_args[arg_index];
+      if (arg.kind != XlaCompiler::Argument::kConstant) {
+        return;
+      }
+
+      const bool is_scalar =
+          TensorShapeUtils::IsScalar(arg.constant_value.shape());
+      const bool is_vector =
+          TensorShapeUtils::IsVector(arg.constant_value.shape()) &&
+          arg.constant_value.NumElements() > 0;
+      if (!is_scalar && !is_vector) {
+        return;
+      }
+
+      const bool has_constant_contents =
+          !arg.constant_value_expressions.empty();
+      bool has_dynamic_constant_expr = false;
+      for (const auto& expr : arg.constant_value_expressions) {
+        if (ExpressionProtoIsDynamic(expr)) {
+          has_dynamic_constant_expr = true;
+          break;
+        }
+      }
+
+      if (arg.constant_value.dtype() == DT_INT32) {
+        const int32 old_value = arg.constant_value.flat<int32>()(0);
+        // Heuristic: rewrite only scalar constants or shape-like int vectors
+        // whose leading entry matches the observed runtime batch size.
+        if (old_value == dynamic_dim_value) {
+          LOG(INFO) << "XlaCompileOp int32 constant arg " << arg_index
+                    << " matches dynamic_dim_value=" << dynamic_dim_value
+                    << " has_" << kXlaConstantContentsAttr << "="
+                    << has_constant_contents
+                    << " has_dynamic_constant_expr="
+                    << has_dynamic_constant_expr;
+          // Deep-copy before rewrite so the compile-time patch does not mutate
+          // a Tensor buffer shared with caller-visible inputs.
+          Tensor scalar_copy(arg.constant_value.dtype(),
+                             arg.constant_value.shape());
+          scalar_copy.flat<int32>() = arg.constant_value.flat<int32>();
+          arg.constant_value = std::move(scalar_copy);
+          arg.constant_value.flat<int32>()(0) =
+              static_cast<int32>(filled_batch);
+        }
+      } else if (arg.constant_value.dtype() == DT_INT64) {
+        const int64_t old_value = arg.constant_value.flat<int64_t>()(0);
+        // Same heuristic for int64 scalar constants.
+        if (old_value == dynamic_dim_value) {
+          LOG(INFO) << "XlaCompileOp int64 constant arg " << arg_index
+                    << " matches dynamic_dim_value=" << dynamic_dim_value
+                    << " has_" << kXlaConstantContentsAttr << "="
+                    << has_constant_contents
+                    << " has_dynamic_constant_expr="
+                    << has_dynamic_constant_expr;
+          Tensor scalar_copy(arg.constant_value.dtype(),
+                             arg.constant_value.shape());
+          scalar_copy.flat<int64_t>() = arg.constant_value.flat<int64_t>();
+          arg.constant_value = std::move(scalar_copy);
+          arg.constant_value.flat<int64_t>()(0) = filled_batch;
+        }
+      }
+    };
     // We rewrite only dynamic dimensions to the padded compile batch and then
-    // restore the original runtime sizes after compilation.
+    // restore the original runtime sizes after compilation. Some scalar
+    // constants are actually runtime batch sizes folded by earlier TF passes,
+    // so rewrite only those that match the detected dynamic runtime value.
+    // Scalar constants are deep-copied before rewrite so the change stays
+    // local to norm_args and does not require restoration.
     if (filled_batch) {
       LOG(INFO) << "XlaCompileOp using filled_batch=" << filled_batch
                 << " dynamic_dim_value=" << dynamic_dim_value
@@ -586,6 +666,7 @@ absl::Status CompileToLocalExecutable(
             shp.set_expression(j, e);
           }
         }
+        maybe_rewrite_scalar_constant(i);
       }
     }
     auto status = xla_device_compiler->CompileIfNeeded(

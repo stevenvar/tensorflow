@@ -536,6 +536,7 @@ absl::Status CompileToLocalExecutable(
               }
             }
             shp.set_expressions(dyn_exprs);
+          }
 
           auto content_it = attr_map.find(kXlaConstantContentsAttr);
           if (content_it != attr_map.end() &&

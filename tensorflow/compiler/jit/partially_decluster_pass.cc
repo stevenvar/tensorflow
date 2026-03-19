@@ -19,6 +19,7 @@ limitations under the License.
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/jit/device_util.h"
+#include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/jit/xla_cluster_util.h"
 #include "tensorflow/compiler/tf2xla/const_analysis.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
@@ -37,7 +38,14 @@ namespace {
 bool NotBackedge(const Edge& edge) { return !edge.src()->IsNextIteration(); }
 constexpr char kXlaDynamicContentAttr[] = "_xla_dynamic_content";
 
+bool SymbolicContentEnabled() {
+  return GetMarkForCompilationPassFlags()->tf_xla_enable_symbolic_content;
+}
+
 bool IsSymbolicContentChainOp(const Node& n) {
+  if (!SymbolicContentEnabled()) {
+    return false;
+  }
   return n.type_string() == "Shape" || n.type_string() == "ShapeN" ||
          n.type_string() == "Cast";
 }
@@ -71,7 +79,8 @@ absl::Status FindNodesToDecluster(const Graph& graph,
       continue;
     }
     bool dynamic_content = false;
-    if (GetNodeAttr(n->attrs(), kXlaDynamicContentAttr, &dynamic_content)
+    if (SymbolicContentEnabled() &&
+        GetNodeAttr(n->attrs(), kXlaDynamicContentAttr, &dynamic_content)
             .ok() &&
         dynamic_content) {
       continue;
@@ -364,7 +373,8 @@ absl::Status PartiallyDeclusterGraph(Graph* graph,
           continue;
         }
         bool dynamic_content = false;
-        if (GetNodeAttr(n->attrs(), kXlaDynamicContentAttr, &dynamic_content)
+        if (SymbolicContentEnabled() &&
+            GetNodeAttr(n->attrs(), kXlaDynamicContentAttr, &dynamic_content)
                 .ok() &&
             dynamic_content) {
           // MarkForCompilationPass stamps nodes whose outputs carry dynamic
@@ -423,7 +433,8 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
       continue;
     }
     bool dynamic_content = false;
-    if (GetNodeAttr(n->attrs(), kXlaDynamicContentAttr, &dynamic_content)
+    if (SymbolicContentEnabled() &&
+        GetNodeAttr(n->attrs(), kXlaDynamicContentAttr, &dynamic_content)
             .ok() &&
         dynamic_content) {
       // Do not peel symbolic-content producers/consumers out of clusters in

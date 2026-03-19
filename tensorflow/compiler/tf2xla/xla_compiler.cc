@@ -38,6 +38,7 @@ limitations under the License.
 #include "tensorflow/compiler/jit/defs.h"
 #include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/jit/shape_inference.h"
+#include "tensorflow/compiler/tf2xla/symbolic_content_util.h"
 #include "tensorflow/compiler/jit/xla_compile_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/attribute_utils.h"
 #include "tensorflow/compiler/mlir/tf2xla/api/v1/compile_mlir_util.h"
@@ -1142,7 +1143,8 @@ absl::Status XlaCompiler::BuildArguments(
       }
       case XlaCompiler::Argument::kConstant:
         arg_expression = XlaExpression::Constant(arg.constant_value);
-        if (!arg.constant_value_expressions.empty()) {
+        if (SymbolicContentEnabled() &&
+            !arg.constant_value_expressions.empty()) {
           // Preserve symbolic per-element metadata for shape-like constants so
           // later tf2xla consumers can recover dynamic contents from them.
           std::vector<xla::DynExpr*> contents;

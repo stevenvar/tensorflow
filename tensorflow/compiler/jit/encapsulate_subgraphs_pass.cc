@@ -176,6 +176,9 @@ bool BuildOutputShapeProto(const Node& node, int output_slot,
 
 absl::StatusOr<std::optional<TensorShapeProto>> BuildConstantContentsProto(
     const Node& src_node, int src_slot) {
+  if (!GetMarkForCompilationPassFlags()->tf_xla_enable_symbolic_content) {
+    return std::nullopt;
+  }
   AttrSlice attrs = src_node.attrs();
   auto contents_attr = attrs.FindByString(kXlaConstantContentsAttr);
   if (contents_attr != nullptr && contents_attr->has_list() &&

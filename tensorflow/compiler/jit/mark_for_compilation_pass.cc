@@ -1215,7 +1215,8 @@ absl::Status MarkForCompilationPassImpl::CreateClusters() {
   //   only if compilation is enabled, otherwise there will be no such
   //   candidates).
   for (Node* n : compilation_candidates_) {
-    if (dynamic_content_shape_nodes_.contains(n->name())) {
+    if (GetMarkForCompilationPassFlags()->tf_xla_enable_symbolic_content &&
+        dynamic_content_shape_nodes_.contains(n->name())) {
       n->AddAttr(kXlaDynamicContentAttr, true);
     }
     Cluster* cluster = GetClusterForNode(n);
@@ -1526,7 +1527,8 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
   // iterator_traits defined and so on.
   std::vector<Node*> sorted_nodes;
   for (Node* node : graph_->op_nodes()) {
-    if (dynamic_content_shape_nodes_.contains(node->name())) {
+    if (GetMarkForCompilationPassFlags()->tf_xla_enable_symbolic_content &&
+        dynamic_content_shape_nodes_.contains(node->name())) {
       node->AddAttr(kXlaDynamicContentAttr, true);
     }
     sorted_nodes.push_back(node);

@@ -17,6 +17,7 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/literal_util.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
+#include "tensorflow/compiler/tf2xla/symbolic_content_util.h"
 #include "xla/hlo/builder/value_inference.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
@@ -75,12 +76,16 @@ XlaExpression XlaExpression::Resource(XlaResource* resource) {
 }
 
 void XlaExpression::set_contents(std::vector<xla::DynExpr*> contents) {
+  if (!SymbolicContentEnabled()) {
+    local_contents_.clear();
+    return;
+  }
   switch (kind_) {
     case Kind::kXlaOp:
     case Kind::kTensorList:
       if (handle_.valid() && !handle_.IsUninitialized()) {
-        auto status =
-            handle_.builder()->SetInstructionContents(handle_, std::move(contents));
+        auto status = handle_.builder()->SetInstructionContents(
+            handle_, std::move(contents));
         if (!status.ok()) {
           LOG(INFO) << "Failed to set XlaOp contents: " << status;
         }
@@ -96,6 +101,9 @@ void XlaExpression::set_contents(std::vector<xla::DynExpr*> contents) {
 }
 
 absl::Span<xla::DynExpr* const> XlaExpression::contents() const {
+  if (!SymbolicContentEnabled()) {
+    return {};
+  }
   switch (kind_) {
     case Kind::kXlaOp:
     case Kind::kTensorList:
@@ -137,7 +145,7 @@ xla::XlaOp XlaExpression::AsXlaOp(xla::XlaBuilder* builder) const {
         TF_RETURN_IF_ERROR(
             HostTensorToBorrowingLiteral(*constant_value_, &literal));
         xla::XlaOp op = xla::ConstantLiteral(builder, literal);
-        if (!local_contents_.empty()) {
+        if (SymbolicContentEnabled() && !local_contents_.empty()) {
           TF_RETURN_IF_ERROR(
               builder->SetInstructionContents(op, local_contents_));
         }

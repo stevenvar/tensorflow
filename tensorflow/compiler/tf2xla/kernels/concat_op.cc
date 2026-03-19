@@ -22,6 +22,7 @@ limitations under the License.
 #include "absl/log/log.h"
 #include "absl/strings/str_join.h"
 #include "tensorflow/compiler/tf2xla/kernels/shape_util.h"
+#include "tensorflow/compiler/tf2xla/symbolic_content_util.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
@@ -152,8 +153,10 @@ class ConcatBaseOp : public XlaOpKernel {
         // Inputs that come in as scalars must be reshaped to 1-vectors.
         xla::XlaOp reshaped = xla::Reshape(handle, {1});
         if (has_output_contents) {
-          OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(
-                                  reshaped, input_contents[i]));
+          if (SymbolicContentEnabled()) {
+            OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(
+                                    reshaped, input_contents[i]));
+          }
         }
         input_data.push_back(reshaped);
       } else {
@@ -165,11 +168,15 @@ class ConcatBaseOp : public XlaOpKernel {
     VLOG(1) << "Concat dim " << concat_dim << " equivalent to " << axis;
     auto output = xla::ConcatInDim(ctx->builder(), input_data, axis);
     if (has_output_contents) {
-      OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(
-                              output, output_contents));
+      if (SymbolicContentEnabled()) {
+        OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(
+                                output, output_contents));
+      }
       auto output_expr =
           XlaExpression::XlaOp(output, ctx->expected_output_dtype(0));
-      output_expr.set_contents(std::move(output_contents));
+      if (SymbolicContentEnabled()) {
+        output_expr.set_contents(std::move(output_contents));
+      }
       ctx->SetOutputExpression(0, output_expr);
       return;
     }

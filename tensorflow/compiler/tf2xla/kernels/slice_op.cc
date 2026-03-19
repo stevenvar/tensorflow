@@ -21,6 +21,7 @@ limitations under the License.
 #include "absl/algorithm/container.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/types/span.h"
+#include "tensorflow/compiler/tf2xla/symbolic_content_util.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "xla/hlo/builder/lib/constants.h"
@@ -148,9 +149,11 @@ class SliceOp : public XlaOpKernel {
       const bool has_output_contents = TryBuildSlicedContents(
           ctx->InputExpression(0), input_shape, begin, size, &output_contents);
       if (has_output_contents) {
-        OP_REQUIRES_OK(ctx,
-                       ctx->builder()->SetInstructionContents(slice,
-                                                              output_contents));
+        if (SymbolicContentEnabled()) {
+          OP_REQUIRES_OK(
+              ctx, ctx->builder()->SetInstructionContents(slice,
+                                                          output_contents));
+        }
       }
       // Check for slice on dynamic dimensions.
       std::vector<bool> size_is_dynamic;
@@ -169,9 +172,11 @@ class SliceOp : public XlaOpKernel {
 
             slice = xla::SetDimensionSize(slice, dynamic_size, i);
             if (has_output_contents) {
-              OP_REQUIRES_OK(ctx,
-                             ctx->builder()->SetInstructionContents(
-                                 slice, output_contents));
+              if (SymbolicContentEnabled()) {
+                OP_REQUIRES_OK(ctx,
+                               ctx->builder()->SetInstructionContents(
+                                   slice, output_contents));
+              }
             }
           }
         }
@@ -179,7 +184,9 @@ class SliceOp : public XlaOpKernel {
       if (has_output_contents) {
         auto output_expr =
             XlaExpression::XlaOp(slice, ctx->expected_output_dtype(0));
-        output_expr.set_contents(std::move(output_contents));
+        if (SymbolicContentEnabled()) {
+          output_expr.set_contents(std::move(output_contents));
+        }
         ctx->SetOutputExpression(0, output_expr);
         return;
       }

@@ -18,6 +18,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "tensorflow/compiler/tf2xla/symbolic_content_util.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "xla/hlo/builder/xla_builder.h"
@@ -112,20 +113,26 @@ class PackOp : public XlaOpKernel {
       reshaped_inputs[i] = xla::Reshape(values[i], child_shape.dim_sizes(),
                                         exprs);
       if (has_output_contents) {
-        OP_REQUIRES_OK(
-            ctx, ctx->builder()->SetInstructionContents(
-                     reshaped_inputs[i],
-                     {output_contents[static_cast<size_t>(i)]}));
+        if (SymbolicContentEnabled()) {
+          OP_REQUIRES_OK(
+              ctx, ctx->builder()->SetInstructionContents(
+                       reshaped_inputs[i],
+                       {output_contents[static_cast<size_t>(i)]}));
+        }
       }
     }
 
     auto output = xla::ConcatInDim(ctx->builder(), reshaped_inputs, axis);
     if (has_output_contents) {
-      OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(
-                              output, output_contents));
+      if (SymbolicContentEnabled()) {
+        OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(
+                                output, output_contents));
+      }
       auto output_expr =
           XlaExpression::XlaOp(output, ctx->expected_output_dtype(0));
-      output_expr.set_contents(std::move(output_contents));
+      if (SymbolicContentEnabled()) {
+        output_expr.set_contents(std::move(output_contents));
+      }
       ctx->SetOutputExpression(0, output_expr);
       return;
     }

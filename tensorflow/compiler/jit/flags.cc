@@ -170,6 +170,10 @@ void AppendMarkForCompilationPassFlagsInternal(std::vector<Flag>* flag_list) {
       Flag("tf_xla_enable_dynamic_sizes",
            &mark_for_compilation_flags->tf_xla_enable_dynamic_sizes,
            "Enable dynamic sizes support."),
+      Flag("tf_xla_enable_symbolic_content",
+           &mark_for_compilation_flags->tf_xla_enable_symbolic_content,
+           "Enable symbolic content propagation and the decluster handling "
+           "needed to preserve it."),
       Flag("tf_xla_persistent_cache_directory",
            &mark_for_compilation_flags->tf_xla_persistent_cache_directory,
            "If non-empty, JIT-compiled executables are saved to and loaded "
@@ -266,6 +270,7 @@ void AllocateAndParseFlags() {
       ->tf_xla_disable_resource_variable_safety_checks_for_debugging = false;
   mark_for_compilation_flags->tf_xla_deterministic_cluster_names = false;
   mark_for_compilation_flags->tf_xla_enable_dynamic_sizes = false;
+  mark_for_compilation_flags->tf_xla_enable_symbolic_content = false;
   mark_for_compilation_flags->tf_xla_persistent_cache_directory = "";
   mark_for_compilation_flags->tf_xla_persistent_cache_device_types = "";
   mark_for_compilation_flags->tf_xla_persistent_cache_read_only = false;

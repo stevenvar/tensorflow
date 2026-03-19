@@ -548,7 +548,9 @@ absl::Status CompileToLocalExecutable(
           }
 
           auto content_it = attr_map.find(kXlaConstantContentsAttr);
-          if (content_it != attr_map.end() &&
+          if (GetMarkForCompilationPassFlags()
+                  ->tf_xla_enable_symbolic_content &&
+              content_it != attr_map.end() &&
               content_it->second.list().shape_size() > 0) {
             // Keep the per-element symbolic metadata alongside the constant
             // value so shape-like constants can still be rewritten later.

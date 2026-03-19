@@ -25,6 +25,7 @@ limitations under the License.
 #include "absl/log/log.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/literal_util.h"
+#include "tensorflow/compiler/tf2xla/symbolic_content_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
@@ -376,9 +377,11 @@ class StridedSliceOp : public XlaOpKernel {
           TryBuildSlicedContents(ctx->InputExpression(0), input_shape, begin,
                                  strides, final_shape, &output_contents);
       if (has_output_contents) {
-        OP_REQUIRES_OK(ctx,
-                       ctx->builder()->SetInstructionContents(slice,
-                                                              output_contents));
+        if (SymbolicContentEnabled()) {
+          OP_REQUIRES_OK(
+              ctx, ctx->builder()->SetInstructionContents(slice,
+                                                          output_contents));
+        }
       }
       auto operand_shape_or = ctx->builder()->GetShape(ctx->Input(0));
       OP_REQUIRES_OK(ctx, operand_shape_or.status());
@@ -395,15 +398,19 @@ class StridedSliceOp : public XlaOpKernel {
       slice = xla::Reshape(slice, final_shape.dim_sizes(),
                            final_shape.get_expressions());
       if (has_output_contents) {
-        OP_REQUIRES_OK(ctx,
-                       ctx->builder()->SetInstructionContents(slice,
-                                                              output_contents));
+        if (SymbolicContentEnabled()) {
+          OP_REQUIRES_OK(
+              ctx, ctx->builder()->SetInstructionContents(slice,
+                                                          output_contents));
+        }
       }
       if (xla_shape.is_static() && ends_are_static) {
         if (has_output_contents) {
           auto output_expr =
               XlaExpression::XlaOp(slice, ctx->expected_output_dtype(0));
-          output_expr.set_contents(std::move(output_contents));
+          if (SymbolicContentEnabled()) {
+            output_expr.set_contents(std::move(output_contents));
+          }
           ctx->SetOutputExpression(0, output_expr);
           return;
         }
@@ -466,16 +473,20 @@ class StridedSliceOp : public XlaOpKernel {
                                          ctx->builder(), begin[input_index])),
               i);
           if (has_output_contents) {
-            OP_REQUIRES_OK(ctx,
-                           ctx->builder()->SetInstructionContents(
-                               slice, output_contents));
+            if (SymbolicContentEnabled()) {
+              OP_REQUIRES_OK(ctx,
+                             ctx->builder()->SetInstructionContents(
+                                 slice, output_contents));
+            }
           }
         }
       }
       if (has_output_contents) {
         auto output_expr =
             XlaExpression::XlaOp(slice, ctx->expected_output_dtype(0));
-        output_expr.set_contents(std::move(output_contents));
+        if (SymbolicContentEnabled()) {
+          output_expr.set_contents(std::move(output_contents));
+        }
         ctx->SetOutputExpression(0, output_expr);
         return;
       }

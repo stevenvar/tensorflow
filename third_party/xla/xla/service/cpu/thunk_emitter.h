@@ -183,7 +183,7 @@ class ThunkEmitter {
   absl::StatusOr<ThunkSequence> EmitSliceToDynamicThunk(
       const HloInstruction* instruction);
 
-  absl::StatusOr<ThunkSequence> EmitGetShapeExprValueThunk(
+  absl::StatusOr<ThunkSequence> EmitGetExpressionValueThunk(
       const HloInstruction* instruction);
 
   absl::StatusOr<ThunkSequence> EmitTopKThunk(

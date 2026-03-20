@@ -10,10 +10,10 @@
 namespace xla {
 
 // Use DfsHloRewriteVisitor to rewrite
-class GetShapeExprValueRewriteVisitor : public DfsHloRewriteVisitor {
+class GetExpressionValueRewriteVisitor : public DfsHloRewriteVisitor {
  public:
   absl::Status HandleCustomCall(HloInstruction* instr) override {
-    if (instr->custom_call_target() != "GetShapeExprValue")
+    if (instr->custom_call_target() != "GetExpressionValue")
       return absl::OkStatus();
 
     if (instr->operand_count() != 1) return absl::OkStatus();
@@ -36,7 +36,7 @@ class GetShapeExprValueRewriteVisitor : public DfsHloRewriteVisitor {
 absl::StatusOr<bool> GetOuterBatchValueSimplifier::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
-  return GetShapeExprValueRewriteVisitor{}.RunOnModule(module,
+  return GetExpressionValueRewriteVisitor{}.RunOnModule(module,
                                                         execution_threads);
 }
 }  // namespace xla

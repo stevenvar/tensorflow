@@ -110,7 +110,7 @@ absl::StatusOr<xla::XlaOp> BuildConstantWithRuntimeBatchSlot(
   xla::XlaOp zero = xla::ConstantR0<int32_t>(builder, 0);
   xla::XlaOp expr_carrier =
       xla::Broadcast(zero, {1}, {xla::DynExpr::V(1)});
-  xla::XlaOp runtime_batch = xla::GetShapeExprValue(expr_carrier);
+  xla::XlaOp runtime_batch = xla::GetExpressionValue(expr_carrier);
 
   if (arg.constant_value.dtype() == DT_INT32) {
     auto flat = arg.constant_value.flat<int32>();

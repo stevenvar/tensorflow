@@ -4584,7 +4584,7 @@ XlaOp XlaBuilder::GetDimensionSize(XlaOp operand, int64_t dimension) {
     if (dim_expr != nullptr && dim_expr->is_dynamic()) {
       XlaOp zero = ConstantR0<int32_t>(this, 0);
       XlaOp expr_carrier = Broadcast(zero, {1}, {dim_expr});
-      return GetShapeExprValue(expr_carrier);
+      return GetExpressionValue(expr_carrier);
     }
     // Calling GetDimensionSize on a static dimension returns a constant
     // instruction.
@@ -6210,9 +6210,9 @@ XlaOp GetDimensionSize(const XlaOp operand, int64_t dimension) {
   return operand.builder()->GetDimensionSize(operand, dimension);
 }
 
-XlaOp GetShapeExprValue(XlaOp operand) {
+XlaOp GetExpressionValue(XlaOp operand) {
   XlaBuilder* builder = operand.builder();
-  return CustomCall(builder, "GetShapeExprValue", {operand},
+  return CustomCall(builder, "GetExpressionValue", {operand},
                              ShapeUtil::MakeShape(S32, {}), "", false, {},
                              nullptr, CustomCallSchedule::SCHEDULE_NONE,
                              CustomCallApiVersion::API_VERSION_ORIGINAL);

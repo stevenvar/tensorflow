@@ -77,7 +77,7 @@ struct XlaArgument {
   Tensor constant_value;
 
   // Some compile-time constants are really folded runtime batch values.
-  // When non-negative, lower that constant element through GetShapeExprValue()
+  // When non-negative, lower that constant element through GetExpressionValue()
   // instead of materializing the compile-time literal.
   int64_t runtime_batch_constant_index = -1;
   // The upper bounds of the value.

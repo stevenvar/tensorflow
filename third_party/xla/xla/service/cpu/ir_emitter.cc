@@ -2824,7 +2824,7 @@ absl::Status IrEmitter::HandleOneDnnSoftmax(HloInstruction* custom_call) {
 #endif  // INTEL_MKL
 
 absl::Status IrEmitter::HandleCustomCall(HloInstruction* custom_call) {
-  if (custom_call->custom_call_target() == "GetShapeExprValue") {
+  if (custom_call->custom_call_target() == "GetExpressionValue") {
     return HandleShapeExprValue(custom_call);
   }
 

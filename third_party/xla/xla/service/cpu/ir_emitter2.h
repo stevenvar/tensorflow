@@ -113,7 +113,7 @@ class IrEmitter2 {
   // Emits a host kernel for the pad instruction.
   absl::StatusOr<KernelInfo> EmitPadHostKernel(const HloInstruction* pad);
 
-  absl::StatusOr<KernelInfo> EmitGetShapeExprValueHostKernel(
+  absl::StatusOr<KernelInfo> EmitGetExpressionValueHostKernel(
       const HloInstruction* getBatch);
 
   // Emits a host kernel for the given fusion instruction.

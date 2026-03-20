@@ -397,6 +397,8 @@ class Encapsulator {
   void operator=(const Encapsulator&) = delete;
 };
 
+namespace {
+
 bool BuildOutputShapeProto(const Node& node, int output_slot,
                            TensorShapeProto* proto) {
   AttrSlice attrs = node.attrs();
@@ -409,8 +411,6 @@ bool BuildOutputShapeProto(const Node& node, int output_slot,
   *proto = shape_attr->list().shape(output_slot);
   return true;
 }
-
-namespace {
 
 // Return in 'sorted' a topological sort of clusters according to the
 // dependencies encoded in ancestors. clusters is the list of all clusters

@@ -818,8 +818,11 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
     out.set_unknown_rank(gp_shape.unknown_rank());
     for (const auto& dim : gp_shape.dim()) {
       out.add_dim()->set_size(dim.size());
+      ExpressionProto* expr = out.add_expressions();
       if (dim.expr().node_type_case() != ExpressionProto::NODE_TYPE_NOT_SET) {
-        *out.add_expressions() = dim.expr();
+        *expr = dim.expr();
+      } else {
+        expr->set_constant_value(dim.size());
       }
     }
     return out;
@@ -913,8 +916,10 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
   if (debug_options_.annotate_cluster_id) {
     TF_RETURN_IF_ERROR(AssignAnnotatedClusterIDs());
   }
-  if (debug_options_.cluster_single_dynamic_dim) {
+  if (debug_options_.enable_dynamic_sizes) {
     LogExpressionsViaGraphProperties(*graph_);
+  }
+  if (debug_options_.cluster_single_dynamic_dim) {
     TF_RETURN_IF_ERROR(AssignDimVars());
   }
   if (debug_options_.enable_cluster_parallel) {

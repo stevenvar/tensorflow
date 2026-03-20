@@ -33,6 +33,10 @@ extern const char kXlaInferredShapesAttrName[];
 // annotations when available.
 extern const char kXlaInferredOutputTensorShapesAttrName[];
 
+// Attribute carrying inferred output TensorShapeProtos on encapsulated _Arg
+// nodes for XlaCompileOp argument reconstruction.
+extern const char kXlaInferredOutputShapesAttrName[];
+
 // Infers output shapes for all nodes in graph `g`. The output shapes will be
 // stored in node attribute `kXlaInferredShapesAttrName`.
 //

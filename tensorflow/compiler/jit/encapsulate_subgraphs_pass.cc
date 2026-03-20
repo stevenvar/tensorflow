@@ -402,13 +402,6 @@ bool BuildOutputShapeProto(const Node& node, int output_slot,
   AttrSlice attrs = node.attrs();
   auto shape_attr =
       attrs.FindByString(kXlaInferredOutputTensorShapesAttrName);
-  if (shape_attr != nullptr && shape_attr->has_list() &&
-      shape_attr->list().shape_size() > output_slot) {
-    *proto = shape_attr->list().shape(output_slot);
-    return true;
-  }
-
-  shape_attr = attrs.FindByString("_output_shapes");
   if (shape_attr == nullptr || !shape_attr->has_list() ||
       shape_attr->list().shape_size() <= output_slot) {
     return false;
@@ -551,6 +544,7 @@ absl::Status Encapsulator::Subgraph::RecordArg(
       VLOG(1) << "Adding following output shapes for node " << src_node->name()
               << " : " << output_shape_proto.DebugString();
       builder.Attr("_output_shapes", {output_shape_proto});
+      builder.Attr(kXlaInferredOutputShapesAttrName, {output_shape_proto});
     } else {
       // if cluster argument is the real argument.
       auto build_attr = attrs.FindByString("_dynamic_dim");

@@ -305,6 +305,8 @@ absl::Status PostprocessControlEdgesBetweenOutsideCompilations(
 const char kXlaInferredShapesAttrName[] = "_xla_inferred_shapes";
 const char kXlaInferredOutputTensorShapesAttrName[] =
     "_xla_inferred_output_tensor_shapes";
+const char kXlaInferredOutputShapesAttrName[] =
+    "_xla_inferred_output_shapes";
 
 const char kXlaConnectedToXlaComputationAttrName[] =
     "_xla_connected_to_xla_computation";

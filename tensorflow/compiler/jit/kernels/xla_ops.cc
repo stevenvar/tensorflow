@@ -530,6 +530,12 @@ absl::Status CompileToLocalExecutable(
           const std::string& node_name =
               fdef->signature().input_arg(arg_index).name();
 
+          auto shape_derived_attr = attr_map.find(kXlaShapeDerivedAttrName);
+          if (shape_derived_attr != attr_map.end()) {
+            VLOG(1) << "XlaCompileOp retrieved shape-derived marker for arg "
+                    << arg_index << " node=" << node_name;
+          }
+
           // Special case for _dynamic_dim...
           auto dyn_dim_attr = attr_map.find("_dynamic_dim");
           if (dyn_dim_attr != attr_map.end()) {

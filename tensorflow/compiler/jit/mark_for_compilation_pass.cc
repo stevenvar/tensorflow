@@ -813,6 +813,17 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
   int found = 0;
   VLOG(1) << "[EXPR][GP] === GraphProperties output expr dump ===";
 
+  auto convert_graph_properties_shape = [](const TensorShapeProto& gp_shape) {
+    TensorShapeProto out;
+    out.set_unknown_rank(gp_shape.unknown_rank());
+    for (const auto& dim : gp_shape.dim()) {
+      out.add_dim()->set_size(dim.size());
+      if (dim.expr().node_type_case() != ExpressionProto::NODE_TYPE_NOT_SET) {
+        *out.add_expressions() = dim.expr();
+      }
+    }
+    return out;
+  };
 
   for (const NodeDef& n : graph_def.node()) {
     if (!props.HasOutputProperties(n.name())) continue;
@@ -823,7 +834,7 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
     for (int out_idx = 0; out_idx < static_cast<int>(outs.size()); ++out_idx) {
       const auto& tp = outs[out_idx];
       const TensorShapeProto& shp = tp.shape();
-      inferred_output_shapes.push_back(shp);
+      inferred_output_shapes.push_back(convert_graph_properties_shape(shp));
 
       std::vector<std::unique_ptr<DimExpr>> exprs;
       for (int d = 0; d < shp.dim_size(); ++d) {

@@ -56,8 +56,6 @@ limitations under the License.
 #include "tensorflow/core/util/device_name_utils.h"
 #include "tensorflow/core/util/dump_graph.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
-#include "tensorflow/core/grappler/costs/graph_properties.h"
-#include "tensorflow/core/grappler/grappler_item.h"
 namespace tensorflow {
 
 static const absl::flat_hash_set<absl::string_view> kFailingOps = {

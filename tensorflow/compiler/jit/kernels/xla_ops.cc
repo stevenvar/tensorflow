@@ -632,8 +632,9 @@ absl::Status CompileToLocalExecutable(
       if (arg.constant_value.dtype() == DT_INT32) {
         auto flat = arg.constant_value.flat<int32>();
         int rewrite_index = -1;
-        // Heuristic: rewrite only scalar constants or shape-like int vectors
-        // with a unique entry matching the observed runtime batch size.
+        // Heuristic: rewrite only scalar constants or shape-like int vectors.
+        // In practice we expect at most one entry to match the observed
+        // runtime batch size, so rewrite the first matching entry.
         for (int i = 0; i < arg.constant_value.NumElements(); ++i) {
           if (flat(i) == dynamic_dim_value) {
             rewrite_index = i;

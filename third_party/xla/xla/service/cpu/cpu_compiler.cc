@@ -475,7 +475,7 @@ std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
   }
 
   // Needs to happen after algebraic simplifier.
-  pipeline->AddPass<TreeReductionRewriter>();
+  // pipeline->AddPass<TreeReductionRewriter>();
 
   // BatchNormExpander can create zero-sized ops, so zero-sized HLO
   // elimination has to come after that pass.

@@ -18,6 +18,7 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/literal_util.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
+#include "tensorflow/compiler/tf2xla/symbolic_content_util.h"
 #include "xla/hlo/builder/value_inference.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
@@ -75,6 +76,53 @@ XlaExpression XlaExpression::Resource(XlaResource* resource) {
   return e;
 }
 
+void XlaExpression::set_contents(std::vector<xla::DynExpr*> contents) {
+  if (!SymbolicContentEnabled()) {
+    local_contents_.clear();
+    return;
+  }
+  switch (kind_) {
+    case Kind::kXlaOp:
+    case Kind::kTensorList:
+      if (handle_.valid() && !handle_.IsUninitialized()) {
+        auto status = handle_.builder()->SetInstructionContents(
+            handle_, std::move(contents));
+        if (!status.ok()) {
+          LOG(INFO) << "Failed to set XlaOp contents: " << status;
+        }
+        return;
+      }
+      break;
+    case Kind::kInvalid:
+    case Kind::kConstant:
+    case Kind::kResource:
+      break;
+  }
+  local_contents_ = std::move(contents);
+}
+
+absl::Span<xla::DynExpr* const> XlaExpression::contents() const {
+  if (!SymbolicContentEnabled()) {
+    return {};
+  }
+  switch (kind_) {
+    case Kind::kXlaOp:
+    case Kind::kTensorList:
+      if (handle_.valid() && !handle_.IsUninitialized()) {
+        auto contents_or = handle_.builder()->GetInstructionContents(handle_);
+        if (contents_or.ok()) {
+          return *contents_or.value();
+        }
+      }
+      break;
+    case Kind::kInvalid:
+    case Kind::kConstant:
+    case Kind::kResource:
+      break;
+  }
+  return local_contents_;
+}
+
 string XlaExpression::HumanString() const {
   switch (kind_) {
     case Kind::kInvalid:
@@ -97,9 +145,14 @@ xla::XlaOp XlaExpression::AsXlaOp(xla::XlaBuilder* builder) const {
         xla::BorrowingLiteral literal;
         TF_RETURN_IF_ERROR(
             HostTensorToBorrowingLiteral(*constant_value_, &literal));
+        xla::XlaOp op = xla::ConstantLiteral(builder, literal);
+        if (SymbolicContentEnabled() && !local_contents_.empty()) {
+          TF_RETURN_IF_ERROR(
+              builder->SetInstructionContents(op, local_contents_));
+        }
         if (!dynamic_constant_index_.has_value() ||
             dynamic_constant_expr_ == nullptr) {
-          return xla::ConstantLiteral(builder, literal);
+          return op;
         }
 
         xla::FrontendAttributes attributes = builder->frontend_attributes();

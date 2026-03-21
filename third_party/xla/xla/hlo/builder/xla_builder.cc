@@ -56,6 +56,7 @@ limitations under the License.
 #include "xla/literal.h"
 #include "xla/literal_util.h"
 #include "xla/permutation_util.h"
+#include "xla/printer.h"
 #include "xla/primitive_util.h"
 #include "xla/service/hlo.pb.h"
 #include "xla/service/shape_inference.h"
@@ -518,6 +519,24 @@ static std::string ShapeToString(const ShapeProto& shape) {
   return absl::StrCat("[", absl::StrJoin(shape.dimensions(), ", "), "]");
 }
 
+static std::string ContentsToString(absl::Span<DynExpr* const> contents) {
+  return absl::StrCat(
+      "[", absl::StrJoin(contents, ", ", [](std::string* out, DynExpr* expr) {
+        if (expr == nullptr) {
+          absl::StrAppend(out, "null");
+          return;
+        }
+        if (!expr->is_dynamic() && expr->get_val() == -444) {
+          absl::StrAppend(out, "?");
+          return;
+        }
+        StringPrinter printer;
+        expr->print(&printer);
+        absl::StrAppend(out, std::move(printer).ToString());
+      }),
+      "]");
+}
+
 void XlaBuilder::ToStringHelper(std::string* out, int ident,
                                 int64_t op_handle) const {
   const HloInstructionProto& instr =
@@ -707,6 +726,32 @@ absl::Status XlaBuilder::SetInstructionFrontendAttribute(const XlaOp op,
   return absl::OkStatus();
 }
 
+absl::Status XlaBuilder::SetInstructionContents(XlaOp op,
+                                                std::vector<DynExpr*> contents) {
+  auto it = handle_to_index_.find(op.handle());
+  if (it == handle_to_index_.end()) {
+    return InvalidArgument("No XlaOp with handle %d", op.handle());
+  }
+  const bool has_dynamic_content =
+      absl::c_any_of(contents, [](DynExpr* expr) {
+        return expr != nullptr && expr->is_dynamic();
+      });
+  if (!has_dynamic_content) {
+    contents.clear();
+  }
+  instruction_contents_.at(it->second) = std::move(contents);
+  return absl::OkStatus();
+}
+
+absl::StatusOr<const std::vector<DynExpr*>*> XlaBuilder::GetInstructionContents(
+    XlaOp op) const {
+  auto it = handle_to_index_.find(op.handle());
+  if (it == handle_to_index_.end()) {
+    return InvalidArgument("No XlaOp with handle %d", op.handle());
+  }
+  return &instruction_contents_.at(it->second);
+}
+
 absl::Status XlaBuilder::SetInstructionSharding(
     XlaOp op, const std::optional<OpSharding>& sharding) {
   TF_ASSIGN_OR_RETURN(auto instr_proto, LookUpMutableInstruction(op));
@@ -784,7 +829,13 @@ absl::StatusOr<XlaComputation> XlaBuilder::Build(
   *entry.mutable_program_shape() = program_shape.ToProto();
   entry.set_root_id(root_id);
 
-  for (auto& instruction : instructions_) {
+  for (size_t index = 0; index < instructions_.size(); ++index) {
+    auto& instruction = instructions_[index];
+    if (!instruction_contents_[index].empty()) {
+      auto* frontend_attributes = instruction.mutable_frontend_attributes();
+      (*frontend_attributes->mutable_map())["_content"] =
+          ContentsToString(instruction_contents_[index]);
+    }
     // Ensures that the instruction names are unique among the whole graph.
     instruction.set_name(
         GetFullName(instruction.name(), kNameSeparator, instruction.id()));
@@ -810,6 +861,7 @@ absl::StatusOr<XlaComputation> XlaBuilder::Build(
   // Clear data held by this builder.
   this->instructions_.clear();
   this->instruction_shapes_.clear();
+  this->instruction_contents_.clear();
   this->handle_to_index_.clear();
   this->embedded_.clear();
   this->parameter_numbers_.clear();
@@ -4966,6 +5018,7 @@ absl::StatusOr<XlaOp> XlaBuilder::AddInstruction(
   TF_ASSIGN_OR_RETURN(Shape shape,
                       Shape::FromProto(instructions_.back().shape()));
   instruction_shapes_.push_back(std::make_unique<Shape>(std::move(shape)));
+  instruction_contents_.push_back({});
 
   XlaOp op(handle, this);
   return op;

@@ -874,6 +874,7 @@ cc_library(
     hdrs = [
         "literal_util.h",
         "shape_util.h",
+        "symbolic_content_util.h",
         "type_util.h",
     ],
     visibility = [":friends"],
@@ -882,6 +883,7 @@ cc_library(
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:protos_all_cc",
+        "//tensorflow/compiler/jit:flags",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",

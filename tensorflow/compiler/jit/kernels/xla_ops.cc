@@ -72,6 +72,7 @@ limitations under the License.
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/op_requires.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_util.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/monitoring/counter.h"
@@ -630,32 +631,44 @@ absl::Status CompileToLocalExecutable(
 
       if (arg.constant_value.dtype() == DT_INT32) {
         auto flat = arg.constant_value.flat<int32>();
+        int rewrite_index = -1;
         // Heuristic: rewrite only scalar constants or shape-like int vectors
         // with a unique entry matching the observed runtime batch size.
         for (int i = 0; i < arg.constant_value.NumElements(); ++i) {
           if (flat(i) == dynamic_dim_value) {
-            VLOG(1) << "XlaCompileOp int32 constant arg " << arg_index
-                    << " index " << i
-                    << " matches dynamic_dim_value=" << dynamic_dim_value;
-            arg.dynamic_constant_index = i;
-            arg.dynamic_constant_expr = dynamic_dim_expr;
-            flat(i) = filled_batch;
+            rewrite_index = i;
             break;
           }
         }
+        if (rewrite_index >= 0) {
+          arg.constant_value = tensor::DeepCopy(arg.constant_value);
+          auto mutable_flat = arg.constant_value.flat<int32>();
+          VLOG(1) << "XlaCompileOp int32 constant arg " << arg_index
+                  << " index " << rewrite_index
+                  << " matches dynamic_dim_value=" << dynamic_dim_value;
+          arg.dynamic_constant_index = rewrite_index;
+          arg.dynamic_constant_expr = dynamic_dim_expr;
+          mutable_flat(rewrite_index) = filled_batch;
+        }
       } else if (arg.constant_value.dtype() == DT_INT64) {
         auto flat = arg.constant_value.flat<int64_t>();
+        int rewrite_index = -1;
         // Same heuristic for int64 scalar constants or shape-like vectors.
         for (int i = 0; i < arg.constant_value.NumElements(); ++i) {
           if (flat(i) == dynamic_dim_value) {
-            VLOG(1) << "XlaCompileOp int64 constant arg " << arg_index
-                    << " index " << i
-                    << " matches dynamic_dim_value=" << dynamic_dim_value;
-            arg.dynamic_constant_index = i;
-            arg.dynamic_constant_expr = dynamic_dim_expr;
-            flat(i) = filled_batch;
+            rewrite_index = i;
             break;
           }
+        }
+        if (rewrite_index >= 0) {
+          arg.constant_value = tensor::DeepCopy(arg.constant_value);
+          auto mutable_flat = arg.constant_value.flat<int64_t>();
+          VLOG(1) << "XlaCompileOp int64 constant arg " << arg_index
+                  << " index " << rewrite_index
+                  << " matches dynamic_dim_value=" << dynamic_dim_value;
+          arg.dynamic_constant_index = rewrite_index;
+          arg.dynamic_constant_expr = dynamic_dim_expr;
+          mutable_flat(rewrite_index) = filled_batch;
         }
       }
     };

@@ -916,6 +916,7 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
   }
   if (debug_options_.enable_dynamic_sizes) {
     LogExpressionsViaGraphProperties(*graph_);
+    TF_RETURN_IF_ERROR(AssignDimVars());
     for (Node* n : graph_->op_nodes()) {
       bool mark_shape_derived = false;
       if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {

@@ -19,6 +19,7 @@ limitations under the License.
 #include <string>
 
 #include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "tensorflow/core/framework/tensor_shape.pb.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/gtl/array_slice.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
@@ -31,6 +32,8 @@ limitations under the License.
 #include "xla/shape_dynexpr.h"
 
 namespace tensorflow {
+
+xla::DynExpr* DynExprFromProto(const ExpressionProto& proto);
 
 // START_SKIP_DOXYGEN
 template <class Shape>

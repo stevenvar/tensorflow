@@ -527,7 +527,7 @@ static std::string ContentsToString(absl::Span<DynExpr* const> contents) {
           return;
         }
         if (!expr->is_dynamic() && expr->get_val() == -444) {
-          absl::StrAppend(out, "?");
+          absl::StrAppend(out, "_");
           return;
         }
         StringPrinter printer;

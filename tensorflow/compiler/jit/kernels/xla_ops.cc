@@ -64,6 +64,7 @@ limitations under the License.
 #include "xla/executable_run_options.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/service/gpu/gpu_executable_run_options.h"
+#include "xla/shape_dynexpr.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
 #include "xla/tsl/protobuf/error_codes.pb.h"
 #include "tensorflow/core/framework/allocator.h"
@@ -508,14 +509,17 @@ absl::Status CompileToLocalExecutable(
     // Only supporting one dynamic dimension. 
     bool has_multiple_dynamic_dim_values = false;
     int64_t dynamic_dim_value = 0;
+    ExpressionProto dynamic_dim_expr_proto;
     XlaBatchMatcher* xla_batch_matcher =
         xla_device_compiler->xla_batch_matcher();
     xla::DynExpr* dynamic_dim_expr = nullptr;
-    auto record_dynamic_dim_value = [&](int64_t dim_size, xla::DynExpr* expr) {
+    auto record_dynamic_dim_value = [&](int64_t dim_size, xla::DynExpr* expr,
+                                        const ExpressionProto& expr_proto) {
       if (!saw_dynamic_dim_value) {
         saw_dynamic_dim_value = true;
         dynamic_dim_value = dim_size;
         dynamic_dim_expr = expr;
+        dynamic_dim_expr_proto = expr_proto;
         return;
       }
       if (dynamic_dim_value != dim_size) {
@@ -544,7 +548,10 @@ absl::Status CompileToLocalExecutable(
                 std::get<TensorShape>(norm_args[arg_index].shape);
             const AttrValue& v = dyn_dim_attr->second;
             int64_t idx = v.i();
-            record_dynamic_dim_value(shp.dim_size(idx), xla::DynExpr::V(1));
+            ExpressionProto expr_proto;
+            expr_proto.set_variable_id(1);
+            record_dynamic_dim_value(shp.dim_size(idx), xla::DynExpr::V(1),
+                                     expr_proto);
             if (!filled_batch && xla_batch_matcher) {
               filled_batch =
                   xla_batch_matcher->get_xla_compile_batch(shp.dim_size(idx));
@@ -583,7 +590,7 @@ absl::Status CompileToLocalExecutable(
                   VLOG(1) << "Solved dynamic dimension from "
                           << shp.dim_size(idx) << " to " << var_value;
                 }
-                record_dynamic_dim_value(var_value, e);
+                record_dynamic_dim_value(var_value, e, exp[idx]);
                 filled_batch =
                     xla_batch_matcher->get_xla_compile_batch(var_value);
                 break;
@@ -629,6 +636,21 @@ absl::Status CompileToLocalExecutable(
         return;
       }
 
+      auto set_constant_contents = [&]<typename T>(int rewrite_index) {
+        arg.constant_value_expressions.clear();
+        const int64_t num_elements = arg.constant_value.NumElements();
+        arg.constant_value_expressions.reserve(num_elements);
+        for (int64_t i = 0; i < num_elements; ++i) {
+          ExpressionProto expr;
+          if (i == rewrite_index) {
+            expr = dynamic_dim_expr_proto;
+          } else {
+            expr.set_constant_value(arg.constant_value.flat<T>()(i));
+          }
+          arg.constant_value_expressions.push_back(std::move(expr));
+        }
+      };
+
       if (arg.constant_value.dtype() == DT_INT32) {
         auto flat = arg.constant_value.flat<int32>();
         int rewrite_index = -1;
@@ -650,6 +672,7 @@ absl::Status CompileToLocalExecutable(
           arg.dynamic_constant_index = rewrite_index;
           arg.dynamic_constant_expr = dynamic_dim_expr;
           mutable_flat(rewrite_index) = filled_batch;
+          set_constant_contents.template operator()<int32>(rewrite_index);
         }
       } else if (arg.constant_value.dtype() == DT_INT64) {
         auto flat = arg.constant_value.flat<int64_t>();
@@ -670,6 +693,7 @@ absl::Status CompileToLocalExecutable(
           arg.dynamic_constant_index = rewrite_index;
           arg.dynamic_constant_expr = dynamic_dim_expr;
           mutable_flat(rewrite_index) = filled_batch;
+          set_constant_contents.template operator()<int64_t>(rewrite_index);
         }
       }
     };

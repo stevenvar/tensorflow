@@ -65,6 +65,42 @@ bool DimExpr::Equals(const DimExpr* a, const DimExpr* b) {
   return EqualsImpl(a, b);
 }
 
+xla::DynExpr* DynExprFromDimExpr(const DimExpr* expr,
+                                 int32_t variable_id_override) {
+  switch (expr->kind()) {
+    case DimExpr::Kind::kConstant: {
+      auto* constant = static_cast<const Constant*>(expr);
+      return xla::DynExpr::_(constant->value());
+    }
+    case DimExpr::Kind::kVariable: {
+      auto* variable = static_cast<const Variable*>(expr);
+      return xla::DynExpr::V(variable_id_override > 0 ? variable_id_override
+                                                      : variable->id());
+    }
+    case DimExpr::Kind::kAdd: {
+      auto* add = static_cast<const ExprAdd*>(expr);
+      return *DynExprFromDimExpr(add->lhs(), variable_id_override) +
+             *DynExprFromDimExpr(add->rhs(), variable_id_override);
+    }
+    case DimExpr::Kind::kSub: {
+      auto* sub = static_cast<const ExprSub*>(expr);
+      return *DynExprFromDimExpr(sub->lhs(), variable_id_override) -
+             *DynExprFromDimExpr(sub->rhs(), variable_id_override);
+    }
+    case DimExpr::Kind::kMul: {
+      auto* mul = static_cast<const ExprMul*>(expr);
+      return *DynExprFromDimExpr(mul->lhs(), variable_id_override) *
+             *DynExprFromDimExpr(mul->rhs(), variable_id_override);
+    }
+    case DimExpr::Kind::kDiv: {
+      auto* div = static_cast<const ExprDiv*>(expr);
+      return *DynExprFromDimExpr(div->lhs(), variable_id_override) /
+             *DynExprFromDimExpr(div->rhs(), variable_id_override);
+    }
+  }
+  return nullptr;
+}
+
 std::unique_ptr<DimExpr> DimExpr::FromProto(const ExpressionProto& proto) {
   switch (proto.node_type_case()) {
     case ExpressionProto::kConstantValue:

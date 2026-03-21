@@ -6135,7 +6135,24 @@ absl::Status AlgebraicSimplifierVisitor::HandleReshape(
   // Delete no-op reshapes, i.e. where shape = operand shape.
   if (SameShape(reshape, operand)) {
     VLOG(3) << "deleting no-op reshape";
-    return ReplaceInstruction(reshape, operand);
+    if (ShapeUtil::Equal(reshape->shape(), operand->shape())) {
+      return ReplaceInstruction(reshape, operand);
+    }
+    bool result_has_expressions = false;
+    for (int64_t i = 0; i < reshape->shape().dimensions_size(); ++i) {
+      if (reshape->shape().expressions(i) != nullptr) {
+        result_has_expressions = true;
+        break;
+      }
+    }
+    if (!result_has_expressions) {
+      return ReplaceInstruction(reshape, operand);
+    }
+    if (operand->user_count() == 1) {
+      *operand->mutable_shape() = reshape->shape();
+      return ReplaceInstruction(reshape, operand);
+    }
+    return absl::OkStatus();
   }
 
   // Merge reshapes.

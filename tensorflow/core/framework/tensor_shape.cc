@@ -26,7 +26,7 @@ limitations under the License.
 
 namespace tensorflow {
 
-xla::DynExpr* ExprFromProto(const ExpressionProto& proto) {
+xla::DynExpr* DynExprFromProto(const ExpressionProto& proto) {
   switch (proto.node_type_case()) {
     case ExpressionProto::kConstantValue:
       return xla::DynExpr::_(proto.constant_value());
@@ -36,22 +36,22 @@ xla::DynExpr* ExprFromProto(const ExpressionProto& proto) {
 
     case ExpressionProto::kAddNode: {
       const auto& add = proto.add_node();
-      return *ExprFromProto(add.lhs()) + *ExprFromProto(add.rhs());
+      return *DynExprFromProto(add.lhs()) + *DynExprFromProto(add.rhs());
     }
 
     case ExpressionProto::kSubNode: {
       const auto& sub = proto.sub_node();
-      return *ExprFromProto(sub.lhs()) - *ExprFromProto(sub.rhs());
+      return *DynExprFromProto(sub.lhs()) - *DynExprFromProto(sub.rhs());
     }
 
     case ExpressionProto::kMulNode: {
       const auto& mul = proto.mul_node();
-      return *ExprFromProto(mul.lhs()) * *ExprFromProto(mul.rhs());
+      return *DynExprFromProto(mul.lhs()) * *DynExprFromProto(mul.rhs());
     }
 
     case ExpressionProto::kDivNode: {
       const auto& div = proto.div_node();
-      return *ExprFromProto(div.lhs()) / *ExprFromProto(div.rhs());
+      return *DynExprFromProto(div.lhs()) / *DynExprFromProto(div.rhs());
     }
 
     case ExpressionProto::NODE_TYPE_NOT_SET:
@@ -252,7 +252,7 @@ TensorShapeBase<Shape>::TensorShapeBase(const TensorShapeProto& proto) {
       AddDim(d.size());
     }
     for (const auto& e : proto.expressions()) {
-      AddExpression(ExprFromProto(e));
+      AddExpression(DynExprFromProto(e));
     }
   }
 }
@@ -294,7 +294,7 @@ absl::Status TensorShapeBase<Shape>::BuildTensorShapeBase(
       }
     }
     for (const auto& e : proto.expressions()) {
-      out->AddExpression(ExprFromProto(e));
+      out->AddExpression(DynExprFromProto(e));
     }
   }
   return absl::OkStatus();
@@ -794,16 +794,11 @@ void TensorShapeBase<Shape>::RemoveDimRange(int begin, int end) {
       new_exprs.erase(new_exprs.begin() + begin, new_exprs.begin() + expr_end);
     }
   }
-
   vals.erase(vals.begin() + begin, vals.begin() + end);
-
-  // Truncate if the removed dims reduce rank below expression vector size.
   const int64_t new_rank = vals.size();
   if (new_exprs.size() > static_cast<size_t>(new_rank)) {
     new_exprs.resize(new_rank);
   }
-
-
   ClearAllButDataType();
   set_expressions(new_exprs);
   for (auto dval : vals) {
@@ -843,9 +838,7 @@ absl::Status TensorShapeBase<Shape>::RemoveDimRangeWithStatus(int begin,
 
   absl::InlinedVector<int64_t, 8UL> vals;
   AppendTo(*this, &vals);
-
   std::vector<xla::DynExpr*> new_exprs = get_expressions();
-
   if (begin < static_cast<int64_t>(new_exprs.size())) {
     int64_t expr_end = end;
     if (expr_end > static_cast<int64_t>(new_exprs.size())) {
@@ -855,16 +848,14 @@ absl::Status TensorShapeBase<Shape>::RemoveDimRangeWithStatus(int begin,
       new_exprs.erase(new_exprs.begin() + begin, new_exprs.begin() + expr_end);
     }
   }
-
   vals.erase(vals.begin() + begin, vals.begin() + end);
-  ClearAllButDataType();
-
   const int64_t new_rank = vals.size();
   if (new_exprs.size() > static_cast<size_t>(new_rank)) {
     new_exprs.resize(new_rank);
   }
-
+  ClearAllButDataType();
   set_expressions(new_exprs);
+
   absl::Status s = absl::OkStatus();
   for (auto dval : vals) {
     s.Update(AddDimWithStatus(dval));
@@ -961,7 +952,7 @@ string TensorShapeRep::DebugString(const TensorShapeProto& proto) {
   first = true;
   for (const auto& e : proto.expressions()) {
     if (!first) strings::StrAppend(&s, ",");
-    auto exp = ExprFromProto(e);
+    auto exp = DynExprFromProto(e);
     strings::StrAppend(&s, ExprToString(exp));
     first = false;
   }

@@ -484,6 +484,20 @@ class XlaBuilder {
   absl::Status SetInstructionFrontendAttribute(XlaOp op, std::string attribute,
                                                std::string value);
 
+  // Associates symbolic contents metadata with a specific instruction.
+  absl::Status SetInstructionContents(XlaOp op,
+                                      std::vector<DynExpr*> contents);
+
+  // Associates symbolic contents metadata with an instruction and the generated
+  // subgraph reachable through its operands. Parameter instructions are left
+  // untouched.
+  absl::Status SetInstructionContentsRecursively(
+      XlaOp op, std::vector<DynExpr*> contents);
+
+  // Returns symbolic contents metadata attached to an instruction, if any.
+  absl::StatusOr<const std::vector<DynExpr*>*> GetInstructionContents(
+      XlaOp op) const;
+
   // Looks up the HloInstruction and sets the sharding. If the sharding already
   // existed, then its value is updated.
   //
@@ -1200,6 +1214,7 @@ class XlaBuilder {
   // A cache for the HloInstructionProto shapes, to avoid recreating Shape
   // objects from protos and to support the GetShapePtr() API.
   std::vector<std::unique_ptr<Shape>> instruction_shapes_;
+  std::vector<std::vector<DynExpr*>> instruction_contents_;
 
   // Dynamic parameter configuration of this computation.
   DynamicParameterBinding dynamic_parameter_binding_;

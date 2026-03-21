@@ -38,6 +38,7 @@ limitations under the License.
 #include "tensorflow/compiler/jit/defs.h"
 #include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/jit/shape_inference.h"
+#include "tensorflow/compiler/tf2xla/symbolic_content_util.h"
 #include "tensorflow/compiler/jit/xla_compile_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/attribute_utils.h"
 #include "tensorflow/compiler/mlir/tf2xla/api/v1/compile_mlir_util.h"
@@ -93,6 +94,29 @@ namespace {
 constexpr char kSingleOpComponent[] = "TF2XLA_XLA_COMPILER_COMPILE_SINGLE_OP";
 constexpr char kCompileFunctionComponent[] =
     "TF2XLA_XLA_COMPILER_COMPILE_FUNCTION";
+
+xla::DynExpr* ExprProtoToDynExpr(const ExpressionProto& proto) {
+  switch (proto.node_type_case()) {
+    case ExpressionProto::kConstantValue:
+      return xla::DynExpr::_(proto.constant_value());
+    case ExpressionProto::kVariableId:
+      return xla::DynExpr::V(1);
+    case ExpressionProto::kAddNode:
+      return *ExprProtoToDynExpr(proto.add_node().lhs()) +
+             *ExprProtoToDynExpr(proto.add_node().rhs());
+    case ExpressionProto::kSubNode:
+      return *ExprProtoToDynExpr(proto.sub_node().lhs()) -
+             *ExprProtoToDynExpr(proto.sub_node().rhs());
+    case ExpressionProto::kMulNode:
+      return *ExprProtoToDynExpr(proto.mul_node().lhs()) *
+             *ExprProtoToDynExpr(proto.mul_node().rhs());
+    case ExpressionProto::kDivNode:
+      return *ExprProtoToDynExpr(proto.div_node().lhs()) /
+             *ExprProtoToDynExpr(proto.div_node().rhs());
+    case ExpressionProto::NODE_TYPE_NOT_SET:
+      return nullptr;
+  }
+}
 
 // Checks that arguments `args` match types `types`.
 absl::Status CheckSignature(const DataTypeVector& types,
@@ -1119,6 +1143,20 @@ absl::Status XlaCompiler::BuildArguments(
       }
       case XlaCompiler::Argument::kConstant:
         arg_expression = XlaExpression::Constant(arg.constant_value);
+        if (SymbolicContentEnabled() &&
+            !arg.constant_value_expressions.empty()) {
+          // Preserve symbolic per-element metadata for shape-like constants so
+          // later tf2xla consumers can recover dynamic contents from them.
+          std::vector<xla::DynExpr*> contents;
+          contents.reserve(arg.constant_value_expressions.size());
+          for (const ExpressionProto& expr : arg.constant_value_expressions) {
+            xla::DynExpr* parsed = ExprProtoToDynExpr(expr);
+            contents.push_back(parsed != nullptr && parsed->is_dynamic()
+                                   ? parsed
+                                   : xla::DynExpr::_(-444));
+          }
+          arg_expression.set_contents(std::move(contents));
+        }
         break;
       case XlaCompiler::Argument::kInvalid:
         return errors::Internal(

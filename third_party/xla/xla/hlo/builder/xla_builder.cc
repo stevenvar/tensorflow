@@ -4582,8 +4582,11 @@ XlaOp XlaBuilder::GetDimensionSize(XlaOp operand, int64_t dimension) {
                                          *operand_shape, dimension));
     DynExpr* dim_expr = operand_shape->expressions(dimension);
     if (dim_expr != nullptr && dim_expr->is_dynamic()) {
-      XlaOp zero = ConstantR0<int32_t>(this, 0);
-      XlaOp expr_carrier = Broadcast(zero, {1}, {dim_expr});
+      // Carry the padded static dimension as the operand value so value
+      // inference can treat it as an upper bound for GetExpressionValue.
+      XlaOp dim_bound =
+          ConstantR0<int32_t>(this, operand_shape->dimensions(dimension));
+      XlaOp expr_carrier = Broadcast(dim_bound, {1}, {dim_expr});
       return GetExpressionValue(expr_carrier);
     }
     // Calling GetDimensionSize on a static dimension returns a constant

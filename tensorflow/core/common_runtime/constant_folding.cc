@@ -600,6 +600,9 @@ bool ReplaceTensorWithConstant(
 
   VLOG(1) << "Replacing " << tensor.first->name() << " :: " << tensor.second
           << " with a constant";
+  VLOG(1) << "ReplaceTensorWithConstant creating Const from "
+          << tensor.first->name() << " :: " << tensor.second
+          << " with value " << constant.SummarizeValue(16);
 
   if (!NodeBuilder(builder).Finalize(graph, &constant_node).ok()) {
     return false;

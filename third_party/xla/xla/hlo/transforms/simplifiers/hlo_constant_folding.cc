@@ -28,6 +28,7 @@ limitations under the License.
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/strings/str_format.h"
+#include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
 #include "absl/time/time.h"
 #include "xla/hlo/evaluator/hlo_evaluator.h"
@@ -225,6 +226,33 @@ absl::StatusOr<bool> HloConstantFolding::Run(
         continue;
       }
 
+      bool source_has_dynamic_constant_marker = false;
+      std::vector<std::string> marked_constant_operands;
+      for (const HloInstruction* operand : instruction->operands()) {
+        if (operand->opcode() != HloOpcode::kConstant ||
+            !operand->has_frontend_attributes()) {
+          continue;
+        }
+        const auto& attrs = operand->frontend_attributes().map();
+        auto it = attrs.find("dynamic_constant_index");
+        if (it == attrs.end()) {
+          continue;
+        }
+        source_has_dynamic_constant_marker = true;
+        marked_constant_operands.push_back(absl::StrFormat(
+            "%s:index=%s literal=%s", operand->name(), it->second,
+            operand->literal().ToString()));
+      }
+      if (source_has_dynamic_constant_marker) {
+        VLOG(1) << "Skipping HloConstantFolding for " << instruction->name()
+                << " (" << HloOpcodeString(instruction->opcode())
+                << ") because source constant operands carry "
+                   "dynamic_constant_index";
+        VLOG(1) << "Marked constant operands: "
+                << absl::StrJoin(marked_constant_operands, ", ");
+        continue;
+      }
+
       // Check for instructions that we can't fold even if they appear inside of
       // a subcomputation (e.g. a kCall).
       if (IsOrContainsIllegalInstr(instruction)) {
@@ -323,6 +351,17 @@ absl::StatusOr<bool> HloConstantFolding::Run(
       changed = true;
       HloInstruction* new_constant = instruction->AddInstruction(
           HloInstruction::CreateConstant(std::move(result)));
+      VLOG(1) << "HloConstantFolding created constant from "
+              << instruction->name() << " ("
+              << HloOpcodeString(instruction->opcode())
+              << "), source_has_dynamic_constant_marker="
+              << source_has_dynamic_constant_marker;
+      if (!marked_constant_operands.empty()) {
+        VLOG(1) << "Marked constant operands: "
+                << absl::StrJoin(marked_constant_operands, ", ");
+      }
+      VLOG(1) << "Folded constant literal -> "
+              << new_constant->literal().ToString();
       if (new_constant->shape().has_layout()) {
         // Update element_size_in_bits on the new instruction's layout. Literals
         // always have element_size_in_bits set to 0, and CreateConstant copies

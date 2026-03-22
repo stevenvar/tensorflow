@@ -455,18 +455,18 @@ void AddHloVerifier(HloPassPipeline* pipeline, HloVerifierOpts&& opts = {},
 bool DynamicConstantRewriterEnabled(const HloModule* module) {
   const auto& extra_options =
       module->config().debug_options().xla_backend_extra_options();
-  auto it = extra_options.find("xla_cpu_enable_dynamic_constant_rewriter");
+  auto it = extra_options.find("xla_cpu_disable_dynamic_constant_rewriter");
   if (it == extra_options.end()) {
     return true;
   }
-  bool enabled = true;
-  if (!absl::SimpleAtob(it->second, &enabled)) {
+  bool disabled = false;
+  if (!absl::SimpleAtob(it->second, &disabled)) {
     LOG(WARNING)
-        << "Ignoring invalid xla_cpu_enable_dynamic_constant_rewriter value: "
+        << "Ignoring invalid xla_cpu_disable_dynamic_constant_rewriter value: "
         << it->second;
     return true;
   }
-  return enabled;
+  return !disabled;
 }
 
 std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(

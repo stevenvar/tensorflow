@@ -25,6 +25,8 @@ limitations under the License.
 
 namespace xla {
 
+inline constexpr int64_t kMissingExpressionSentinel = -999;
+
 class DynExpr {
  public:
   virtual ~DynExpr() = default;
@@ -56,6 +58,10 @@ class Constant : public DynExpr {
  public:
   explicit Constant(int64_t v) : value(v) {}
   void print(xla::Printer* printer) const override {
+    if (value == kMissingExpressionSentinel) {
+      printer->Append("_");
+      return;
+    }
     if (value < 0) {
       printer->Append("(");
     }
@@ -366,6 +372,34 @@ DynExpr* operator-(DynExpr& lhs, DynExpr& rhs);
 DynExpr* operator-(DynExpr& lhs, int64_t d);
 bool operator==(DynExpr& lhs, DynExpr& rhs);
 bool operator==(DynExpr& lhs, int64_t d);
+
+inline DynExpr* DynExprFromProto(const ExpressionProto& proto) {
+  switch (proto.node_type_case()) {
+    case ExpressionProto::kConstantValue:
+      return DynExpr::_(proto.constant_value());
+    case ExpressionProto::kVariableId:
+      return DynExpr::V(proto.variable_id());
+    case ExpressionProto::kAddNode: {
+      const auto& add = proto.add_node();
+      return new Add(DynExprFromProto(add.lhs()), DynExprFromProto(add.rhs()));
+    }
+    case ExpressionProto::kSubNode: {
+      const auto& sub = proto.sub_node();
+      return new Sub(DynExprFromProto(sub.lhs()), DynExprFromProto(sub.rhs()));
+    }
+    case ExpressionProto::kMulNode: {
+      const auto& mul = proto.mul_node();
+      return new Mul(DynExprFromProto(mul.lhs()), DynExprFromProto(mul.rhs()));
+    }
+    case ExpressionProto::kDivNode: {
+      const auto& div = proto.div_node();
+      return new Div(DynExprFromProto(div.lhs()), DynExprFromProto(div.rhs()));
+    }
+    case ExpressionProto::NODE_TYPE_NOT_SET:
+    default:
+      return nullptr;
+  }
+}
 
 inline DynExpr* DynExpr::_(int64_t val) {
   if (val == 0) return DynExpr::zero;

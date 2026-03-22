@@ -146,29 +146,11 @@ xla::XlaOp XlaExpression::AsXlaOp(xla::XlaBuilder* builder) const {
         TF_RETURN_IF_ERROR(
             HostTensorToBorrowingLiteral(*constant_value_, &literal));
         xla::XlaOp op = xla::ConstantLiteral(builder, literal);
-        if (SymbolicContentEnabled() && !local_contents_.empty()) {
+        if (!local_contents_.empty()) {
           TF_RETURN_IF_ERROR(
               builder->SetInstructionContents(op, local_contents_));
         }
-        if (!dynamic_constant_index_.has_value() ||
-            dynamic_constant_expr_ == nullptr) {
-          return op;
-        }
-
-        xla::FrontendAttributes attributes = builder->frontend_attributes();
-        (*attributes.mutable_map())["dynamic_constant_index"] =
-            std::to_string(*dynamic_constant_index_);
-        xla::ExpressionProto expr_proto;
-        dynamic_constant_expr_->to_proto(&expr_proto);
-        (*attributes.mutable_map())["dynamic_constant_expr"] =
-            expr_proto.ShortDebugString();
-        VLOG(1) << "Marking HLO constant with dynamic_constant_index="
-                << *dynamic_constant_index_
-                << " dynamic_constant_expr="
-                << expr_proto.ShortDebugString();
-        xla::XlaScopedFrontendAttributesAssignment assign_frontend_attributes(
-            builder, attributes);
-        return xla::ConstantLiteral(builder, literal);
+        return op;
       }
       case Kind::kTensorList:
         TF_FALLTHROUGH_INTENDED;

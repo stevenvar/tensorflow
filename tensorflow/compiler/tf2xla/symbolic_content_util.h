@@ -16,9 +16,13 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_TF2XLA_SYMBOLIC_CONTENT_UTIL_H_
 #define TENSORFLOW_COMPILER_TF2XLA_SYMBOLIC_CONTENT_UTIL_H_
 
+#include <cstdint>
+
 #include "tensorflow/compiler/jit/flags.h"
 
 namespace tensorflow {
+
+inline constexpr int64_t kUnknownContentSentinel = -444;
 
 inline bool SymbolicContentEnabled() {
   return GetMarkForCompilationPassFlags()->tf_xla_enable_symbolic_content;

@@ -519,22 +519,18 @@ static std::string ShapeToString(const ShapeProto& shape) {
   return absl::StrCat("[", absl::StrJoin(shape.dimensions(), ", "), "]");
 }
 
-static std::string ContentsToString(absl::Span<DynExpr* const> contents) {
-  return absl::StrCat(
-      "[", absl::StrJoin(contents, ", ", [](std::string* out, DynExpr* expr) {
-        if (expr == nullptr) {
-          absl::StrAppend(out, "null");
-          return;
-        }
-        if (!expr->is_dynamic() && expr->get_val() == -444) {
-          absl::StrAppend(out, "_");
-          return;
-        }
-        StringPrinter printer;
-        expr->print(&printer);
-        absl::StrAppend(out, std::move(printer).ToString());
-      }),
-      "]");
+static std::vector<ExpressionProto> ContentsToProto(
+    absl::Span<DynExpr* const> contents) {
+  std::vector<ExpressionProto> protos;
+  protos.reserve(contents.size());
+  for (DynExpr* expr : contents) {
+    ExpressionProto proto;
+    if (expr != nullptr) {
+      expr->to_proto(&proto);
+    }
+    protos.push_back(std::move(proto));
+  }
+  return protos;
 }
 
 void XlaBuilder::ToStringHelper(std::string* out, int ident,
@@ -832,9 +828,10 @@ absl::StatusOr<XlaComputation> XlaBuilder::Build(
   for (size_t index = 0; index < instructions_.size(); ++index) {
     auto& instruction = instructions_[index];
     if (!instruction_contents_[index].empty()) {
-      auto* frontend_attributes = instruction.mutable_frontend_attributes();
-      (*frontend_attributes->mutable_map())["_content"] =
-          ContentsToString(instruction_contents_[index]);
+      for (const auto& content :
+           ContentsToProto(instruction_contents_[index])) {
+        *instruction.add_contents() = content;
+      }
     }
     // Ensures that the instruction names are unique among the whole graph.
     instruction.set_name(
@@ -4634,12 +4631,10 @@ XlaOp XlaBuilder::GetDimensionSize(XlaOp operand, int64_t dimension) {
                                          *operand_shape, dimension));
     DynExpr* dim_expr = operand_shape->expressions(dimension);
     if (dim_expr != nullptr && dim_expr->is_dynamic()) {
-      // Carry the padded static dimension as the operand value so value
-      // inference can treat it as an upper bound for GetExpressionValue.
       XlaOp dim_bound =
           ConstantR0<int32_t>(this, operand_shape->dimensions(dimension));
-      XlaOp expr_carrier = Broadcast(dim_bound, {1}, {dim_expr});
-      return GetExpressionValue(expr_carrier);
+      TF_RETURN_IF_ERROR(SetInstructionContents(dim_bound, {dim_expr}));
+      return dim_bound;
     }
     // Calling GetDimensionSize on a static dimension returns a constant
     // instruction.

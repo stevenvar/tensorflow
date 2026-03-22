@@ -321,9 +321,13 @@ DynExpr* Div::s() {
 }
 
 std::ostream& operator<<(std::ostream& os, DynExpr* expr) {
-  ExpressionProto proto;
-  expr->to_proto(&proto);
-  os << proto.ShortDebugString();
+  if (expr == nullptr) {
+    os << "_";
+    return os;
+  }
+  StringPrinter printer;
+  expr->print(&printer);
+  os << std::move(printer).ToString();
   return os;
 }
 

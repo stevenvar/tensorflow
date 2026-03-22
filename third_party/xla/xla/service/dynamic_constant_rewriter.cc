@@ -9,9 +9,7 @@
 #include "absl/container/flat_hash_set.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/numbers.h"
 #include "absl/strings/string_view.h"
-#include "tsl/platform/protobuf.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -25,54 +23,20 @@
 namespace xla {
 namespace {
 
-DynExpr* DynExprFromProto(const ExpressionProto& proto) {
-  switch (proto.node_type_case()) {
-    case ExpressionProto::kConstantValue:
-      return DynExpr::_(proto.constant_value());
-    case ExpressionProto::kVariableId:
-      return DynExpr::V(proto.variable_id());
-    case ExpressionProto::kAddNode: {
-      const auto& add = proto.add_node();
-      return new Add(DynExprFromProto(add.lhs()), DynExprFromProto(add.rhs()));
-    }
-    case ExpressionProto::kSubNode: {
-      const auto& sub = proto.sub_node();
-      return new Sub(DynExprFromProto(sub.lhs()), DynExprFromProto(sub.rhs()));
-    }
-    case ExpressionProto::kMulNode: {
-      const auto& mul = proto.mul_node();
-      return new Mul(DynExprFromProto(mul.lhs()), DynExprFromProto(mul.rhs()));
-    }
-    case ExpressionProto::kDivNode: {
-      const auto& div = proto.div_node();
-      return new Div(DynExprFromProto(div.lhs()), DynExprFromProto(div.rhs()));
-    }
-    case ExpressionProto::NODE_TYPE_NOT_SET:
-    default:
-      return nullptr;
-  }
-}
-
 absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
     HloInstruction* constant_instr) {
   TF_RET_CHECK(constant_instr->opcode() == HloOpcode::kConstant);
-  TF_RET_CHECK(constant_instr->has_frontend_attributes());
+  TF_RET_CHECK(constant_instr->has_contents());
 
-  const auto& attrs = constant_instr->frontend_attributes().map();
-  auto index_it = attrs.find("dynamic_constant_index");
-  auto expr_it = attrs.find("dynamic_constant_expr");
-  TF_RET_CHECK(index_it != attrs.end());
-  TF_RET_CHECK(expr_it != attrs.end());
-
-  int64_t dynamic_index;
-  TF_RET_CHECK(absl::SimpleAtoi(index_it->second, &dynamic_index))
-      << "Failed to parse dynamic_constant_index=" << index_it->second;
-
-  ExpressionProto expr_proto;
-  TF_RET_CHECK(tsl::protobuf::TextFormat::ParseFromString(expr_it->second,
-                                                          &expr_proto))
-      << "Failed to parse dynamic_constant_expr=" << expr_it->second;
-  DynExpr* expr = DynExprFromProto(expr_proto);
+  int64_t dynamic_index = 0;
+  DynExpr* expr = nullptr;
+  for (int64_t i = 0; i < constant_instr->contents().size(); ++i) {
+    expr = DynExprFromProto(constant_instr->contents()[i]);
+    if (expr != nullptr && expr->is_dynamic()) {
+      dynamic_index = i;
+      break;
+    }
+  }
   TF_RET_CHECK(expr != nullptr);
 
   const Shape& shape = constant_instr->shape();
@@ -124,8 +88,7 @@ absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
 
   HloInstruction* base_constant =
       computation->AddInstruction(constant_instr->Clone());
-  base_constant->erase_frontend_attribute("dynamic_constant_index");
-  base_constant->erase_frontend_attribute("dynamic_constant_expr");
+  base_constant->set_contents({});
   Shape update_shape = ShapeUtil::MakeShape(shape.element_type(), {1});
   HloInstruction* update = computation->AddInstruction(
       HloInstruction::CreateReshape(update_shape, runtime_value));
@@ -137,10 +100,7 @@ absl::StatusOr<HloInstruction*> BuildDynamicConstantReplacement(
 }
 
 bool IsMarkedDynamicConstant(const HloInstruction* instr) {
-  return instr->opcode() == HloOpcode::kConstant &&
-         instr->has_frontend_attributes() &&
-         instr->get_frontend_attribute("dynamic_constant_index").has_value() &&
-         instr->get_frontend_attribute("dynamic_constant_expr").has_value();
+  return instr->opcode() == HloOpcode::kConstant && instr->has_contents();
 }
 
 }  // namespace
@@ -161,12 +121,7 @@ absl::StatusOr<bool> DynamicConstantRewriter::Run(
                 << " literal=" << instruction->literal().ToString()
                 << " marked=" << is_marked;
         if (is_marked) {
-          VLOG(1) << "  dynamic_constant_index="
-                  << *instruction->get_frontend_attribute(
-                         "dynamic_constant_index")
-                  << " dynamic_constant_expr="
-                  << *instruction->get_frontend_attribute(
-                         "dynamic_constant_expr");
+          VLOG(1) << "  contents_size=" << instruction->contents().size();
           marked_constants.push_back(instruction);
         }
       }

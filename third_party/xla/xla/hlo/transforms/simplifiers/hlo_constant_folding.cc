@@ -230,24 +230,30 @@ absl::StatusOr<bool> HloConstantFolding::Run(
       std::vector<std::string> marked_constant_operands;
       for (const HloInstruction* operand : instruction->operands()) {
         if (operand->opcode() != HloOpcode::kConstant ||
-            !operand->has_frontend_attributes()) {
+            !operand->has_contents()) {
           continue;
         }
-        const auto& attrs = operand->frontend_attributes().map();
-        auto it = attrs.find("dynamic_constant_index");
-        if (it == attrs.end()) {
+        bool has_dynamic_content = false;
+        for (const auto& content : operand->contents()) {
+          has_dynamic_content =
+              content.node_type_case() != ExpressionProto::kConstantValue &&
+              content.node_type_case() != ExpressionProto::NODE_TYPE_NOT_SET;
+          if (has_dynamic_content) {
+            break;
+          }
+        }
+        if (!has_dynamic_content) {
           continue;
         }
         source_has_dynamic_constant_marker = true;
         marked_constant_operands.push_back(absl::StrFormat(
-            "%s:index=%s literal=%s", operand->name(), it->second,
-            operand->literal().ToString()));
+            "%s:contents=%d literal=%s", operand->name(),
+            operand->contents().size(), operand->literal().ToString()));
       }
       if (source_has_dynamic_constant_marker) {
         VLOG(1) << "Skipping HloConstantFolding for " << instruction->name()
                 << " (" << HloOpcodeString(instruction->opcode())
-                << ") because source constant operands carry "
-                   "dynamic_constant_index";
+                << ") because source constant operands carry dynamic contents";
         VLOG(1) << "Marked constant operands: "
                 << absl::StrJoin(marked_constant_operands, ", ");
         continue;

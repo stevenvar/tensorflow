@@ -235,11 +235,12 @@ class Shape {
   }
 
   DynExpr* expressions(int dimension) const {
-    if (dimension < 0) return DynExpr::_(-999);
+    if (dimension < 0) return DynExpr::_(kMissingExpressionSentinel);
     const auto& exprs = array_state().expressions;
     const size_t dim = static_cast<size_t>(dimension);
-    if (dim >= exprs.size()) return DynExpr::_(-999);
-    return exprs[dim] != nullptr ? exprs[dim] : DynExpr::_(-999);
+    if (dim >= exprs.size()) return DynExpr::_(kMissingExpressionSentinel);
+    return exprs[dim] != nullptr ? exprs[dim]
+                                 : DynExpr::_(kMissingExpressionSentinel);
   }
 
   // Returns true if the given dimension is statically-sized.

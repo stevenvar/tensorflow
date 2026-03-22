@@ -95,28 +95,6 @@ namespace {
 constexpr char kSingleOpComponent[] = "TF2XLA_XLA_COMPILER_COMPILE_SINGLE_OP";
 constexpr char kCompileFunctionComponent[] =
     "TF2XLA_XLA_COMPILER_COMPILE_FUNCTION";
-xla::DynExpr* ExprProtoToDynExpr(const ExpressionProto& proto) {
-  switch (proto.node_type_case()) {
-    case ExpressionProto::kConstantValue:
-      return xla::DynExpr::_(proto.constant_value());
-    case ExpressionProto::kVariableId:
-      return xla::DynExpr::V(1);
-    case ExpressionProto::kAddNode:
-      return *ExprProtoToDynExpr(proto.add_node().lhs()) +
-             *ExprProtoToDynExpr(proto.add_node().rhs());
-    case ExpressionProto::kSubNode:
-      return *ExprProtoToDynExpr(proto.sub_node().lhs()) -
-             *ExprProtoToDynExpr(proto.sub_node().rhs());
-    case ExpressionProto::kMulNode:
-      return *ExprProtoToDynExpr(proto.mul_node().lhs()) *
-             *ExprProtoToDynExpr(proto.mul_node().rhs());
-    case ExpressionProto::kDivNode:
-      return *ExprProtoToDynExpr(proto.div_node().lhs()) /
-             *ExprProtoToDynExpr(proto.div_node().rhs());
-    case ExpressionProto::NODE_TYPE_NOT_SET:
-      return nullptr;
-  }
-}
 // Checks that arguments `args` match types `types`.
 absl::Status CheckSignature(const DataTypeVector& types,
                             absl::Span<const XlaCompiler::Argument> args) {
@@ -1149,16 +1127,12 @@ absl::Status XlaCompiler::BuildArguments(
           std::vector<xla::DynExpr*> contents;
           contents.reserve(arg.constant_value_expressions.size());
           for (const ExpressionProto& expr : arg.constant_value_expressions) {
-            xla::DynExpr* parsed = ExprProtoToDynExpr(expr);
+            xla::DynExpr* parsed = xla::DynExprFromProto(expr);
             contents.push_back(parsed != nullptr && parsed->is_dynamic()
                                    ? parsed
-                                   : xla::DynExpr::_(-444));
+                                   : xla::DynExpr::_(kUnknownContentSentinel));
           }
           arg_expression.set_contents(std::move(contents));
-        }
-        if (arg.dynamic_constant_index >= 0) {
-          arg_expression.set_dynamic_constant_index(arg.dynamic_constant_index);
-          arg_expression.set_dynamic_constant_expr(arg.dynamic_constant_expr);
         }
         break;
       case XlaCompiler::Argument::kInvalid:

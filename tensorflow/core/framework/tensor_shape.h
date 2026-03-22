@@ -92,13 +92,16 @@ class TensorShapeRep {
   // Return the multiplier for a specific dynamic dimension.
   // -1 if the dimension is not dynamic.
   xla::DynExpr* get_expression(int64_t dimension) const {
-    if (dimension < 0) return xla::DynExpr::_(-999);
+    if (dimension < 0) {
+      return xla::DynExpr::_(xla::kMissingExpressionSentinel);
+    }
     const size_t dim = static_cast<size_t>(dimension);
     if (dim >= expressions_.size()) {
-      return xla::DynExpr::_(-999);
+      return xla::DynExpr::_(xla::kMissingExpressionSentinel);
     }
-    return expressions_[dim] != nullptr ? expressions_[dim]
-                                        : xla::DynExpr::_(-999);
+    return expressions_[dim] != nullptr
+               ? expressions_[dim]
+               : xla::DynExpr::_(xla::kMissingExpressionSentinel);
   }
 
  protected:

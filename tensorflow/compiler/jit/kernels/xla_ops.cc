@@ -509,17 +509,14 @@ absl::Status CompileToLocalExecutable(
     // Only supporting one dynamic dimension. 
     bool has_multiple_dynamic_dim_values = false;
     int64_t dynamic_dim_value = 0;
-    ExpressionProto dynamic_dim_expr_proto;
     XlaBatchMatcher* xla_batch_matcher =
         xla_device_compiler->xla_batch_matcher();
     xla::DynExpr* dynamic_dim_expr = nullptr;
-    auto record_dynamic_dim_value = [&](int64_t dim_size, xla::DynExpr* expr,
-                                        const ExpressionProto& expr_proto) {
+    auto record_dynamic_dim_value = [&](int64_t dim_size, xla::DynExpr* expr) {
       if (!saw_dynamic_dim_value) {
         saw_dynamic_dim_value = true;
         dynamic_dim_value = dim_size;
         dynamic_dim_expr = expr;
-        dynamic_dim_expr_proto = expr_proto;
         return;
       }
       if (dynamic_dim_value != dim_size) {
@@ -548,10 +545,7 @@ absl::Status CompileToLocalExecutable(
                 std::get<TensorShape>(norm_args[arg_index].shape);
             const AttrValue& v = dyn_dim_attr->second;
             int64_t idx = v.i();
-            ExpressionProto expr_proto;
-            expr_proto.set_variable_id(1);
-            record_dynamic_dim_value(shp.dim_size(idx), xla::DynExpr::V(1),
-                                     expr_proto);
+            record_dynamic_dim_value(shp.dim_size(idx), xla::DynExpr::V(1));
             if (!filled_batch && xla_batch_matcher) {
               filled_batch =
                   xla_batch_matcher->get_xla_compile_batch(shp.dim_size(idx));
@@ -590,7 +584,7 @@ absl::Status CompileToLocalExecutable(
                   VLOG(1) << "Solved dynamic dimension from "
                           << shp.dim_size(idx) << " to " << var_value;
                 }
-                record_dynamic_dim_value(var_value, e, exp[idx]);
+                record_dynamic_dim_value(var_value, e);
                 filled_batch =
                     xla_batch_matcher->get_xla_compile_batch(var_value);
                 break;
@@ -643,7 +637,7 @@ absl::Status CompileToLocalExecutable(
         for (int64_t i = 0; i < num_elements; ++i) {
           ExpressionProto expr;
           if (i == rewrite_index) {
-            expr = dynamic_dim_expr_proto;
+            dynamic_dim_expr->to_proto(&expr);
           } else {
             expr.set_constant_value(arg.constant_value.flat<T>()(i));
           }
@@ -669,8 +663,6 @@ absl::Status CompileToLocalExecutable(
           VLOG(1) << "XlaCompileOp int32 constant arg " << arg_index
                   << " index " << rewrite_index
                   << " matches dynamic_dim_value=" << dynamic_dim_value;
-          arg.dynamic_constant_index = rewrite_index;
-          arg.dynamic_constant_expr = dynamic_dim_expr;
           mutable_flat(rewrite_index) = filled_batch;
           set_constant_contents.template operator()<int32>(rewrite_index);
         }
@@ -690,8 +682,6 @@ absl::Status CompileToLocalExecutable(
           VLOG(1) << "XlaCompileOp int64 constant arg " << arg_index
                   << " index " << rewrite_index
                   << " matches dynamic_dim_value=" << dynamic_dim_value;
-          arg.dynamic_constant_index = rewrite_index;
-          arg.dynamic_constant_expr = dynamic_dim_expr;
           mutable_flat(rewrite_index) = filled_batch;
           set_constant_contents.template operator()<int64_t>(rewrite_index);
         }

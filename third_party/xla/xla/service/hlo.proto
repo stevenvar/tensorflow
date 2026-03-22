@@ -113,7 +113,7 @@ enum CustomCallApiVersion {
 }
 
 // Serialization of HloInstruction.
-// Next ID: 92
+// Next ID: 93
 message HloInstructionProto {
   reserved 10;
   reserved "parameter_name";
@@ -327,6 +327,9 @@ message HloInstructionProto {
 
   // Frontend attributes to pass to the XLA backend.
   xla.FrontendAttributes frontend_attributes = 68;
+
+  // Structured symbolic contents attached to this instruction.
+  repeated xla.ExpressionProto contents = 92;
 
   // Specifies if all elements updated are guaranteed to be unique by
   // the caller.

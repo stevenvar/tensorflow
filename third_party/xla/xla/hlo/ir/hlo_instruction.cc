@@ -108,6 +108,51 @@ absl::Status EraseElementFromVector(PtrVec<T>* container, T value) {
   container->erase(it);
   return absl::OkStatus();
 }
+
+DynExpr* DynExprFromProtoForPrint(const ExpressionProto& proto) {
+  switch (proto.node_type_case()) {
+    case ExpressionProto::kConstantValue:
+      return DynExpr::_(proto.constant_value());
+    case ExpressionProto::kVariableId:
+      return DynExpr::V(proto.variable_id());
+    case ExpressionProto::kAddNode: {
+      const auto& add = proto.add_node();
+      return new Add(DynExprFromProtoForPrint(add.lhs()),
+                     DynExprFromProtoForPrint(add.rhs()));
+    }
+    case ExpressionProto::kSubNode: {
+      const auto& sub = proto.sub_node();
+      return new Sub(DynExprFromProtoForPrint(sub.lhs()),
+                     DynExprFromProtoForPrint(sub.rhs()));
+    }
+    case ExpressionProto::kMulNode: {
+      const auto& mul = proto.mul_node();
+      return new Mul(DynExprFromProtoForPrint(mul.lhs()),
+                     DynExprFromProtoForPrint(mul.rhs()));
+    }
+    case ExpressionProto::kDivNode: {
+      const auto& div = proto.div_node();
+      return new Div(DynExprFromProtoForPrint(div.lhs()),
+                     DynExprFromProtoForPrint(div.rhs()));
+    }
+    case ExpressionProto::NODE_TYPE_NOT_SET:
+    default:
+      return nullptr;
+  }
+}
+
+std::string ContentsExprToString(const ExpressionProto& proto) {
+  DynExpr* expr = DynExprFromProtoForPrint(proto);
+  if (expr == nullptr) {
+    return "_";
+  }
+  if (!expr->is_dynamic() && expr->get_val() == -444) {
+    return "_";
+  }
+  StringPrinter printer;
+  expr->print(&printer);
+  return std::move(printer).ToString();
+}
 }  // namespace
 
 HloInstruction::Users::~Users() = default;
@@ -1372,6 +1417,14 @@ absl::StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
 
   if (proto.has_frontend_attributes()) {
     instruction->set_frontend_attributes(proto.frontend_attributes());
+  }
+  if (proto.contents_size() > 0) {
+    std::vector<ExpressionProto> contents;
+    contents.reserve(proto.contents_size());
+    for (const auto& content : proto.contents()) {
+      contents.push_back(content);
+    }
+    instruction->set_contents(std::move(contents));
   }
 
   if (proto.has_statistics_viz()) {
@@ -4235,6 +4288,18 @@ void HloInstruction::PrintExtraAttributes(
                 FrontendAttributesToString(frontend_attributes()));
     });
   }
+  if (has_contents()) {
+    printer.Next([this](Printer* printer) {
+      printer->Append("contents=[");
+      for (int64_t i = 0; i < contents().size(); ++i) {
+        if (i > 0) {
+          printer->Append(", ");
+        }
+        printer->Append(ContentsExprToString(contents()[i]));
+      }
+      printer->Append("]");
+    });
+  }
 
   if (opcode() != HloOpcode::kCall) {
     CHECK(!is_composite())
@@ -4356,6 +4421,9 @@ HloInstructionProto HloInstruction::ToProto() const {
   }
 
   *proto.mutable_frontend_attributes() = frontend_attributes();
+  for (const auto& content : contents()) {
+    *proto.add_contents() = content;
+  }
   proto.set_is_composite(is_composite());
 
   *proto.mutable_statistics_viz() = statistics_viz();

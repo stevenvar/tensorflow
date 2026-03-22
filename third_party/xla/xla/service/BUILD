@@ -122,7 +122,6 @@ cc_library(
 )
 
 cc_library(
-cc_library(
     name = "dynamic_constant_rewriter",
     srcs = ["dynamic_constant_rewriter.cc"],
     hdrs = ["dynamic_constant_rewriter.h"],

@@ -60,8 +60,8 @@ REGISTER_OPTIMIZATION(OptimizationPassRegistry::POST_REWRITE_FOR_EXEC, 12,
 REGISTER_OPTIMIZATION(OptimizationPassRegistry::POST_REWRITE_FOR_EXEC, 20,
                       IncreaseDynamismForAutoJitPass);
 
-REGISTER_OPTIMIZATION(OptimizationPassRegistry::POST_REWRITE_FOR_EXEC, 30,
-                      PartiallyDeclusterPass);
+// REGISTER_OPTIMIZATION(OptimizationPassRegistry::POST_REWRITE_FOR_EXEC, 30,
+//                       PartiallyDeclusterPass);
 
 // ReportClusteringInfoPass pass needs to run after all of the auto-clustering
 // passes have run but before encapsulation has run.  This way it can easily

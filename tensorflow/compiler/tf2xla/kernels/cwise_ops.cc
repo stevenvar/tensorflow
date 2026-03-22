@@ -27,12 +27,13 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/tf2xla/lib/broadcast.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
+#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/util/bcast.h"
 #include "xla/hlo/builder/lib/constants.h"
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/shape.h"
-#include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/tensor_shape.h"
-#include "tensorflow/core/util/bcast.h"
 
 namespace tensorflow {
 
@@ -76,7 +77,41 @@ bool TryGetIntContentsFromConstant(const Tensor& tensor,
   return false;
 }
 
-bool TryGetInputContents(const XlaExpression& expr, const TensorShape& shape,
+bool TryGetIntContentsFromLiteral(const xla::LiteralSlice& literal,
+                                  std::vector<xla::DynExpr*>* contents) {
+  contents->clear();
+  if (literal.shape().dimensions_size() > 1) {
+    return false;
+  }
+  if (literal.shape().element_type() == xla::S32) {
+    if (literal.shape().dimensions_size() == 0) {
+      contents->push_back(xla::DynExpr::_(literal.Get<int32>({})));
+      return true;
+    }
+    const int64_t size = literal.shape().dimensions(0);
+    contents->reserve(size);
+    for (int64_t i = 0; i < size; ++i) {
+      contents->push_back(xla::DynExpr::_(literal.Get<int32>({i})));
+    }
+    return true;
+  }
+  if (literal.shape().element_type() == xla::S64) {
+    if (literal.shape().dimensions_size() == 0) {
+      contents->push_back(xla::DynExpr::_(literal.Get<int64_t>({})));
+      return true;
+    }
+    const int64_t size = literal.shape().dimensions(0);
+    contents->reserve(size);
+    for (int64_t i = 0; i < size; ++i) {
+      contents->push_back(xla::DynExpr::_(literal.Get<int64_t>({i})));
+    }
+    return true;
+  }
+  return false;
+}
+
+bool TryGetInputContents(XlaOpKernelContext* ctx, const XlaExpression& expr,
+                         const TensorShape& shape,
                          std::vector<xla::DynExpr*>* contents) {
   if (shape.dims() > 1) {
     return false;
@@ -91,7 +126,19 @@ bool TryGetInputContents(const XlaExpression& expr, const TensorShape& shape,
   }
   auto constant = expr.constant_value();
   if (!constant.has_value()) {
-    return false;
+    if (!expr.handle().valid() || expr.handle().IsUninitialized()) {
+      return false;
+    }
+    auto literal_or = ctx->value_inference().AnalyzeConstant(
+        expr.handle(), xla::ValueInferenceMode::kValue);
+    if (!literal_or.ok() || !literal_or->AllValid()) {
+      return false;
+    }
+    auto literal = literal_or->GetValue();
+    if (!literal.has_value()) {
+      return false;
+    }
+    return TryGetIntContentsFromLiteral(*literal, contents);
   }
   return TryGetIntContentsFromConstant(*constant, contents);
 }
@@ -132,8 +179,10 @@ bool TryBuildSymbolicBinaryContents(XlaOpKernelContext* ctx,
 
   std::vector<xla::DynExpr*> lhs_contents;
   std::vector<xla::DynExpr*> rhs_contents;
-  if (!TryGetInputContents(ctx->InputExpression(0), lhs_shape, &lhs_contents) ||
-      !TryGetInputContents(ctx->InputExpression(1), rhs_shape, &rhs_contents)) {
+  if (!TryGetInputContents(ctx, ctx->InputExpression(0), lhs_shape,
+                           &lhs_contents) ||
+      !TryGetInputContents(ctx, ctx->InputExpression(1), rhs_shape,
+                           &rhs_contents)) {
     return false;
   }
 

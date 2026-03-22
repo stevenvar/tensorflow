@@ -17,9 +17,18 @@ limitations under the License.
 
 #include <cstdint>
 #include <type_traits>
+
 #include "absl/status/statusor.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
+#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/types.h"
 #include "xla/hlo/builder/lib/constants.h"
 #include "xla/hlo/builder/value_inference.h"
 #include "xla/hlo/builder/xla_builder.h"
@@ -27,13 +36,6 @@ limitations under the License.
 #include "xla/primitive_util.h"
 #include "xla/shape_util.h"
 #include "xla/xla_data.pb.h"
-#include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/op_requires.h"
-#include "tensorflow/core/framework/tensor_shape.h"
-#include "tensorflow/core/framework/types.h"
-#include "tensorflow/core/framework/types.pb.h"
-#include "tensorflow/core/platform/errors.h"
-#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace {
@@ -52,6 +54,23 @@ bool HasStaticScalarContent(const XlaExpression& expression) {
   const auto& contents = expression.contents();
   return contents.empty() ||
          (contents[0] != nullptr && contents[0]->is_constant());
+}
+
+template <typename T>
+std::vector<xla::DynExpr*> BuildRangeContents(const XlaExpression& start_expr,
+                                              const XlaExpression& delta_expr,
+                                              const xla::LiteralSlice& start,
+                                              const xla::LiteralSlice& delta,
+                                              int64_t size) {
+  std::vector<xla::DynExpr*> contents;
+  contents.reserve(size);
+  xla::DynExpr* start_symbol = GetScalarExpr<T>(start_expr, start);
+  xla::DynExpr* delta_symbol = GetScalarExpr<T>(delta_expr, delta);
+  for (int64_t i = 0; i < size; ++i) {
+    xla::DynExpr* offset = xla::DynExpr::_(static_cast<T>(i));
+    contents.push_back((*start_symbol + *(*delta_symbol * *offset)->s())->s());
+  }
+  return contents;
 }
 
 template <typename T>
@@ -229,7 +248,41 @@ class RangeOp : public XlaOpKernel {
       }
     }
 
-    ctx->SetOutput(0, output.value());
+    if (type == DT_INT32) {
+      int32 start_value = start.Get<int32>({});
+      int32 limit_value = limit.Get<int32>({});
+      int32 delta_value = delta.Get<int32>({});
+      int64_t size =
+          static_cast<int32>(limit_value == start_value
+                                 ? 0
+                                 : (std::abs(limit_value - start_value) - 1) /
+                                           std::abs(delta_value) +
+                                       1);
+      auto output_expr =
+          XlaExpression::XlaOp(output.value(), ctx->expected_output_dtype(0));
+      output_expr.set_contents(BuildRangeContents<int32>(
+          ctx->InputExpression(0), ctx->InputExpression(2), start, delta,
+          size));
+      ctx->SetOutputExpression(0, output_expr);
+    } else if (type == DT_INT64) {
+      int64_t start_value = start.Get<int64_t>({});
+      int64_t limit_value = limit.Get<int64_t>({});
+      int64_t delta_value = delta.Get<int64_t>({});
+      int64_t size =
+          static_cast<int64_t>(limit_value == start_value
+                                   ? 0
+                                   : (std::abs(limit_value - start_value) - 1) /
+                                             std::abs(delta_value) +
+                                         1);
+      auto output_expr =
+          XlaExpression::XlaOp(output.value(), ctx->expected_output_dtype(0));
+      output_expr.set_contents(BuildRangeContents<int64_t>(
+          ctx->InputExpression(0), ctx->InputExpression(2), start, delta,
+          size));
+      ctx->SetOutputExpression(0, output_expr);
+    } else {
+      ctx->SetOutput(0, output.value());
+    }
   }
 };
 

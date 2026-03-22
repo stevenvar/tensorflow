@@ -106,6 +106,7 @@ class PackOp : public XlaOpKernel {
 
     std::vector<xla::DynExpr*> output_contents;
     const bool has_output_contents =
+        SymbolicContentEnabled() &&
         TryBuildPackedContents(ctx, num, axis, &output_contents);
 
     for (int i = 0; i < num; ++i) {
@@ -113,26 +114,19 @@ class PackOp : public XlaOpKernel {
       reshaped_inputs[i] = xla::Reshape(values[i], child_shape.dim_sizes(),
                                         exprs);
       if (has_output_contents) {
-        if (SymbolicContentEnabled()) {
-          OP_REQUIRES_OK(
-              ctx, ctx->builder()->SetInstructionContents(
-                       reshaped_inputs[i],
-                       {output_contents[static_cast<size_t>(i)]}));
-        }
+        OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(
+                                reshaped_inputs[i],
+                                {output_contents[static_cast<size_t>(i)]}));
       }
     }
 
     auto output = xla::ConcatInDim(ctx->builder(), reshaped_inputs, axis);
     if (has_output_contents) {
-      if (SymbolicContentEnabled()) {
-        OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(
-                                output, output_contents));
-      }
+      OP_REQUIRES_OK(
+          ctx, ctx->builder()->SetInstructionContents(output, output_contents));
       auto output_expr =
           XlaExpression::XlaOp(output, ctx->expected_output_dtype(0));
-      if (SymbolicContentEnabled()) {
-        output_expr.set_contents(std::move(output_contents));
-      }
+      output_expr.set_contents(std::move(output_contents));
       ctx->SetOutputExpression(0, output_expr);
       return;
     }

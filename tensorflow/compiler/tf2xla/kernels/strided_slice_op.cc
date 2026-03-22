@@ -374,9 +374,10 @@ class StridedSliceOp : public XlaOpKernel {
                          slice_end_expr, slice_strides);
       std::vector<xla::DynExpr*> output_contents;
       const bool has_output_contents =
+          SymbolicContentEnabled() &&
           TryBuildSlicedContents(ctx->InputExpression(0), input_shape, begin,
                                  strides, final_shape, &output_contents);
-      if (has_output_contents && SymbolicContentEnabled()) {
+      if (has_output_contents) {
         OP_REQUIRES_OK(
             ctx, ctx->builder()->SetInstructionContents(slice, output_contents));
       }
@@ -394,7 +395,7 @@ class StridedSliceOp : public XlaOpKernel {
       // Static output shape, return a static slice.
       slice = xla::Reshape(slice, final_shape.dim_sizes(),
                            final_shape.get_expressions());
-      if (has_output_contents && SymbolicContentEnabled()) {
+      if (has_output_contents) {
         OP_REQUIRES_OK(
             ctx, ctx->builder()->SetInstructionContents(slice, output_contents));
       }
@@ -402,9 +403,7 @@ class StridedSliceOp : public XlaOpKernel {
         if (has_output_contents) {
           auto output_expr =
               XlaExpression::XlaOp(slice, ctx->expected_output_dtype(0));
-          if (SymbolicContentEnabled()) {
-            output_expr.set_contents(std::move(output_contents));
-          }
+          output_expr.set_contents(std::move(output_contents));
           ctx->SetOutputExpression(0, output_expr);
           return;
         }
@@ -466,7 +465,7 @@ class StridedSliceOp : public XlaOpKernel {
               xla::Sub(operand_size, xla::ConstantR0<int32>(
                                          ctx->builder(), begin[input_index])),
               i);
-          if (has_output_contents && SymbolicContentEnabled()) {
+          if (has_output_contents) {
             OP_REQUIRES_OK(
                 ctx, ctx->builder()->SetInstructionContents(slice,
                                                             output_contents));
@@ -476,9 +475,7 @@ class StridedSliceOp : public XlaOpKernel {
       if (has_output_contents) {
         auto output_expr =
             XlaExpression::XlaOp(slice, ctx->expected_output_dtype(0));
-        if (SymbolicContentEnabled()) {
-          output_expr.set_contents(std::move(output_contents));
-        }
+        output_expr.set_contents(std::move(output_contents));
         ctx->SetOutputExpression(0, output_expr);
         return;
       }

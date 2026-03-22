@@ -118,7 +118,7 @@ class ConcatBaseOp : public XlaOpKernel {
     std::vector<xla::XlaOp> input_data;
     std::vector<std::vector<xla::DynExpr*>> input_contents;
     input_contents.resize(N);
-    bool has_output_contents = axis == 0;
+    bool has_output_contents = SymbolicContentEnabled() && axis == 0;
     std::vector<xla::DynExpr*> output_contents;
     if (has_output_contents) {
       for (int i = 0; i < N; ++i) {
@@ -153,10 +153,8 @@ class ConcatBaseOp : public XlaOpKernel {
         // Inputs that come in as scalars must be reshaped to 1-vectors.
         xla::XlaOp reshaped = xla::Reshape(handle, {1});
         if (has_output_contents) {
-          if (SymbolicContentEnabled()) {
-            OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(
-                                    reshaped, input_contents[i]));
-          }
+          OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(
+                                  reshaped, input_contents[i]));
         }
         input_data.push_back(reshaped);
       } else {
@@ -168,15 +166,11 @@ class ConcatBaseOp : public XlaOpKernel {
     VLOG(1) << "Concat dim " << concat_dim << " equivalent to " << axis;
     auto output = xla::ConcatInDim(ctx->builder(), input_data, axis);
     if (has_output_contents) {
-      if (SymbolicContentEnabled()) {
-        OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(
-                                output, output_contents));
-      }
+      OP_REQUIRES_OK(
+          ctx, ctx->builder()->SetInstructionContents(output, output_contents));
       auto output_expr =
           XlaExpression::XlaOp(output, ctx->expected_output_dtype(0));
-      if (SymbolicContentEnabled()) {
-        output_expr.set_contents(std::move(output_contents));
-      }
+      output_expr.set_contents(std::move(output_contents));
       ctx->SetOutputExpression(0, output_expr);
       return;
     }

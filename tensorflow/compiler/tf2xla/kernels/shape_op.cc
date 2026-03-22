@@ -252,15 +252,13 @@ class ShapeNOp : public XlaOpKernel {
           xla::XlaOp converted =
               xla::ConvertElementType(dim_size, ctx->output_xla_type(i));
           if (SymbolicContentEnabled()) {
-            OP_REQUIRES_OK(
-                ctx,
-                ctx->builder()->SetInstructionContents(converted, content));
+            OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(
+                                    converted, content));
           }
           xla::XlaOp broadcast = xla::Broadcast(converted, {1});
           if (SymbolicContentEnabled()) {
-            OP_REQUIRES_OK(
-                ctx,
-                ctx->builder()->SetInstructionContents(broadcast, content));
+            OP_REQUIRES_OK(ctx, ctx->builder()->SetInstructionContents(
+                                    broadcast, content));
           }
           operands.push_back(broadcast);
         }

@@ -67,7 +67,6 @@ limitations under the License.
 #include "xla/window_util.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/errors.h"
-#include "tsl/platform/protobuf.h"
 #include "tsl/platform/stacktrace.h"
 #include "tsl/platform/statusor.h"
 

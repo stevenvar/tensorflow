@@ -4596,7 +4596,7 @@ XlaOp XlaBuilder::GetDimensionSize(XlaOp operand, int64_t dimension) {
           dim_bound, "dynamic_constant_index", "0"));
       TF_RETURN_IF_ERROR(SetInstructionFrontendAttribute(
           dim_bound, "dynamic_constant_expr", expr_proto_text));
-      return GetExpressionValue(dim_bound);
+      return dim_bound;
     }
     // Calling GetDimensionSize on a static dimension returns a constant
     // instruction.

@@ -4587,15 +4587,10 @@ XlaOp XlaBuilder::GetDimensionSize(XlaOp operand, int64_t dimension) {
           ConstantR0<int32_t>(this, operand_shape->dimensions(dimension));
       ExpressionProto expr_proto;
       dim_expr->to_proto(&expr_proto);
-      std::string expr_proto_text;
-      if (!tsl::protobuf::TextFormat::PrintToString(expr_proto,
-                                                    &expr_proto_text)) {
-        return Internal("Failed to serialize dynamic dimension expression");
-      }
       TF_RETURN_IF_ERROR(SetInstructionFrontendAttribute(
           dim_bound, "dynamic_constant_index", "0"));
       TF_RETURN_IF_ERROR(SetInstructionFrontendAttribute(
-          dim_bound, "dynamic_constant_expr", expr_proto_text));
+          dim_bound, "dynamic_constant_expr", expr_proto.ShortDebugString()));
       return dim_bound;
     }
     // Calling GetDimensionSize on a static dimension returns a constant

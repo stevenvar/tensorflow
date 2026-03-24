@@ -801,17 +801,21 @@ absl::StatusOr<PostorderDFSNode> PostorderDFSVisitor::AnalyzeUpperBound(
                            PostorderDFSNodeType::kConstantUpperBound,
                            InferenceContext({}, {}))
             .AddVisit([](Literal carrier) -> absl::StatusOr<Literal> {
-              if (carrier.shape().dimensions_size() != 1 ||
-                  carrier.element_count() != 1) {
+              if (carrier.element_count() != 1 ||
+                  carrier.shape().dimensions_size() > 1) {
                 return InvalidArgument(
-                    "GetExpressionValue carrier must be rank-1 with one "
-                    "element, got %s",
+                    "GetExpressionValue carrier must be scalar or rank-1 with "
+                    "one element, got %s",
                     carrier.shape().ToString());
               }
               if (carrier.shape().element_type() != S32) {
                 return InvalidArgument(
                     "GetExpressionValue carrier must be s32, got %s",
                     carrier.shape().ToString());
+              }
+              if (carrier.shape().dimensions_size() == 0) {
+                return LiteralUtil::CreateR0<int32_t>(
+                    carrier.GetFirstElement<int32_t>());
               }
               return LiteralUtil::CreateR0<int32_t>(carrier.Get<int32_t>({0}));
             });

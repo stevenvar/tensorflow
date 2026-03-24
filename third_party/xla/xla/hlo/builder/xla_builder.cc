@@ -67,6 +67,7 @@ limitations under the License.
 #include "xla/window_util.h"
 #include "xla/xla_data.pb.h"
 #include "tsl/platform/errors.h"
+#include "tsl/platform/protobuf.h"
 #include "tsl/platform/stacktrace.h"
 #include "tsl/platform/statusor.h"
 
@@ -4582,12 +4583,20 @@ XlaOp XlaBuilder::GetDimensionSize(XlaOp operand, int64_t dimension) {
                                          *operand_shape, dimension));
     DynExpr* dim_expr = operand_shape->expressions(dimension);
     if (dim_expr != nullptr && dim_expr->is_dynamic()) {
-      // Carry the padded static dimension as the operand value so value
-      // inference can treat it as an upper bound for GetExpressionValue.
       XlaOp dim_bound =
           ConstantR0<int32_t>(this, operand_shape->dimensions(dimension));
-      XlaOp expr_carrier = Broadcast(dim_bound, {1}, {dim_expr});
-      return GetExpressionValue(expr_carrier);
+      ExpressionProto expr_proto;
+      dim_expr->to_proto(&expr_proto);
+      std::string expr_proto_text;
+      if (!tsl::protobuf::TextFormat::PrintToString(expr_proto,
+                                                    &expr_proto_text)) {
+        return Internal("Failed to serialize dynamic dimension expression");
+      }
+      TF_RETURN_IF_ERROR(SetInstructionFrontendAttribute(
+          dim_bound, "dynamic_constant_index", "0"));
+      TF_RETURN_IF_ERROR(SetInstructionFrontendAttribute(
+          dim_bound, "dynamic_constant_expr", expr_proto_text));
+      return GetExpressionValue(dim_bound);
     }
     // Calling GetDimensionSize on a static dimension returns a constant
     // instruction.

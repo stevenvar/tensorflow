@@ -571,8 +571,10 @@ absl::Status CompileToLocalExecutable(
               // value and exit loop.
               auto e = DimExprToDynExpr(ExprFromProto(exp[idx]).get())->s();
               if (e->is_dynamic()) {
-                int64_t var_value = e->solve(shp.dim_size(idx));
-                if (var_value <= 0) {
+                std::optional<int64_t> solved_value =
+                    e->solve(shp.dim_size(idx));
+                int64_t var_value;
+                if (!solved_value.has_value() || *solved_value <= 0) {
                   LOG(WARNING)
                       << "Failed to solve dynamic dimension for argument "
                       << arg_index << " dim " << idx << " with size "
@@ -580,6 +582,7 @@ absl::Status CompileToLocalExecutable(
                       << "; falling back to original dimension size.";
                   var_value = shp.dim_size(idx);
                 } else {
+                  var_value = *solved_value;
                   VLOG(1) << "Solved dynamic dimension from "
                           << shp.dim_size(idx) << " to " << var_value;
                 }

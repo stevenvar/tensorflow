@@ -210,8 +210,8 @@ class Sub : public DynExpr {
       return lhs->solve(x + rhs->get_val());
     }
     if (rhs->get_all_ids().size() == 1) {
-      // (c + A) = x <=> A = x - c => solve A = y with y = x + c
-      return rhs->solve(x + lhs->get_val());
+      // (c - A) = x <=> A = c - x => solve A = y with y = c - x
+      return rhs->solve(lhs->get_val() - x);
     }
     // No solution
     return std::nullopt;
@@ -271,12 +271,14 @@ class Mul : public DynExpr {
     if (lhs->get_all_ids().size() == 1) {
       // (A * c) = x <=> A = x / c => solve A = y with y = x / c
       int64_t c = rhs->get_val();
+      if (c == 0) return x == 0 ? lhs->solve(0) : std::nullopt;
       if (x % c != 0) return std::nullopt;
       return lhs->solve(x / c);
     }
     if (rhs->get_all_ids().size() == 1) {
       // (c * A) = x <=> A = x / c => solve A = y with y = x / c
       int64_t c = lhs->get_val();
+      if (c == 0) return x == 0 ? rhs->solve(0) : std::nullopt;
       if (x % c != 0) return std::nullopt;
       return rhs->solve(x / c);
     }
@@ -344,6 +346,7 @@ class Div : public DynExpr {
     if (rhs->get_all_ids().size() == 1) {
       // (c / A) = x <=> A = c / x => solve A = y with y = c / x
       int64_t c = lhs->get_val();
+      if (x == 0) return std::nullopt;
       if (c % x != 0) return std::nullopt;
       return rhs->solve(c / x);
     }

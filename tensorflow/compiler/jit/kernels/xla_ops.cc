@@ -574,7 +574,7 @@ absl::Status CompileToLocalExecutable(
                 std::optional<int64_t> solved_value =
                     e->solve(shp.dim_size(idx));
                 int64_t var_value;
-                if (!solved_value.has_value() || *solved_value <= 0) {
+                if (!solved_value.has_value()) {
                   LOG(WARNING)
                       << "Failed to solve dynamic dimension for argument "
                       << arg_index << " dim " << idx << " with size "

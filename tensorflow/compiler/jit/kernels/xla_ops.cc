@@ -63,6 +63,7 @@ limitations under the License.
 #include "xla/client/local_client.h"
 #include "xla/executable_run_options.h"
 #include "xla/pjrt/pjrt_client.h"
+#include "xla/printer.h"
 #include "xla/service/gpu/gpu_executable_run_options.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
 #include "xla/tsl/protobuf/error_codes.pb.h"
@@ -1277,12 +1278,14 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
           int64_t size = ctx->input(input_idx).shape().dim_size(dim);
           std::optional<int64_t> dyn_val =
               expr->solve(size);  // TODO: check if the result is correct later.
-          VLOG(1) << "Found dynamic input. Real size is: " << size
-                  << ", solved dynamic value is "
-                  << (dyn_val.has_value() ? std::to_string(*dyn_val)
-                                          : std::string("<none>"));
-          if (!dyn_val.has_value()) {
-            VLOG(1) << "Warning: Failed to solve the expression";
+          if (dyn_val.has_value()) {
+            VLOG(1) << "Found dynamic input. Real size is: " << size
+                    << ", solved dynamic value is " << *dyn_val;
+          } else {
+            xla::StringPrinter printer;
+            expr->print(&printer);
+            VLOG(1) << "Warning: Failed to solve the expression "
+                    << std::move(printer).ToString();
             continue;
           }
           dyn_vals.insert(*dyn_val);

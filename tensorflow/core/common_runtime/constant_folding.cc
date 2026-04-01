@@ -454,6 +454,10 @@ bool GetShapeFromArgNode(const Node* node, TensorShapeProto* out_shape) {
       if (GetNodeAttr(input_node->def(), "_output_shapes", &shapes)
               .ok() &&
           !shapes.empty()) {
+        // Stay on the proto here instead of rebuilding a TensorShape. These
+        // inferred shapes may still contain unknown (-1) dimensions, and the
+        // proto expressions are enough for deciding whether the value is
+        // dynamically derived.
         if (HasDynamicDimExprs(shapes[0])) {
           *out_shape = shapes[0];
           return true;

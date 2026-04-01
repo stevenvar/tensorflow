@@ -48,6 +48,28 @@ namespace tensorflow {
 
 namespace {
 
+bool IsDynamicExpressionProto(const ExpressionProto& proto) {
+  switch (proto.node_type_case()) {
+    case ExpressionProto::kVariableId:
+      return true;
+    case ExpressionProto::kAddNode:
+      return IsDynamicExpressionProto(proto.add_node().lhs()) ||
+             IsDynamicExpressionProto(proto.add_node().rhs());
+    case ExpressionProto::kSubNode:
+      return IsDynamicExpressionProto(proto.sub_node().lhs()) ||
+             IsDynamicExpressionProto(proto.sub_node().rhs());
+    case ExpressionProto::kMulNode:
+      return IsDynamicExpressionProto(proto.mul_node().lhs()) ||
+             IsDynamicExpressionProto(proto.mul_node().rhs());
+    case ExpressionProto::kDivNode:
+      return IsDynamicExpressionProto(proto.div_node().lhs()) ||
+             IsDynamicExpressionProto(proto.div_node().rhs());
+    case ExpressionProto::kConstantValue:
+    case ExpressionProto::NODE_TYPE_NOT_SET:
+      return false;
+  }
+}
+
 const char kScopedAllocatorAttrName[] = "_scoped_allocator";
 const char kXlaShapeDerivedAttrName[] = "_xla_shape_derived";
 
@@ -453,8 +475,8 @@ bool GetShapeFromArgNode(const Node* node, TensorShapeProto* out_shape) {
       if (GetNodeAttr(input_node->def(), "_output_shapes", &shapes)
               .ok() &&
           !shapes.empty()) {
-        for (auto expression : TensorShape(shapes[0]).get_expressions()) {
-          if (expression && expression->is_dynamic()) {
+        for (const auto& expression : shapes[0].expressions()) {
+          if (IsDynamicExpressionProto(expression)) {
             *out_shape = shapes[0];
             return true;
           }

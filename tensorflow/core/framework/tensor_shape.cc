@@ -485,9 +485,9 @@ void TensorShapeRep::set_expression(int d, xla::DExpr expr) {
     return;
   }
   if (expressions_.size() <= static_cast<size_t>(d)) {
-    expressions_.resize(d + 1);
+    expressions_.resize(d + 1, xla::DExpr::Unknown());
   }
-  expressions_[d] = std::move(expr);
+  expressions_[d] = expr ? std::move(expr) : xla::DExpr::Unknown();
 }
 
 void TensorShapeRep::AddExpression(xla::DExpr expr) {
@@ -495,13 +495,16 @@ void TensorShapeRep::AddExpression(xla::DExpr expr) {
     return;
   }
   CHECK_LT(expressions_.size(), ndims_byte());
-  expressions_.push_back(std::move(expr));
+  expressions_.push_back(expr ? std::move(expr) : xla::DExpr::Unknown());
 }
 
 void TensorShapeRep::set_expressions(std::vector<xla::DExpr> exprs) {
   if (!kTensorShapeExpressionsEnabled) {
     expressions_.clear();
     return;
+  }
+  for (auto& expr : exprs) {
+    if (!expr) expr = xla::DExpr::Unknown();
   }
   expressions_ = std::move(exprs);
 }

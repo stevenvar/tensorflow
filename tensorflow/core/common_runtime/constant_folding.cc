@@ -454,7 +454,7 @@ bool GetShapeFromArgNode(const Node* node, TensorShapeProto* out_shape) {
               .ok() &&
           !shapes.empty()) {
         for (auto expression : TensorShape(shapes[0]).get_expressions()) {
-          if (expression->is_dynamic()) {
+          if (expression && expression->is_dynamic()) {
             *out_shape = shapes[0];
             return true;
           }

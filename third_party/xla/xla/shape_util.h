@@ -332,7 +332,8 @@ class ShapeUtil {
 
   // Extracts the shape's expressions at dimension number
   // GetDimensionNumber(dimension_number).
-  static DynExpr* GetExpression(const Shape& shape, int64_t dimension_number);
+  static const DExpr& GetExpression(const Shape& shape,
+                                    int64_t dimension_number);
 
   // Resolves a dimension number, supporting negative indexing.
   //
@@ -411,7 +412,7 @@ class ShapeUtil {
   // dimensions.
   static Shape MakeShape(PrimitiveType element_type,
                          absl::Span<const int64_t> dimensions,
-                         absl::Span<DynExpr* const> expressions = {});
+                         absl::Span<const DExpr> expressions = {});
 
   // Make a scalar shape with given primitive type.
   static Shape MakeScalarShape(PrimitiveType element_type);
@@ -425,7 +426,7 @@ class ShapeUtil {
   static Shape MakeShape(PrimitiveType element_type,
                          absl::Span<const int64_t> dimensions,
                          const std::vector<bool>& dynamic_dimensions,
-                         absl::Span<DynExpr* const> expressions);
+                         absl::Span<const DExpr> expressions);
   // Constructs a new buffer shape with the given element type, and sequence of
   // dimensions.
   static Shape MakeBufferShape(PrimitiveType element_type,
@@ -437,12 +438,12 @@ class ShapeUtil {
   // marked static.
   static absl::StatusOr<Shape> MakeValidatedShape(
       PrimitiveType element_type, absl::Span<const int64_t> dimensions,
-      absl::Span<DynExpr* const> expressions = {});
+      absl::Span<const DExpr> expressions = {});
 
   static absl::StatusOr<Shape> MakeValidatedShape(
       PrimitiveType element_type, absl::Span<const int64_t> dimensions,
       const std::vector<bool>& dynamic_dimensions,
-      absl::Span<DynExpr* const> expressions = {});
+      absl::Span<const DExpr> expressions = {});
 
   // Creates a Shape with element type corresponding to T and the given
   // dimensions
@@ -486,7 +487,7 @@ class ShapeUtil {
   // Constructs a new shape with major-first layout (i.e. {n, n-1, ..., 0}).
   static Shape MakeShapeWithDescendingLayout(
       PrimitiveType element_type, absl::Span<const int64_t> dimensions,
-      absl::Span<DynExpr* const> expressions = {});
+      absl::Span<const DExpr> expressions = {});
 
   // Returns a new Shape based on the given Shape with low-dimension-major
   // layout (i.e. {n, n-1, ..., 0}, like Fortran), and with the dimensions

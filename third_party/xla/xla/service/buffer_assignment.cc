@@ -99,7 +99,8 @@ bool ShouldPadBufferStorage(const HloValue& value,
   const bool is_entry_parameter =
       instruction->opcode() == HloOpcode::kParameter &&
       instruction->parent() == instruction->GetModule()->entry_computation();
-  return instruction->opcode() != HloOpcode::kConstant && !is_entry_parameter &&
+  return value.shape().has_dynamic_expr() &&
+         instruction->opcode() != HloOpcode::kConstant && !is_entry_parameter &&
          !value.shape().IsTuple() && !alias_analysis.ValueLivesOut(value);
 }
 

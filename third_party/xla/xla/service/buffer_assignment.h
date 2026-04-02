@@ -554,13 +554,15 @@ class BufferAssignment {
 
   BufferAssignment(const HloModule* module,
                    std::unique_ptr<HloOrdering> hlo_ordering,
-                   BufferValue::SizeFunction buffer_size,
+                   BufferValue::SizeFunction logical_buffer_size,
+                   BufferValue::SizeFunction storage_buffer_size,
                    LogicalBuffer::AlignmentFunction color_alignment,
                    std::unique_ptr<HloAliasAnalysis> alias_analysis,
                    std::unique_ptr<HloLiveRange> hlo_live_range)
       : module_(module),
         hlo_ordering_(std::move(hlo_ordering)),
-        buffer_size_(std::move(buffer_size)),
+        logical_buffer_size_(std::move(logical_buffer_size)),
+        storage_buffer_size_(std::move(storage_buffer_size)),
         color_alignment_(std::move(color_alignment)),
         alias_analysis_(std::move(alias_analysis)),
         hlo_live_range_(std::move(hlo_live_range)) {
@@ -579,7 +581,9 @@ class BufferAssignment {
 
   // Helper that calls NewEmptyAllocation and AddAssignment in one call,
   // creating an allocation containing a single LogicalBuffer.
-  BufferAllocation* NewAllocation(const HloBuffer& buffer, int64_t size);
+  BufferAllocation* NewAllocation(const HloBuffer& buffer, int64_t size,
+                                  std::optional<int64_t> assigned_size =
+                                      std::nullopt);
 
   // Adds a LogicalBuffer to the set assigned to the given allocation.
   void AddAssignment(BufferAllocation* allocation, const HloBuffer& buffer,
@@ -600,9 +604,20 @@ class BufferAssignment {
     if (iter != cached_buffer_sizes_.end()) return iter->second;
     int64_t result = 0;
     for (const HloValue* value : buffer.values()) {
-      result = std::max(result, buffer_size_(*value));
+      result = std::max(result, logical_buffer_size_(*value));
     }
     cached_buffer_sizes_.insert({buffer.id(), result});
+    return result;
+  }
+
+  int64_t HloBufferStorageSize(const HloBuffer& buffer) {
+    auto iter = cached_storage_buffer_sizes_.find(buffer.id());
+    if (iter != cached_storage_buffer_sizes_.end()) return iter->second;
+    int64_t result = 0;
+    for (const HloValue* value : buffer.values()) {
+      result = std::max(result, storage_buffer_size_(*value));
+    }
+    cached_storage_buffer_sizes_.insert({buffer.id(), result});
     return result;
   }
 
@@ -633,8 +648,12 @@ class BufferAssignment {
 
   const std::unique_ptr<HloOrdering> hlo_ordering_;
 
-  // Function which returns the buffer size for a given logical buffer (shape).
-  BufferValue::SizeFunction buffer_size_;
+  // Function which returns the logical buffer size for a given buffer value.
+  BufferValue::SizeFunction logical_buffer_size_;
+
+  // Function which returns the storage size to reserve for a given buffer
+  // value. This may be larger than the logical size when we pad allocations.
+  BufferValue::SizeFunction storage_buffer_size_;
 
   // Function which returns the alignment for a given logical buffer color.
   LogicalBuffer::AlignmentFunction color_alignment_;
@@ -646,6 +665,7 @@ class BufferAssignment {
   Stats stats_;
 
   absl::flat_hash_map<HloBuffer::Id, int64_t> cached_buffer_sizes_;
+  absl::flat_hash_map<HloBuffer::Id, int64_t> cached_storage_buffer_sizes_;
 
   BufferAssignment(const BufferAssignment&) = delete;
   BufferAssignment& operator=(const BufferAssignment&) = delete;

@@ -1247,9 +1247,12 @@ absl::StatusOr<std::unique_ptr<BufferAssignment>> BufferAssignment::FromProto(
       id_to_logical_buffer,
       BuildIdToLogicalBufferMap(proto, id_to_hlo_instruction, alias_analysis));
 
+  BufferValue::SizeFunction logical_buffer_size = buffer_size;
+  BufferValue::SizeFunction storage_buffer_size = buffer_size;
   std::unique_ptr<BufferAssignment> buffer_assignment =
       absl::WrapUnique(new BufferAssignment(
-          module, /*hlo_ordering=*/nullptr, std::move(buffer_size),
+          module, /*hlo_ordering=*/nullptr, std::move(logical_buffer_size),
+          std::move(storage_buffer_size),
           /*color_alignment=*/nullptr, std::move(alias_analysis),
           /*hlo_live_range=*/nullptr));
 

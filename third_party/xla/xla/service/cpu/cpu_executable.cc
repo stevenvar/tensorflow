@@ -450,7 +450,7 @@ absl::StatusOr<ExecutionOutput> CpuExecutable::CreateResultShapedBuffer(
                 stream->parent()->device_ordinal(), allocation_size));
         result_buffer = allocated_buffer.Release();
         MaybeOwningDeviceMemory& registered_buffer = buffers[buffer_index];
-        CHECK_EQ(result_buffer.size(),
+        CHECK_LE(result_buffer.size(),
                  registered_buffer.AsDeviceMemoryBase().size());
         std::memcpy(/*dest=*/result_buffer.opaque(),
                     /*src=*/registered_buffer.AsDeviceMemoryBase().opaque(),

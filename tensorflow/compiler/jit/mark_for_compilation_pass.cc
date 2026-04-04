@@ -59,6 +59,7 @@ limitations under the License.
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.pb.h"
+#include "tensorflow/core/framework/tensor_shape_expr.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/control_flow.h"
@@ -693,7 +694,7 @@ absl::Status IgnoreResourceOpForSafetyAnalysis(
 }
 // node mapping to multiple vectors of expressions (one for each output in
 // order)
-static std::map<std::string, std::vector<std::vector<std::unique_ptr<DimExpr>>>>
+static std::map<std::string, std::vector<std::vector<xla::DExpr>>>
     expr_map;
 // Helper to convert ExpressionProto to a readable string.
 std::string ExprProtoToString(const ExpressionProto& e) {
@@ -717,70 +718,6 @@ std::string ExprProtoToString(const ExpressionProto& e) {
     default:
       return "<none>";
   }
-}
-
-std::unique_ptr<DimExpr> ExprFromProto(const ExpressionProto& proto) {
-  switch (proto.node_type_case()) {
-    case ExpressionProto::kConstantValue:
-      return DimExpr::Cons(proto.constant_value());
-    case ExpressionProto::kVariableId:
-      return DimExpr::Var(proto.variable_id());
-    case ExpressionProto::kAddNode: {
-      auto lhs = ExprFromProto(proto.add_node().lhs());
-      auto rhs = ExprFromProto(proto.add_node().rhs());
-      // Note: These are owning pointers, but ExprAdd takes raw pointers.
-      // The caller must manage lifetime appropriately.
-      return std::make_unique<ExprAdd>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kSubNode: {
-      auto lhs = ExprFromProto(proto.sub_node().lhs());
-      auto rhs = ExprFromProto(proto.sub_node().rhs());
-      return std::make_unique<ExprSub>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kMulNode: {
-      auto lhs = ExprFromProto(proto.mul_node().lhs());
-      auto rhs = ExprFromProto(proto.mul_node().rhs());
-      return std::make_unique<ExprMul>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kDivNode: {
-      auto lhs = ExprFromProto(proto.div_node().lhs());
-      auto rhs = ExprFromProto(proto.div_node().rhs());
-      return std::make_unique<ExprDiv>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::NODE_TYPE_NOT_SET:
-    default:
-      return nullptr;
-  }
-}
-
-static xla::DExpr DimExprToDExpr(const DimExpr* e) {
-  switch (e->kind()) {
-    case DimExpr::Kind::kConstant: {
-      auto* ac = static_cast<const Constant*>(e);
-      return xla::DExpr::Const(ac->value());
-    }
-    case DimExpr::Kind::kVariable: {
-      auto* av = static_cast<const Variable*>(e);
-      return xla::DExpr::Var(av->id());  // Use 1 all the time for now
-    }
-    case DimExpr::Kind::kAdd: {
-      auto* ee = static_cast<const ExprAdd*>(e);
-      return DimExprToDExpr(ee->lhs()) + DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kSub: {
-      auto* ee = static_cast<const ExprSub*>(e);
-      return DimExprToDExpr(ee->lhs()) - DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kMul: {
-      auto* ee = static_cast<const ExprMul*>(e);
-      return DimExprToDExpr(ee->lhs()) * DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kDiv: {
-      auto* ee = static_cast<const ExprDiv*>(e);
-      return DimExprToDExpr(ee->lhs()) / DimExprToDExpr(ee->rhs());
-    }
-  }
-  return xla::DExpr();
 }
 
 // Runs Grappler static inference and logs any ExpressionProto found in output
@@ -837,13 +774,13 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
     const auto& outs = props.GetOutputProperties(n.name());
     std::vector<TensorShapeProto> inferred_output_shapes;
     inferred_output_shapes.reserve(outs.size());
-    std::vector<std::vector<std::unique_ptr<DimExpr>>> list_exprs(outs.size());
+    std::vector<std::vector<xla::DExpr>> list_exprs(outs.size());
     for (int out_idx = 0; out_idx < static_cast<int>(outs.size()); ++out_idx) {
       const auto& tp = outs[out_idx];
       const TensorShapeProto& shp = tp.shape();
       inferred_output_shapes.push_back(convert_graph_properties_shape(shp));
 
-      std::vector<std::unique_ptr<DimExpr>> exprs;
+      std::vector<xla::DExpr> exprs;
       for (int d = 0; d < shp.dim_size(); ++d) {
         const auto& dim = shp.dim(d);
 
@@ -854,15 +791,14 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
         VLOG(1) << "Node " << n.name() << " has expression "
                 << ExprProtoToString(expr);
 
-        auto ex = ExprFromProto(expr);
-        exprs.push_back(std::move(ex));
+        exprs.push_back(DExprFromProto(expr));
 
         ++found;
       }
       if (shp.dim_size() == 0 && shp.unknown_rank()) {
         // Add two dummy variables to represent the unknown rank
-        exprs.push_back(std::make_unique<Variable>(-888));
-        exprs.push_back(std::make_unique<Variable>(-889));
+        exprs.push_back(DExpr::Var(-888));
+        exprs.push_back(DExpr::Var(-889));
       }
 
       list_exprs[out_idx] = std::move(exprs);
@@ -1877,9 +1813,7 @@ absl::Status MarkForCompilationPassImpl::AssignDimVars(void) {
         LOG(INFO) << "Warning: Output index " << output_index << " is out of bounds for node " << input->name();
         continue;
       }
-      for (auto& pDim: (it->second)[output_index]) {
-        DimExpr * d= pDim.get();
-        xla::DExpr dyn = DimExprToDExpr(d);
+      for (const auto& dyn : (it->second)[output_index]) {
         auto new_ids = dyn->get_all_ids();
         for (auto id : new_ids) {
           cluster->add_dim_var(id);

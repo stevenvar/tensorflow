@@ -733,6 +733,7 @@ cc_library(
     srcs = ["tensor_shape_expr.cc"],
     hdrs = ["tensor_shape_expr.h"],
     visibility = [
+        "//tensorflow/compiler/jit:__subpackages__",
         "//tensorflow/core:__pkg__",
         "//tensorflow/core/grappler:__subpackages__",
         "//tensorflow/core/runtime_fallback:__subpackages__",

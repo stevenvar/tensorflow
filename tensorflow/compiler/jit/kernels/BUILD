@@ -58,6 +58,7 @@ cc_library(
         "//tensorflow/compiler/jit:xla_compile_util",
         "//tensorflow/compiler/jit:xla_batch_matcher",
         "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core/framework:tensor_shape_expr",
         "//tensorflow/core/platform:refcount",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:node_hash_map",

@@ -1420,9 +1420,9 @@ class SymbolicShapeRefiner {
     if (node->op() == "_Arg") {
       var_id *= -1;
       // var_id would be minus when it's argument.
-      dim = c->UnknownDimWithExpr(DimExpr::Var(var_id));
+      dim = c->UnknownDimWithExpr(DExpr::Var(var_id));
     } else {
-      dim = c->UnknownDimWithExpr(DimExpr::Var(var_id));
+      dim = c->UnknownDimWithExpr(DExpr::Var(var_id));
     }
     VLOG(1) << "[EXPR] GetUnknownOutputDim: node=" << node->name()
             << " out=" << index << " dim=" << dim_id << " -> Var(" << var_id
@@ -2052,7 +2052,7 @@ class SymbolicShapeRefiner {
           continue;
         }
         // If already tagged with expr, keep it.
-        auto* dim_expr = ic->GetDimExpr(dim);
+        const auto* dim_expr = ic->GetDimExpr(dim);
         if (dim_expr != nullptr && !force_fresh_unknown_dim) {
           dims.push_back(dim);
           continue;
@@ -2274,14 +2274,14 @@ class SymbolicShapeManager {
         auto* out_dim = properties->mutable_shape()->add_dim();
         out_dim->set_size(d < 0 ? -1 : d);
         void* root = dims_.RootId(dim);
-        DimExpr* expr = nullptr;
+        const DExpr* expr = nullptr;
         if (auto it = dim_root_expr_.find(root); it != dim_root_expr_.end()) {
-          expr = it->second;
+          expr = &it->second;
         } else {
           expr = ExprForDim(dim);
         }
         if (expr != nullptr) {
-          expr->ToProto(out_dim->mutable_expr());
+          ExprToProto(*expr, out_dim->mutable_expr());
           // TODO: Apply simplification?
         }
       }
@@ -2312,32 +2312,32 @@ class SymbolicShapeManager {
 
  private:
   // Get the variable ID from an expression, or -1 if not a variable.
-  static int32_t GetVarId(const DimExpr* e) {
-    if (!e || e->kind() != DimExpr::Kind::kVariable) return -1;
-    return static_cast<const Variable*>(e)->id();
+  static int32_t GetVarId(const DExpr* e) {
+    if (!e || e->kind() != DExpr::Kind::kVariable) return -1;
+    return static_cast<const xla::Variable*>(e->get())->get_id();
   }
 
-  static bool IsConst(const DimExpr* e) {
-    return e && e->kind() == DimExpr::Kind::kConstant;
+  static bool IsConst(const DExpr* e) {
+    return e && e->kind() == DExpr::Kind::kConstant;
   }
 
-  static bool IsVar(const DimExpr* e) {
-    return e && e->kind() == DimExpr::Kind::kVariable;
+  static bool IsVar(const DExpr* e) {
+    return e && e->kind() == DExpr::Kind::kVariable;
   }
 
-  static bool IsPlaceHolder(const DimExpr* e) {
+  static bool IsPlaceHolder(const DExpr* e) {
     if (!e) return false;
-    if (e->kind() != DimExpr::Kind::kVariable) return false;
-    return static_cast<const Variable*>(e)->id() < 0;
+    if (e->kind() != DExpr::Kind::kVariable) return false;
+    return static_cast<const xla::Variable*>(e->get())->get_id() < 0;
   }
 
-  static bool IsCompound(const DimExpr* e) {
+  static bool IsCompound(const DExpr* e) {
     if (!e) return false;
     switch (e->kind()) {
-      case DimExpr::Kind::kAdd:
-      case DimExpr::Kind::kSub:
-      case DimExpr::Kind::kMul:
-      case DimExpr::Kind::kDiv:
+      case DExpr::Kind::kAdd:
+      case DExpr::Kind::kSub:
+      case DExpr::Kind::kMul:
+      case DExpr::Kind::kDiv:
         return true;
       default:
         return false;
@@ -2345,7 +2345,7 @@ class SymbolicShapeManager {
   }
 
   // Ranking: Const > Arg_ > Compound > Var > null
-  static int InfoScore(const DimExpr* e) {
+  static int InfoScore(const DExpr* e) {
     if (!e) return 0;
     if (IsConst(e)) return 4;
     if (IsPlaceHolder(e)) return 3;
@@ -2355,25 +2355,27 @@ class SymbolicShapeManager {
   }
 
   // Prefer "more informative" but keep deterministic tie-break.
-  static DimExpr* PreferMoreInformative(DimExpr* a, DimExpr* b) {
-    if (a == b) return a;
+  static DExpr PreferMoreInformative(const DExpr* a, const DExpr* b) {
+    if (a && b && ExprEquals(*a, *b)) return *a;
     const int sa = InfoScore(a);
     const int sb = InfoScore(b);
-    if (sa > sb) return a;
-    if (sb > sa) return b;
+    if (sa > sb) return *a;
+    if (sb > sa) return *b;
     // Same score: keep stable choice.
-    return a;
+    if (a) return *a;
+    if (b) return *b;
+    return DExpr();
   }
 
   // Get the expr pointer from a dimension handle (accesses private member).
-  static DimExpr* GetExprFromDimHandle(const DimensionHandle& d) {
+  static const DExpr* GetExprFromDimHandle(const DimensionHandle& d) {
     if (!d.IsSet()) return nullptr;
-    return d->expr_;
+    return d->expr_ ? &d->expr_ : nullptr;
   }
 
-  DimExpr* ExprForDim(const DimensionHandle& d) {
+  const DExpr* ExprForDim(const DimensionHandle& d) {
     if (!d.IsSet()) return nullptr;
-    if (DimExpr* expr = GetExprFromDimHandle(d)) {
+    if (const DExpr* expr = GetExprFromDimHandle(d)) {
       return expr;
     }
     if (!InferenceContext::ValueKnown(d)) {
@@ -2382,12 +2384,11 @@ class SymbolicShapeManager {
     const int64_t value = InferenceContext::Value(d);
     auto it = const_exprs_.find(value);
     if (it != const_exprs_.end()) {
-      return it->second.get();
+      return &it->second;
     }
-    auto expr = DimExpr::Cons(value);
-    DimExpr* expr_ptr = expr.get();
-    const_exprs_.emplace(value, std::move(expr));
-    return expr_ptr;
+    auto [inserted_it, inserted] = const_exprs_.emplace(value, DExpr::Const(value));
+    (void)inserted;
+    return &inserted_it->second;
   }
 
   absl::Status MergeDimsWithExpr(DimensionHandle d1, DimensionHandle d2) {
@@ -2397,24 +2398,27 @@ class SymbolicShapeManager {
     void* r2 = dims_.RootId(d2);
 
     // Fetch best-known expr for each set.
-    auto get_best = [&](void* r, DimensionHandle d) -> DimExpr* {
+    auto get_best = [&](void* r, DimensionHandle d) -> DExpr {
       auto it = dim_root_expr_.find(r);
       if (it != dim_root_expr_.end()) return it->second;
-      return ExprForDim(d);  // may be null
+      if (const DExpr* expr = ExprForDim(d)) return *expr;
+      return DExpr();
     };
 
-    DimExpr* e1 = get_best(r1, d1);
-    DimExpr* e2 = get_best(r2, d2);
+    DExpr e1 = get_best(r1, d1);
+    DExpr e2 = get_best(r2, d2);
 
     // If already in same UF set, just keep the most informative expr.
     if (r1 == r2) {
-      DimExpr* existing = nullptr;
+      const DExpr* existing = nullptr;
       if (auto it = dim_root_expr_.find(r1); it != dim_root_expr_.end()) {
-        existing = it->second;
+        existing = &it->second;
       }
-      DimExpr* chosen = PreferMoreInformative(existing,
-                                            PreferMoreInformative(e1, e2));
-      if (chosen) dim_root_expr_[r1] = chosen;  // keep or upgrade
+      DExpr preferred = PreferMoreInformative(e1 ? &e1 : nullptr,
+                                              e2 ? &e2 : nullptr);
+      DExpr chosen = PreferMoreInformative(existing,
+                                           preferred ? &preferred : nullptr);
+      if (chosen) dim_root_expr_[r1] = std::move(chosen);  // keep or upgrade
       return absl::OkStatus();
     }
 
@@ -2425,7 +2429,8 @@ class SymbolicShapeManager {
     void* new_root = dims_.RootId(d1);
 
     // Choose best expr across both sets.
-    DimExpr* chosen = PreferMoreInformative(e1, e2);
+    DExpr chosen = PreferMoreInformative(e1 ? &e1 : nullptr,
+                                         e2 ? &e2 : nullptr);
 
     // Remove stale root keys (only the old roots).
     dim_root_expr_.erase(r1);
@@ -2433,17 +2438,17 @@ class SymbolicShapeManager {
 
     // Preserve any expr already stored at new_root (rare but safe).
     if (auto it = dim_root_expr_.find(new_root); it != dim_root_expr_.end()) {
-      chosen = PreferMoreInformative(it->second, chosen);
+      chosen = PreferMoreInformative(&it->second, chosen ? &chosen : nullptr);
     }
 
-    if (chosen) dim_root_expr_[new_root] = chosen;
+    if (chosen) dim_root_expr_[new_root] = std::move(chosen);
 
     return absl::OkStatus();
   }
   DisjointSet<shape_inference::ShapeHandle> shapes_;
-  absl::flat_hash_map<int64_t, std::unique_ptr<DimExpr>> const_exprs_;
+  absl::flat_hash_map<int64_t, DExpr> const_exprs_;
   // Map from union-find root pointer to the best expression for that set.
-  absl::flat_hash_map<void*, DimExpr*> dim_root_expr_;
+  absl::flat_hash_map<void*, DExpr> dim_root_expr_;
   DisjointSet<shape_inference::DimensionHandle> dims_;
 };
 

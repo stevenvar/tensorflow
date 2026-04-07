@@ -22,7 +22,6 @@ limitations under the License.
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/shape_dynexpr.h"
-#include "tsl/platform/protobuf.h"
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/types.pb.h"
@@ -151,9 +150,6 @@ class ConstOp : public XlaOpKernel {
           xla::XlaOp scalar_const = xla::ConstantR0<int32_t>(b, dim_val);
           xla::ExpressionProto expr_proto;
           shape.get_expression(i)->to_proto(&expr_proto);
-          std::string expr_textproto =
-              tsl::LegacyUnredactedShortDebugString(expr_proto);
-          VLOG(1) << "ConstOp:expr_textproto is " << expr_textproto;
           OP_REQUIRES_OK(
               ctx, b->SetInstructionFrontendAttribute(scalar_const,
                                                       "dynamic_constant_index",
@@ -161,7 +157,7 @@ class ConstOp : public XlaOpKernel {
           OP_REQUIRES_OK(ctx,
                          b->SetInstructionFrontendAttribute(
                               scalar_const, "dynamic_constant_expr",
-                              expr_textproto));
+                              expr_proto.ShortDebugString()));
           dimension_constants.push_back(xla::Reshape(scalar_const, {1}));
         } else {
           int32_t dim_val = static_cast<int32_t>(shape.dim_size(i));

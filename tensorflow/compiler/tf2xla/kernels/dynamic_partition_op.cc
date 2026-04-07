@@ -87,6 +87,12 @@ class DynamicPartitionOp : public XlaOpKernel {
                      xla::XlaOp partitions_1d, const xla::Shape& data_1d_shape,
                      const xla::Shape& partition_1d_shape) {
     int64_t input_count = data_1d_shape.dimensions(0);
+    VLOG(1) << "data_1d_shape="
+          << xla::ShapeUtil::HumanString(data_1d_shape)
+          << " partition_1d_shape="
+          << xla::ShapeUtil::HumanString(partition_1d_shape)
+          << " input_count=" << input_count
+          << " num_partitions=" << num_partitions_;
     // Use the smaller runtime size to mask off padded tail elements when one
     // input loses dynamic shape information and falls back to its static bound.
     // For valid DynamicPartition inputs the true prefix sizes should match, so

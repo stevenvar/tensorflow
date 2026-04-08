@@ -447,6 +447,9 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
           VLOG(1) << "Current expression is " << expr;
           if (run_options) {
             xla::DExpr batch_size = xla::DExpr::Const(run_options->batch_size());
+            // TODO: If fractional expressions are allowed to
+            // survive until runtime substitution, validate integrality before
+            // calling get_val() here instead of assuming simplify() is exact.
             xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
             shape.set_dim(dim, subst_expr->get_val());
           } else {
@@ -458,6 +461,9 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
                           ctx->resource_manager(), BatchSizeResourceName, &bsr));
             xla::DExpr batch_size = xla::DExpr::Const(bsr->GetBatchSize());
             // Just substitute Var(1) for now.
+            // TODO: If fractional expressions are allowed to
+            // survive until runtime substitution, validate integrality before
+            // calling get_val() here instead of assuming simplify() is exact.
             xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
             shape.set_dim(dim, subst_expr->get_val());
             bsr->Unref();

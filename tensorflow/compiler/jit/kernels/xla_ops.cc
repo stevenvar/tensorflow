@@ -599,7 +599,7 @@ absl::Status CompileToLocalExecutable(
             dyn_exprs.push_back(xla::DExpr::Const(d));
           }
           for (int j = 0; j < exp.size(); ++j) {
-            auto e = DimExprToDExpr(ExprFromProto(exp[j]).get()).simplify();
+            auto e = DimExprToDExpr(ExprFromProto(exp[j]).get());
             if (e->is_dynamic()) {
               dyn_exprs[j] = e;
             }

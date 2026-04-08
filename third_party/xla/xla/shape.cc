@@ -18,6 +18,7 @@ limitations under the License.
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <map>
 #include <numeric>
 #include <optional>
 #include <ostream>
@@ -71,6 +72,334 @@ std::unique_ptr<DynExpr> MultiplyByConstant(int64_t factor, DynExpr* expr) {
     return expr->clone();
   }
   return std::make_unique<Mul>(DynExpr::_(factor), expr->clone().release());
+}
+
+// We normalize affine expressions into:
+//   (constant + sum_i coeff_i * var_i) / denominator
+//
+// Concretely, the canonical forms we want to preserve are:
+//   p
+//   mX
+//   mX + p
+//   mX + nY
+//   (mX) / d
+//   (mX + p) / d
+//   (mX + nY + p) / d
+//
+// This lets us combine equivalent trees into one stable representation, e.g.:
+//   A/2 + A/2     -> A
+//   A/2 + B/2     -> (A + B) / 2
+//   4/8 * A       -> A / 2
+//   A + (B + 1)   -> A + B + 1   (represented via coefficients + constant)
+//
+// The important constraint is that we only canonicalize affine expressions over
+// an integer denominator. Non-affine expressions stay in tree form and only get
+// a minimal local simplification in the fallback path below.
+struct CanonicalAffineExpr {
+  int64_t denominator = 1;
+  int64_t constant = 0;
+  std::map<int, int64_t> coefficients;
+
+  bool IsPureConstant() const { return coefficients.empty(); }
+};
+
+void NormalizeAffine(CanonicalAffineExpr* expr) {
+  CHECK(expr != nullptr);
+  CHECK(expr->denominator != 0);
+  // Drop zero coefficients so `mX + 0Y + p` becomes `mX + p`.
+  for (auto it = expr->coefficients.begin(); it != expr->coefficients.end();) {
+    if (it->second == 0) {
+      it = expr->coefficients.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  // Reduce `(mX + nY + p) / d` by the gcd of all integer coefficients.
+  int64_t divisor = std::llabs(expr->constant);
+  for (const auto& [_, coeff] : expr->coefficients) {
+    divisor = std::gcd(divisor, std::llabs(coeff));
+  }
+  divisor = std::gcd(divisor, std::llabs(expr->denominator));
+  if (divisor > 1) {
+    expr->constant /= divisor;
+    expr->denominator /= divisor;
+    for (auto& [_, coeff] : expr->coefficients) {
+      coeff /= divisor;
+    }
+  }
+  // Keep the denominator positive so `( -A ) / ( -2 )` canonicalizes to
+  // `A / 2` rather than preserving sign in two places.
+  if (expr->denominator < 0) {
+    expr->denominator = -expr->denominator;
+    expr->constant = -expr->constant;
+    for (auto& [_, coeff] : expr->coefficients) {
+      coeff = -coeff;
+    }
+  }
+  // Canonical zero is just `0`, not `0 / d`.
+  if (expr->constant == 0 && expr->coefficients.empty()) {
+    expr->denominator = 1;
+  }
+}
+
+CanonicalAffineExpr MakeConstantAffine(int64_t value) {
+  CanonicalAffineExpr expr;
+  expr.constant = value;
+  return expr;
+}
+
+CanonicalAffineExpr MakeVariableAffine(int id) {
+  CanonicalAffineExpr expr;
+  expr.coefficients[id] = 1;
+  return expr;
+}
+
+CanonicalAffineExpr AddAffine(const CanonicalAffineExpr& lhs,
+                              const CanonicalAffineExpr& rhs, int rhs_sign) {
+  CHECK(rhs_sign == 1 || rhs_sign == -1);
+  CanonicalAffineExpr result;
+  int64_t gcd = std::gcd(lhs.denominator, rhs.denominator);
+  int64_t lhs_scale = rhs.denominator / gcd;
+  int64_t rhs_scale = lhs.denominator / gcd;
+  result.denominator = lhs.denominator * lhs_scale;
+  result.constant = lhs.constant * lhs_scale + rhs_sign * rhs.constant * rhs_scale;
+  result.coefficients = lhs.coefficients;
+  for (const auto& [id, coeff] : rhs.coefficients) {
+    result.coefficients[id] += rhs_sign * coeff * rhs_scale;
+  }
+  NormalizeAffine(&result);
+  return result;
+}
+
+CanonicalAffineExpr MultiplyAffineByRational(const CanonicalAffineExpr& expr,
+                                             int64_t numerator,
+                                             int64_t denominator) {
+  CHECK(denominator != 0);
+  CanonicalAffineExpr result = expr;
+  result.constant *= numerator;
+  result.denominator *= denominator;
+  for (auto& [_, coeff] : result.coefficients) {
+    coeff *= numerator;
+  }
+  NormalizeAffine(&result);
+  return result;
+}
+
+std::optional<CanonicalAffineExpr> ToCanonicalAffine(const DynExpr* expr) {
+  CHECK(expr != nullptr);
+  // This recognizes exactly the expression families that fit our affine normal
+  // form:
+  //   constant
+  //   variable
+  //   affine +/- affine
+  //   constant * affine
+  //   affine / constant
+  //
+  // If an expression falls outside of that space, we deliberately return
+  // std::nullopt and let the fallback simplifier keep the original tree shape.
+  switch (expr->kind()) {
+    case DExpr::Kind::kUnknown:
+      return std::nullopt;
+    case DExpr::Kind::kConstant:
+      return MakeConstantAffine(static_cast<const Constant*>(expr)->get_val());
+    case DExpr::Kind::kVariable:
+      return MakeVariableAffine(static_cast<const Variable*>(expr)->get_id());
+    case DExpr::Kind::kAdd: {
+      const auto* add = static_cast<const Add*>(expr);
+      auto lhs = ToCanonicalAffine(add->get_lhs());
+      auto rhs = ToCanonicalAffine(add->get_rhs());
+      if (!lhs.has_value() || !rhs.has_value()) return std::nullopt;
+      return AddAffine(*lhs, *rhs, /*rhs_sign=*/1);
+    }
+    case DExpr::Kind::kSub: {
+      const auto* sub = static_cast<const Sub*>(expr);
+      auto lhs = ToCanonicalAffine(sub->get_lhs());
+      auto rhs = ToCanonicalAffine(sub->get_rhs());
+      if (!lhs.has_value() || !rhs.has_value()) return std::nullopt;
+      return AddAffine(*lhs, *rhs, /*rhs_sign=*/-1);
+    }
+    case DExpr::Kind::kMul: {
+      const auto* mul = static_cast<const Mul*>(expr);
+      auto lhs = ToCanonicalAffine(mul->get_lhs());
+      auto rhs = ToCanonicalAffine(mul->get_rhs());
+      if (!lhs.has_value() || !rhs.has_value()) return std::nullopt;
+      // `constant * affine` stays affine.
+      if (lhs->IsPureConstant()) {
+        return MultiplyAffineByRational(*rhs, lhs->constant, lhs->denominator);
+      }
+      if (rhs->IsPureConstant()) {
+        return MultiplyAffineByRational(*lhs, rhs->constant, rhs->denominator);
+      }
+      // `affine * affine` is not affine in general, so keep it as a tree.
+      return std::nullopt;
+    }
+    case DExpr::Kind::kDiv: {
+      const auto* div = static_cast<const Div*>(expr);
+      auto lhs = ToCanonicalAffine(div->get_lhs());
+      auto rhs = ToCanonicalAffine(div->get_rhs());
+      if (!lhs.has_value() || !rhs.has_value() || !rhs->IsPureConstant() ||
+          rhs->constant == 0) {
+        return std::nullopt;
+      }
+      // `affine / constant` stays in the canonical affine-over-denominator form.
+      return MultiplyAffineByRational(*lhs, rhs->denominator, rhs->constant);
+    }
+  }
+  return std::nullopt;
+}
+
+std::unique_ptr<DynExpr> BuildScaledVariableTerm(int id, int64_t coefficient) {
+  CHECK(coefficient != 0);
+  if (coefficient == 1) {
+    return std::make_unique<Variable>(id);
+  }
+  return std::make_unique<Mul>(DynExpr::_(coefficient), DynExpr::V(id));
+}
+
+std::unique_ptr<DynExpr> BuildAffineNumerator(const CanonicalAffineExpr& expr) {
+  std::unique_ptr<DynExpr> result;
+  // Emit variables in a stable order so `mX + nY` and `nY + mX` rebuild to the
+  // same tree shape.
+  for (const auto& [id, coeff] : expr.coefficients) {
+    auto term = BuildScaledVariableTerm(id, coeff);
+    if (result == nullptr) {
+      result = std::move(term);
+    } else {
+      result = std::make_unique<Add>(result.release(), term.release());
+    }
+  }
+  if (expr.constant != 0 || result == nullptr) {
+    auto constant_term = std::make_unique<Constant>(expr.constant);
+    if (result == nullptr) {
+      result = std::move(constant_term);
+    } else {
+      result = std::make_unique<Add>(result.release(), constant_term.release());
+    }
+  }
+  return result;
+}
+
+std::unique_ptr<DynExpr> BuildCanonicalExpr(const CanonicalAffineExpr& expr) {
+  CanonicalAffineExpr normalized = expr;
+  NormalizeAffine(&normalized);
+  auto numerator = BuildAffineNumerator(normalized);
+  // Denominator 1 means the affine numerator is already the final canonical
+  // form: `p`, `mX`, `mX + p`, `mX + nY`, ...
+  if (normalized.denominator == 1) {
+    return numerator;
+  }
+  // Otherwise keep the single shared denominator outside the affine numerator:
+  // `(mX + nY + p) / d`.
+  return std::make_unique<Div>(numerator.release(),
+                               DynExpr::_(normalized.denominator));
+}
+
+std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
+  // Fallback intentionally does the minimum local cleanup needed to avoid
+  // obviously noisy trees:
+  //   0 + X -> X
+  //   X + 0 -> X
+  //   X - 0 -> X
+  //   X - X -> 0
+  //   0 * X -> 0
+  //   1 * X -> X
+  //   X * 1 -> X
+  //   0 / X -> 0
+  //   X / 1 -> X
+  //   c1 op c2 -> folded constant when safe
+  //
+  // It deliberately does not reassociate sums, distribute division over
+  // addition, or otherwise try to invent a more "clever" tree shape.
+  switch (expr->kind()) {
+    case DExpr::Kind::kUnknown:
+    case DExpr::Kind::kConstant:
+    case DExpr::Kind::kVariable:
+      return expr->clone();
+    case DExpr::Kind::kAdd: {
+      const auto* add = static_cast<const Add*>(expr);
+      auto lhs = std::unique_ptr<DynExpr>(add->get_lhs()->s());
+      auto rhs = std::unique_ptr<DynExpr>(add->get_rhs()->s());
+      if (lhs->kind() == DExpr::Kind::kUnknown ||
+          rhs->kind() == DExpr::Kind::kUnknown) {
+        return std::make_unique<UnknownExpr>();
+      }
+      Constant* l = AsConstant(lhs.get());
+      Constant* r = AsConstant(rhs.get());
+      if (l && r) return std::make_unique<Constant>(l->get_val() + r->get_val());
+      if (l && l->get_val() == 0) return rhs;
+      if (r && r->get_val() == 0) return lhs;
+      return std::make_unique<Add>(lhs.release(), rhs.release());
+    }
+    case DExpr::Kind::kSub: {
+      const auto* sub = static_cast<const Sub*>(expr);
+      auto lhs = std::unique_ptr<DynExpr>(sub->get_lhs()->s());
+      auto rhs = std::unique_ptr<DynExpr>(sub->get_rhs()->s());
+      if (lhs->kind() == DExpr::Kind::kUnknown ||
+          rhs->kind() == DExpr::Kind::kUnknown) {
+        return std::make_unique<UnknownExpr>();
+      }
+      Constant* l = AsConstant(lhs.get());
+      Constant* r = AsConstant(rhs.get());
+      if (l && r) return std::make_unique<Constant>(l->get_val() - r->get_val());
+      if (r && r->get_val() == 0) return lhs;
+      if (*lhs == *rhs) return std::make_unique<Constant>(0);
+      return std::make_unique<Sub>(lhs.release(), rhs.release());
+    }
+    case DExpr::Kind::kMul: {
+      const auto* mul = static_cast<const Mul*>(expr);
+      auto lhs = std::unique_ptr<DynExpr>(mul->get_lhs()->s());
+      auto rhs = std::unique_ptr<DynExpr>(mul->get_rhs()->s());
+      if (lhs->kind() == DExpr::Kind::kUnknown ||
+          rhs->kind() == DExpr::Kind::kUnknown) {
+        return std::make_unique<UnknownExpr>();
+      }
+      Constant* l = AsConstant(lhs.get());
+      Constant* r = AsConstant(rhs.get());
+      if (l && r) return std::make_unique<Constant>(l->get_val() * r->get_val());
+      if ((l && l->get_val() == 0) || (r && r->get_val() == 0)) {
+        return std::make_unique<Constant>(0);
+      }
+      if (l && l->get_val() == 1) return rhs;
+      if (r && r->get_val() == 1) return lhs;
+      if (r != nullptr) std::swap(lhs, rhs);
+      return std::make_unique<Mul>(lhs.release(), rhs.release());
+    }
+    case DExpr::Kind::kDiv: {
+      const auto* div = static_cast<const Div*>(expr);
+      auto lhs = std::unique_ptr<DynExpr>(div->get_lhs()->s());
+      auto rhs = std::unique_ptr<DynExpr>(div->get_rhs()->s());
+      if (lhs->kind() == DExpr::Kind::kUnknown ||
+          rhs->kind() == DExpr::Kind::kUnknown) {
+        return std::make_unique<UnknownExpr>();
+      }
+      Constant* l = AsConstant(lhs.get());
+      Constant* r = AsConstant(rhs.get());
+      if (l && l->get_val() == 0) return std::make_unique<Constant>(0);
+      if (r && r->get_val() == 1) return lhs;
+      if (l && r && r->get_val() != 0) {
+        int64_t numerator = l->get_val();
+        int64_t denominator = r->get_val();
+        NormalizeFraction(&numerator, &denominator);
+        if (denominator == 1) return std::make_unique<Constant>(numerator);
+        return std::make_unique<Div>(DynExpr::_(numerator),
+                                     DynExpr::_(denominator));
+      }
+      return std::make_unique<Div>(lhs.release(), rhs.release());
+    }
+  }
+  return expr->clone();
+}
+
+std::unique_ptr<DynExpr> SimplifyCanonical(const DynExpr* expr) {
+  if (expr->kind() == DExpr::Kind::kUnknown) {
+    return std::make_unique<UnknownExpr>();
+  }
+  // Prefer the affine normal form whenever possible so simplify() produces one
+  // stable canonical tree instead of a collection of equivalent trees.
+  if (auto canonical = ToCanonicalAffine(expr); canonical.has_value()) {
+    return BuildCanonicalExpr(*canonical);
+  }
+  return SimplifyFallback(expr);
 }
 
 }  // namespace
@@ -184,311 +513,17 @@ bool DynExpr::equal(DynExpr* expr1, DynExpr* expr2) {
 }
 
 // Simplification methods
-DynExpr* Constant::s() { return clone().release(); }
+DynExpr* Constant::s() { return SimplifyCanonical(this).release(); }
 
-DynExpr* Variable::s() { return clone().release(); }
+DynExpr* Variable::s() { return SimplifyCanonical(this).release(); }
 
-DynExpr* Mul::s() {
-  auto s_lhs = std::unique_ptr<DynExpr>(get_lhs()->s());
-  auto s_rhs = std::unique_ptr<DynExpr>(get_rhs()->s());
-  if (s_lhs->kind() == DExpr::Kind::kUnknown ||
-      s_rhs->kind() == DExpr::Kind::kUnknown) {
-    return DExpr::Unknown().release();
-  }
-  Constant* l = s_lhs->kind() == DExpr::Kind::kConstant
-                    ? static_cast<Constant*>(s_lhs.get())
-                    : nullptr;
-  Constant* r = s_rhs->kind() == DExpr::Kind::kConstant
-                    ? static_cast<Constant*>(s_rhs.get())
-                    : nullptr;
-  // constant * constant
-  if (l && r) return DynExpr::_(l->get_val() * r->get_val());
-  // 0 * X = 0
-  if (l && l->get_val() == 0) return DynExpr::_(0);
-  // 1 * X = X
-  if (l && l->get_val() == 1) return s_rhs.release();
-  // X * 1 = X
-  if (r && r->get_val() == 1) return s_lhs.release();
-  // X * constant = constant * X
-  if (r && s_lhs->is_dynamic()) {
-    auto reordered = std::unique_ptr<DynExpr>(r->get_val() * *s_lhs);
-    return reordered->s();
-  }
-  // (c / d) * X = (c * X) / d, but keep the reduced fraction symbolic.
-  if (s_lhs->kind() == DExpr::Kind::kDiv &&
-      s_rhs->kind() != DExpr::Kind::kDiv) {
-    auto* div = static_cast<Div*>(s_lhs.get());
-    Constant* numerator = AsConstant(div->get_lhs());
-    Constant* denominator = AsConstant(div->get_rhs());
-    if (numerator != nullptr && denominator != nullptr) {
-      int64_t reduced_numerator = numerator->get_val();
-      int64_t reduced_denominator = denominator->get_val();
-      NormalizeFraction(&reduced_numerator, &reduced_denominator);
-      auto scaled_rhs = MultiplyByConstant(reduced_numerator, s_rhs.get());
-      if (reduced_denominator == 1) {
-        return scaled_rhs->s();
-      }
-      auto rewritten =
-          std::make_unique<Div>(scaled_rhs->s(), DynExpr::_(reduced_denominator));
-      return rewritten->s();
-    }
-  }
-  if (s_rhs->kind() == DExpr::Kind::kDiv &&
-      s_lhs->kind() != DExpr::Kind::kDiv) {
-    auto* div = static_cast<Div*>(s_rhs.get());
-    Constant* numerator = AsConstant(div->get_lhs());
-    Constant* denominator = AsConstant(div->get_rhs());
-    if (numerator != nullptr && denominator != nullptr) {
-      int64_t reduced_numerator = numerator->get_val();
-      int64_t reduced_denominator = denominator->get_val();
-      NormalizeFraction(&reduced_numerator, &reduced_denominator);
-      auto scaled_lhs = MultiplyByConstant(reduced_numerator, s_lhs.get());
-      if (reduced_denominator == 1) {
-        return scaled_lhs->s();
-      }
-      auto rewritten =
-          std::make_unique<Div>(scaled_lhs->s(), DynExpr::_(reduced_denominator));
-      return rewritten->s();
-    }
-  }
-  // m * (nX) = (m*n) * X
-  if (s_rhs->kind() == DExpr::Kind::kMul) {
-    auto* nX = static_cast<Mul*>(s_rhs.get());
-    DynExpr* X = nX->get_rhs();
-    Constant* n = nX->get_lhs()->kind() == DExpr::Kind::kConstant
-                      ? static_cast<Constant*>(nX->get_lhs())
-                      : nullptr;
-    if (l && n) {
-      auto mn = l->get_val() * n->get_val();
-      auto folded = std::unique_ptr<DynExpr>(mn * *X);
-      return folded->s();
-    }
-  }
-  return (*s_lhs) * (*s_rhs);
-}
+DynExpr* Mul::s() { return SimplifyCanonical(this).release(); }
 
-DynExpr* Add::s() {
-  auto s_lhs = std::unique_ptr<DynExpr>(get_lhs()->s());
-  auto s_rhs = std::unique_ptr<DynExpr>(get_rhs()->s());
-  if (s_lhs->kind() == DExpr::Kind::kUnknown ||
-      s_rhs->kind() == DExpr::Kind::kUnknown) {
-    return DExpr::Unknown().release();
-  }
-  Constant* l = s_lhs->kind() == DExpr::Kind::kConstant
-                    ? static_cast<Constant*>(s_lhs.get())
-                    : nullptr;
-  Constant* r = s_rhs->kind() == DExpr::Kind::kConstant
-                    ? static_cast<Constant*>(s_rhs.get())
-                    : nullptr;
-  // constant + constant
-  if (l && r) return DynExpr::_(l->get_val() + r->get_val());
-  // 0 + X = X
-  if (l && l->get_val() == 0) return s_rhs.release();
-  // X + 0 = X
-  if (r && r->get_val() == 0) return s_lhs.release();
-  // m + X = X + m
-  if (l && s_rhs->is_dynamic()) {
-    auto reordered = std::unique_ptr<DynExpr>(*s_rhs + l->get_val());
-    return reordered->s();
-  }
-  // X + X = 2 * X
-  if (*s_lhs == *s_rhs) {
-    auto doubled = std::unique_ptr<DynExpr>(2 * (*s_rhs));
-    return doubled->s();
-  }
-  // nX + X = (n+1) * X
-  if (s_lhs->kind() == DExpr::Kind::kMul) {
-    auto* nX = static_cast<Mul*>(s_lhs.get());
-    DynExpr* n = nX->get_lhs();
-    DynExpr* X = nX->get_rhs();
-    if (*X == *s_rhs) {
-      auto incremented = std::unique_ptr<DynExpr>(*n + 1);
-      auto combined =
-          std::unique_ptr<DynExpr>(*incremented * (*X));
-      return combined->s();
-    }
-  }
-  // X + nX = (n+1) * X
-  if (s_rhs->kind() == DExpr::Kind::kMul) {
-    auto* nX = static_cast<Mul*>(s_rhs.get());
-    DynExpr* n = nX->get_lhs();
-    DynExpr* X = nX->get_rhs();
-    if (*X == *s_lhs) {
-      auto incremented = std::unique_ptr<DynExpr>(*n + 1);
-      auto combined =
-          std::unique_ptr<DynExpr>(*incremented * (*X));
-      return combined->s();
-    }
-  }
-  // mX + nX = (m+n) * X
-  if (s_lhs->kind() == DExpr::Kind::kMul &&
-      s_rhs->kind() == DExpr::Kind::kMul) {
-    auto* mX = static_cast<Mul*>(s_lhs.get());
-    auto* nY = static_cast<Mul*>(s_rhs.get());
-    DynExpr* m = mX->get_lhs();
-    DynExpr* X = mX->get_rhs();
-    DynExpr* n = nY->get_lhs();
-    DynExpr* Y = nY->get_rhs();
-    if (*X == *Y) {
-      auto summed = std::unique_ptr<DynExpr>(*m + *n);
-      auto combined = std::unique_ptr<DynExpr>(*summed * (*X));
-      return combined->s();
-    }
-  }
-  // (X + Y) + Z = X + (Y + Z)
-  if (s_lhs->kind() == DExpr::Kind::kAdd) {
-    auto* XY = static_cast<Add*>(s_lhs.get());
-    DynExpr* X = XY->get_lhs();
-    DynExpr* Y = XY->get_rhs();
-    auto inner = std::unique_ptr<DynExpr>(*Y + *s_rhs);
-    auto reassoc = std::unique_ptr<DynExpr>(*X + *inner);
-    return reassoc->s();
-  }
-  // (X - Y) + Z = X - (Y - Z)
-  if (s_lhs->kind() == DExpr::Kind::kSub) {
-    auto* XY = static_cast<Sub*>(s_lhs.get());
-    DynExpr* X = XY->get_lhs();
-    DynExpr* Y = XY->get_rhs();
-    auto inner = std::unique_ptr<DynExpr>(*Y - *s_rhs);
-    auto reassoc = std::unique_ptr<DynExpr>(*X - *inner);
-    return reassoc->s();
-  }
-  return *s_lhs + *s_rhs;
-}
+DynExpr* Add::s() { return SimplifyCanonical(this).release(); }
 
-DynExpr* Sub::s() {
-  auto s_lhs = std::unique_ptr<DynExpr>(get_lhs()->s());
-  auto s_rhs = std::unique_ptr<DynExpr>(get_rhs()->s());
-  if (s_lhs->kind() == DExpr::Kind::kUnknown ||
-      s_rhs->kind() == DExpr::Kind::kUnknown) {
-    return DExpr::Unknown().release();
-  }
-  Constant* l = s_lhs->kind() == DExpr::Kind::kConstant
-                    ? static_cast<Constant*>(s_lhs.get())
-                    : nullptr;
-  Constant* r = s_rhs->kind() == DExpr::Kind::kConstant
-                    ? static_cast<Constant*>(s_rhs.get())
-                    : nullptr;
-  // constant - constant
-  if (l && r) return DynExpr::_(l->get_val() - r->get_val());
-  // X - 0 = X
-  if (r && r->get_val() == 0) return s_lhs.release();
-  // X - X = 0
-  if (*s_lhs == *s_rhs) {
-    return DynExpr::_(0);
-  }
-  // mX - nX = (m-n) * X
-  if (s_lhs->kind() == DExpr::Kind::kMul &&
-      s_rhs->kind() == DExpr::Kind::kMul) {
-    auto* mX = static_cast<Mul*>(s_lhs.get());
-    auto* nY = static_cast<Mul*>(s_rhs.get());
-    DynExpr* m = mX->get_lhs();
-    DynExpr* X = mX->get_rhs();
-    DynExpr* n = nY->get_lhs();
-    DynExpr* Y = nY->get_rhs();
-    if (*X == *Y) {
-      auto diffed = std::unique_ptr<DynExpr>(*m - *n);
-      auto combined = std::unique_ptr<DynExpr>(*diffed * (*X));
-      return combined->s();
-    }
-  }
-  // (X + Y) - X = X + (Y - Z)
-  if (s_lhs->kind() == DExpr::Kind::kAdd) {
-    auto* XY = static_cast<Add*>(s_lhs.get());
-    DynExpr* X = XY->get_lhs();
-    DynExpr* Y = XY->get_rhs();
-    auto inner = std::unique_ptr<DynExpr>(*Y - *s_rhs);
-    auto reassoc = std::unique_ptr<DynExpr>(*X + *inner);
-    return reassoc->s();
-  }
-  // (X - Y) - Z = X - (Y + Z)
-  if (s_lhs->kind() == DExpr::Kind::kSub) {
-    auto* XY = static_cast<Sub*>(s_lhs.get());
-    DynExpr* X = XY->get_lhs();
-    DynExpr* Y = XY->get_rhs();
-    auto inner = std::unique_ptr<DynExpr>(*Y + *s_rhs);
-    auto reassoc = std::unique_ptr<DynExpr>(*X - *inner);
-    return reassoc->s();
-  }
-  return *s_lhs - *s_rhs;
-}
+DynExpr* Sub::s() { return SimplifyCanonical(this).release(); }
 
-DynExpr* Div::s() {
-  auto s_lhs = std::unique_ptr<DynExpr>(get_lhs()->s());
-  auto s_rhs = std::unique_ptr<DynExpr>(get_rhs()->s());
-  if (s_lhs->kind() == DExpr::Kind::kUnknown ||
-      s_rhs->kind() == DExpr::Kind::kUnknown) {
-    return DExpr::Unknown().release();
-  }
-  Constant* l = AsConstant(s_lhs.get());
-  Constant* r = AsConstant(s_rhs.get());
-  if (l && l->get_val() == 0) return DynExpr::_(0);
-  // constant / constant
-  if (l && r) {
-    int64_t numerator = l->get_val();
-    int64_t denominator = r->get_val();
-    NormalizeFraction(&numerator, &denominator);
-    if (denominator == 1) {
-      return DynExpr::_(numerator);
-    }
-    return std::make_unique<Div>(DynExpr::_(numerator),
-                                 DynExpr::_(denominator))
-        .release();
-  }
-  // X / 1 = X
-  if (r && r->get_val() == 1) return s_lhs.release();
-  // (X + Y) / Z = (X/Z) + (Y/Z)
-  if (s_lhs->kind() == DExpr::Kind::kAdd) {
-    auto* XY = static_cast<Add*>(s_lhs.get());
-    DynExpr* X = XY->get_lhs();
-    DynExpr* Y = XY->get_rhs();
-    auto left = std::unique_ptr<DynExpr>(*X / *s_rhs);
-    auto right = std::unique_ptr<DynExpr>(*Y / *s_rhs);
-    auto distributed = std::unique_ptr<DynExpr>(*left + *right);
-    return distributed->s();
-  }
-  // (c * X) / d = (c/g * X) / (d/g), keeping any non-integral division
-  // symbolic instead of truncating c / d to zero.
-  if (r && s_lhs->kind() == DExpr::Kind::kMul) {
-    auto* XY = static_cast<Mul*>(s_lhs.get());
-    DynExpr* X = XY->get_lhs();
-    DynExpr* Y = XY->get_rhs();
-    if (Constant* c = AsConstant(X)) {
-      int64_t numerator = c->get_val();
-      int64_t denominator = r->get_val();
-      NormalizeFraction(&numerator, &denominator);
-      auto scaled = MultiplyByConstant(numerator, Y);
-      if (denominator == 1) {
-        return scaled->s();
-      }
-      auto rewritten =
-          std::make_unique<Div>(scaled->s(), DynExpr::_(denominator));
-      return rewritten->s();
-    }
-    if (Constant* c = AsConstant(Y)) {
-      int64_t numerator = c->get_val();
-      int64_t denominator = r->get_val();
-      NormalizeFraction(&numerator, &denominator);
-      auto scaled = MultiplyByConstant(numerator, X);
-      if (denominator == 1) {
-        return scaled->s();
-      }
-      auto rewritten =
-          std::make_unique<Div>(scaled->s(), DynExpr::_(denominator));
-      return rewritten->s();
-    }
-  }
-  // (X / Y) / Z = X / (Y*Z)
-  if (s_lhs->kind() == DExpr::Kind::kDiv) {
-    auto* XY = static_cast<Div*>(s_lhs.get());
-    DynExpr* X = XY->get_lhs();
-    DynExpr* Y = XY->get_rhs();
-    auto inner = std::unique_ptr<DynExpr>(*Y * *s_rhs);
-    auto reassoc = std::unique_ptr<DynExpr>(*X / *inner);
-    return reassoc->s();
-  }
-  return *s_lhs / *s_rhs;
-}
+DynExpr* Div::s() { return SimplifyCanonical(this).release(); }
 
 std::ostream& operator<<(std::ostream& os, DynExpr* expr) {
   StringPrinter printer;

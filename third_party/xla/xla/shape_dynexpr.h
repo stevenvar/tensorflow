@@ -236,10 +236,8 @@ class Variable : public DynExpr {
   }
   DExprKind kind() const override { return DExprKind::kVariable; }
   void print(xla::Printer* printer) const override {
-    // printer->Append("(Var ");
     char letter = 'A' + (id - 1);
     printer->Append(std::string(1, letter));
-    // printer->Append(")");
   }
   void to_proto(xla::ExpressionProto* proto) const override {
     proto->set_variable_id(id);
@@ -466,9 +464,9 @@ class Div : public DynExpr {
   void print(xla::Printer* printer) const override {
     printer->Append("(");
     lhs->print(printer);
-    printer->Append(" / ( ");
+    printer->Append(" / ");
     rhs->print(printer);
-    printer->Append(") )");
+    printer->Append(")");
   }
 
   DynExpr* get_lhs() const { return lhs.get(); }

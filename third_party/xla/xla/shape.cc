@@ -188,27 +188,23 @@ CanonicalAffineExpr MultiplyAffineByRational(const CanonicalAffineExpr& expr,
 std::optional<CanonicalAffineExpr> ToCanonicalAffine(const DynExpr* expr) {
   CHECK(expr != nullptr);
   // This recognizes exactly the expression families that fit our affine normal
-  // form:
-  //   constant
-  //   variable
-  //   affine +/- affine
-  //   constant * affine
-  //   affine / constant
-  //
-  // If an expression falls outside of that space, we deliberately return
+  // form. If an expression falls outside of that space, we deliberately return
   // std::nullopt and let the fallback simplifier keep the original tree shape.
   switch (expr->kind()) {
     case DExpr::Kind::kUnknown:
       return std::nullopt;
     case DExpr::Kind::kConstant:
+      // p -> p
       return MakeConstantAffine(static_cast<const Constant*>(expr)->get_val());
     case DExpr::Kind::kVariable:
+      // X -> 1*X
       return MakeVariableAffine(static_cast<const Variable*>(expr)->get_id());
     case DExpr::Kind::kAdd: {
       const auto* add = static_cast<const Add*>(expr);
       auto lhs = ToCanonicalAffine(add->get_lhs());
       auto rhs = ToCanonicalAffine(add->get_rhs());
       if (!lhs.has_value() || !rhs.has_value()) return std::nullopt;
+      // affine + affine -> affine
       return AddAffine(*lhs, *rhs, /*rhs_sign=*/1);
     }
     case DExpr::Kind::kSub: {
@@ -216,6 +212,7 @@ std::optional<CanonicalAffineExpr> ToCanonicalAffine(const DynExpr* expr) {
       auto lhs = ToCanonicalAffine(sub->get_lhs());
       auto rhs = ToCanonicalAffine(sub->get_rhs());
       if (!lhs.has_value() || !rhs.has_value()) return std::nullopt;
+      // affine - affine -> affine
       return AddAffine(*lhs, *rhs, /*rhs_sign=*/-1);
     }
     case DExpr::Kind::kMul: {
@@ -223,14 +220,15 @@ std::optional<CanonicalAffineExpr> ToCanonicalAffine(const DynExpr* expr) {
       auto lhs = ToCanonicalAffine(mul->get_lhs());
       auto rhs = ToCanonicalAffine(mul->get_rhs());
       if (!lhs.has_value() || !rhs.has_value()) return std::nullopt;
-      // `constant * affine` stays affine.
+      // constant * affine -> affine
       if (lhs->IsPureConstant()) {
         return MultiplyAffineByRational(*rhs, lhs->constant, lhs->denominator);
       }
+      // affine * constant -> affine
       if (rhs->IsPureConstant()) {
         return MultiplyAffineByRational(*lhs, rhs->constant, rhs->denominator);
       }
-      // `affine * affine` is not affine in general, so keep it as a tree.
+      // affine * affine is not affine in general, so keep it as a tree.
       return std::nullopt;
     }
     case DExpr::Kind::kDiv: {
@@ -241,7 +239,7 @@ std::optional<CanonicalAffineExpr> ToCanonicalAffine(const DynExpr* expr) {
           rhs->constant == 0) {
         return std::nullopt;
       }
-      // `affine / constant` stays in the canonical affine-over-denominator form.
+      // affine / constant -> affine-over-denominator
       return MultiplyAffineByRational(*lhs, rhs->denominator, rhs->constant);
     }
   }
@@ -265,14 +263,17 @@ std::unique_ptr<DynExpr> BuildAffineNumerator(const CanonicalAffineExpr& expr) {
     if (result == nullptr) {
       result = std::move(term);
     } else {
+      // coeff_i*X_i + coeff_j*X_j + ...
       result = std::make_unique<Add>(result.release(), term.release());
     }
   }
   if (expr.constant != 0 || result == nullptr) {
     auto constant_term = std::make_unique<Constant>(expr.constant);
     if (result == nullptr) {
+      // p
       result = std::move(constant_term);
     } else {
+      // affine_terms + p
       result = std::make_unique<Add>(result.release(), constant_term.release());
     }
   }
@@ -296,20 +297,9 @@ std::unique_ptr<DynExpr> BuildCanonicalExpr(const CanonicalAffineExpr& expr) {
 
 std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
   // Fallback intentionally does the minimum local cleanup needed to avoid
-  // obviously noisy trees:
-  //   0 + X -> X
-  //   X + 0 -> X
-  //   X - 0 -> X
-  //   X - X -> 0
-  //   0 * X -> 0
-  //   1 * X -> X
-  //   X * 1 -> X
-  //   0 / X -> 0
-  //   X / 1 -> X
-  //   c1 op c2 -> folded constant when safe
-  //
-  // It deliberately does not reassociate sums, distribute division over
-  // addition, or otherwise try to invent a more "clever" tree shape.
+  // obviously noisy trees. It deliberately does not reassociate sums,
+  // distribute division over addition, or otherwise try to invent a more
+  // "clever" tree shape.
   switch (expr->kind()) {
     case DExpr::Kind::kUnknown:
     case DExpr::Kind::kConstant:
@@ -325,8 +315,11 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
       }
       Constant* l = AsConstant(lhs.get());
       Constant* r = AsConstant(rhs.get());
+      // c1 + c2 -> c3
       if (l && r) return std::make_unique<Constant>(l->get_val() + r->get_val());
+      // 0 + X -> X
       if (l && l->get_val() == 0) return rhs;
+      // X + 0 -> X
       if (r && r->get_val() == 0) return lhs;
       return std::make_unique<Add>(lhs.release(), rhs.release());
     }
@@ -340,8 +333,11 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
       }
       Constant* l = AsConstant(lhs.get());
       Constant* r = AsConstant(rhs.get());
+      // c1 - c2 -> c3
       if (l && r) return std::make_unique<Constant>(l->get_val() - r->get_val());
+      // X - 0 -> X
       if (r && r->get_val() == 0) return lhs;
+      // X - X -> 0
       if (*lhs == *rhs) return std::make_unique<Constant>(0);
       return std::make_unique<Sub>(lhs.release(), rhs.release());
     }
@@ -355,12 +351,17 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
       }
       Constant* l = AsConstant(lhs.get());
       Constant* r = AsConstant(rhs.get());
+      // c1 * c2 -> c3
       if (l && r) return std::make_unique<Constant>(l->get_val() * r->get_val());
+      // 0 * X -> 0 and X * 0 -> 0
       if ((l && l->get_val() == 0) || (r && r->get_val() == 0)) {
         return std::make_unique<Constant>(0);
       }
+      // 1 * X -> X
       if (l && l->get_val() == 1) return rhs;
+      // X * 1 -> X
       if (r && r->get_val() == 1) return lhs;
+      // Keep constants on the left for a stable fallback tree shape.
       if (r != nullptr) std::swap(lhs, rhs);
       return std::make_unique<Mul>(lhs.release(), rhs.release());
     }
@@ -374,8 +375,11 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
       }
       Constant* l = AsConstant(lhs.get());
       Constant* r = AsConstant(rhs.get());
+      // 0 / X -> 0
       if (l && l->get_val() == 0) return std::make_unique<Constant>(0);
+      // X / 1 -> X
       if (r && r->get_val() == 1) return lhs;
+      // c1 / c2 -> reduced constant or reduced rational literal when safe
       if (l && r && r->get_val() != 0) {
         int64_t numerator = l->get_val();
         int64_t denominator = r->get_val();
@@ -397,8 +401,10 @@ std::unique_ptr<DynExpr> SimplifyCanonical(const DynExpr* expr) {
   // Prefer the affine normal form whenever possible so simplify() produces one
   // stable canonical tree instead of a collection of equivalent trees.
   if (auto canonical = ToCanonicalAffine(expr); canonical.has_value()) {
+    // constant / variable / affine sum / affine-over-denominator
     return BuildCanonicalExpr(*canonical);
   }
+  // Non-affine trees keep their overall structure and only get minimal cleanup.
   return SimplifyFallback(expr);
 }
 

@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <numeric>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -40,6 +42,38 @@ limitations under the License.
 #include "xla/xla_data.pb.h"
 
 namespace xla {
+
+namespace {
+
+Constant* AsConstant(DynExpr* expr) {
+  return expr != nullptr && expr->kind() == DExpr::Kind::kConstant
+             ? static_cast<Constant*>(expr)
+             : nullptr;
+}
+
+void NormalizeFraction(int64_t* numerator, int64_t* denominator) {
+  CHECK(denominator != nullptr);
+  CHECK(*denominator != 0);
+  int64_t divisor = std::gcd(std::llabs(*numerator), std::llabs(*denominator));
+  if (divisor > 1) {
+    *numerator /= divisor;
+    *denominator /= divisor;
+  }
+  if (*denominator < 0) {
+    *numerator = -*numerator;
+    *denominator = -*denominator;
+  }
+}
+
+std::unique_ptr<DynExpr> MultiplyByConstant(int64_t factor, DynExpr* expr) {
+  CHECK(expr != nullptr);
+  if (factor == 1) {
+    return expr->clone();
+  }
+  return std::make_unique<Mul>(DynExpr::_(factor), expr->clone().release());
+}
+
+}  // namespace
 
 const DExpr& Shape::MissingExpression() {
   static const DExpr missing = DExpr::Unknown();
@@ -179,6 +213,43 @@ DynExpr* Mul::s() {
   if (r && s_lhs->is_dynamic()) {
     auto reordered = std::unique_ptr<DynExpr>(r->get_val() * *s_lhs);
     return reordered->s();
+  }
+  // (c / d) * X = (c * X) / d, but keep the reduced fraction symbolic.
+  if (s_lhs->kind() == DExpr::Kind::kDiv &&
+      s_rhs->kind() != DExpr::Kind::kDiv) {
+    auto* div = static_cast<Div*>(s_lhs.get());
+    Constant* numerator = AsConstant(div->get_lhs());
+    Constant* denominator = AsConstant(div->get_rhs());
+    if (numerator != nullptr && denominator != nullptr) {
+      int64_t reduced_numerator = numerator->get_val();
+      int64_t reduced_denominator = denominator->get_val();
+      NormalizeFraction(&reduced_numerator, &reduced_denominator);
+      auto scaled_rhs = MultiplyByConstant(reduced_numerator, s_rhs.get());
+      if (reduced_denominator == 1) {
+        return scaled_rhs->s();
+      }
+      auto rewritten =
+          std::make_unique<Div>(scaled_rhs->s(), DynExpr::_(reduced_denominator));
+      return rewritten->s();
+    }
+  }
+  if (s_rhs->kind() == DExpr::Kind::kDiv &&
+      s_lhs->kind() != DExpr::Kind::kDiv) {
+    auto* div = static_cast<Div*>(s_rhs.get());
+    Constant* numerator = AsConstant(div->get_lhs());
+    Constant* denominator = AsConstant(div->get_rhs());
+    if (numerator != nullptr && denominator != nullptr) {
+      int64_t reduced_numerator = numerator->get_val();
+      int64_t reduced_denominator = denominator->get_val();
+      NormalizeFraction(&reduced_numerator, &reduced_denominator);
+      auto scaled_lhs = MultiplyByConstant(reduced_numerator, s_lhs.get());
+      if (reduced_denominator == 1) {
+        return scaled_lhs->s();
+      }
+      auto rewritten =
+          std::make_unique<Div>(scaled_lhs->s(), DynExpr::_(reduced_denominator));
+      return rewritten->s();
+    }
   }
   // m * (nX) = (m*n) * X
   if (s_rhs->kind() == DExpr::Kind::kMul) {
@@ -349,14 +420,21 @@ DynExpr* Div::s() {
       s_rhs->kind() == DExpr::Kind::kUnknown) {
     return DExpr::Unknown().release();
   }
-  Constant* l = s_lhs->kind() == DExpr::Kind::kConstant
-                    ? static_cast<Constant*>(s_lhs.get())
-                    : nullptr;
-  Constant* r = s_rhs->kind() == DExpr::Kind::kConstant
-                    ? static_cast<Constant*>(s_rhs.get())
-                    : nullptr;
+  Constant* l = AsConstant(s_lhs.get());
+  Constant* r = AsConstant(s_rhs.get());
+  if (l && l->get_val() == 0) return DynExpr::_(0);
   // constant / constant
-  if (l && r) return DynExpr::_(l->get_val() / r->get_val());
+  if (l && r) {
+    int64_t numerator = l->get_val();
+    int64_t denominator = r->get_val();
+    NormalizeFraction(&numerator, &denominator);
+    if (denominator == 1) {
+      return DynExpr::_(numerator);
+    }
+    return std::make_unique<Div>(DynExpr::_(numerator),
+                                 DynExpr::_(denominator))
+        .release();
+  }
   // X / 1 = X
   if (r && r->get_val() == 1) return s_lhs.release();
   // (X + Y) / Z = (X/Z) + (Y/Z)
@@ -369,14 +447,36 @@ DynExpr* Div::s() {
     auto distributed = std::unique_ptr<DynExpr>(*left + *right);
     return distributed->s();
   }
-  // (X * Y) / Z = (X/Z) * Y
-  if (s_lhs->kind() == DExpr::Kind::kMul) {
+  // (c * X) / d = (c/g * X) / (d/g), keeping any non-integral division
+  // symbolic instead of truncating c / d to zero.
+  if (r && s_lhs->kind() == DExpr::Kind::kMul) {
     auto* XY = static_cast<Mul*>(s_lhs.get());
     DynExpr* X = XY->get_lhs();
     DynExpr* Y = XY->get_rhs();
-    auto left = std::unique_ptr<DynExpr>(*X / *s_rhs);
-    auto distributed = std::unique_ptr<DynExpr>(*left * (*Y));
-    return distributed->s();
+    if (Constant* c = AsConstant(X)) {
+      int64_t numerator = c->get_val();
+      int64_t denominator = r->get_val();
+      NormalizeFraction(&numerator, &denominator);
+      auto scaled = MultiplyByConstant(numerator, Y);
+      if (denominator == 1) {
+        return scaled->s();
+      }
+      auto rewritten =
+          std::make_unique<Div>(scaled->s(), DynExpr::_(denominator));
+      return rewritten->s();
+    }
+    if (Constant* c = AsConstant(Y)) {
+      int64_t numerator = c->get_val();
+      int64_t denominator = r->get_val();
+      NormalizeFraction(&numerator, &denominator);
+      auto scaled = MultiplyByConstant(numerator, X);
+      if (denominator == 1) {
+        return scaled->s();
+      }
+      auto rewritten =
+          std::make_unique<Div>(scaled->s(), DynExpr::_(denominator));
+      return rewritten->s();
+    }
   }
   // (X / Y) / Z = X / (Y*Z)
   if (s_lhs->kind() == DExpr::Kind::kDiv) {

@@ -691,6 +691,9 @@ absl::Status CompileToLocalExecutable(
             int64_t old = shp.dim_size(j);
             old_vars.push_back({i, j, old});
             xla::DExpr padded_expr = xla::DExpr::Const(filled_batch);
+            // TODO: If fractional expressions are allowed to
+            // survive until padding substitution, validate integrality before
+            // calling get_val() here instead of assuming simplify() is exact.
             xla::DExpr subst_expr = e.substitute(1, padded_expr).simplify();
             int64_t new_dim = subst_expr->get_val();
             if (new_dim >= 0) {

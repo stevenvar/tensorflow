@@ -109,6 +109,12 @@ auto* xla_launch_counter = monitoring::Counter<1>::New(
     "/tensorflow/core/xla_launch_counter",
     "The number of times a XlaLaunch is called.", "device");
 
+std::string DExprToString(const xla::DExpr& expr) {
+  xla::StringPrinter printer;
+  expr->print(&printer);
+  return std::move(printer).ToString();
+}
+
 // A closure describing how to run a compiled version of a TensorFlow function.
 //
 // It may seem unusual to stick the resource variable snapshots in this class.
@@ -691,10 +697,13 @@ absl::Status CompileToLocalExecutable(
             int64_t old = shp.dim_size(j);
             old_vars.push_back({i, j, old});
             xla::DExpr padded_expr = xla::DExpr::Const(filled_batch);
-            // TODO: If fractional expressions are allowed to
-            // survive until padding substitution, validate integrality before
-            // calling get_val() here instead of assuming simplify() is exact.
             xla::DExpr subst_expr = e.substitute(1, padded_expr).simplify();
+            if (!subst_expr->is_constant()) {
+              return errors::InvalidArgument(
+                  "Dynamic shape padding substitution did not produce an "
+                  "integer constant for argument ",
+                  i, ", dimension ", j, ": ", DExprToString(subst_expr));
+            }
             int64_t new_dim = subst_expr->get_val();
             if (new_dim >= 0) {
               shp.set_dim(j, new_dim);

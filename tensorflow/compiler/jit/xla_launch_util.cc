@@ -19,6 +19,7 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <set>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -26,6 +27,7 @@ limitations under the License.
 #include "absl/cleanup/cleanup.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/jit/pjrt_tensor_buffer.h"
 #include "tensorflow/compiler/jit/pjrt_tensor_buffer_util.h"
@@ -38,6 +40,7 @@ limitations under the License.
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_common.h"
 #include "xla/pjrt/pjrt_future.h"
+#include "xla/printer.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
 #include "xla/stream_executor/platform_manager.h"
@@ -86,6 +89,12 @@ absl::flat_hash_map<int, int> CreateVariableLookup(
     variable_lookup[variables[i].index()] = i;
   }
   return variable_lookup;
+}
+
+std::string DExprToString(const xla::DExpr& expr) {
+  xla::StringPrinter printer;
+  expr->print(&printer);
+  return std::move(printer).ToString();
 }
 
 }  // anonymous namespace
@@ -447,10 +456,13 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
           VLOG(1) << "Current expression is " << expr;
           if (run_options) {
             xla::DExpr batch_size = xla::DExpr::Const(run_options->batch_size());
-            // TODO: If fractional expressions are allowed to
-            // survive until runtime substitution, validate integrality before
-            // calling get_val() here instead of assuming simplify() is exact.
             xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
+            if (!subst_expr->is_constant()) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Runtime shape substitution did not produce an integer "
+                  "constant for output ",
+                  i, ", dimension ", dim, ": ", DExprToString(subst_expr)));
+            }
             shape.set_dim(dim, subst_expr->get_val());
           } else {
             // TODO: Fallback to BatchSizeResource for now. Remove it later.
@@ -461,10 +473,13 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
                           ctx->resource_manager(), BatchSizeResourceName, &bsr));
             xla::DExpr batch_size = xla::DExpr::Const(bsr->GetBatchSize());
             // Just substitute Var(1) for now.
-            // TODO: If fractional expressions are allowed to
-            // survive until runtime substitution, validate integrality before
-            // calling get_val() here instead of assuming simplify() is exact.
             xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
+            if (!subst_expr->is_constant()) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Runtime shape substitution did not produce an integer "
+                  "constant for output ",
+                  i, ", dimension ", dim, ": ", DExprToString(subst_expr)));
+            }
             shape.set_dim(dim, subst_expr->get_val());
             bsr->Unref();
           }

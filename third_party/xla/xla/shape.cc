@@ -66,14 +66,6 @@ void NormalizeFraction(int64_t* numerator, int64_t* denominator) {
   }
 }
 
-std::unique_ptr<DynExpr> MultiplyByConstant(int64_t factor, DynExpr* expr) {
-  CHECK(expr != nullptr);
-  if (factor == 1) {
-    return expr->clone();
-  }
-  return std::make_unique<Mul>(DynExpr::_(factor), expr->clone().release());
-}
-
 // We normalize affine expressions into:
 //   (constant + sum_i coeff_i * var_i) / denominator
 //

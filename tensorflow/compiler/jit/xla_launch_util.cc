@@ -92,8 +92,9 @@ absl::flat_hash_map<int, int> CreateVariableLookup(
 }
 
 std::string DExprToString(const xla::DExpr& expr) {
+  xla::DExpr simplified = expr.simplify();
   xla::StringPrinter printer;
-  expr->print(&printer);
+  simplified->print(&printer);
   return std::move(printer).ToString();
 }
 

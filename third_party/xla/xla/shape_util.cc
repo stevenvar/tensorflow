@@ -774,19 +774,23 @@ Shape ShapeUtil::PrependMajorDimension(int64_t bound, Shape shape) {
       bool is_wrong = expr && expr->is_constant() &&
                       expr->get_val() != shape.dimensions(i);
       printer->Append(shape.dimensions(i));
+      auto simplified_expr =
+          expr ? std::optional<DExpr>(expr.simplify()) : std::nullopt;
+      const DExpr* display_expr =
+          simplified_expr.has_value() ? &*simplified_expr : &expr;
       if (is_wrong) {
         xla::StringPrinter expr_printer;
-        expr->print(&expr_printer);
+        display_expr->print(&expr_printer);
         LOG(ERROR) << "Mismatched static shape expression at dim " << i
                    << ": dim=" << shape.dimensions(i)
                    << ", expr=" << std::move(expr_printer).ToString();
         printer->Append("<!");
-        expr->print(printer);
+        display_expr->print(printer);
         printer->Append("!>");
       }
       if (expr && expr->is_dynamic()) {
         printer->Append("<");
-        expr->print(printer);
+        display_expr->print(printer);
         printer->Append(">");
       }
     }

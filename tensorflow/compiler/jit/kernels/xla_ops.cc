@@ -110,8 +110,9 @@ auto* xla_launch_counter = monitoring::Counter<1>::New(
     "The number of times a XlaLaunch is called.", "device");
 
 std::string DExprToString(const xla::DExpr& expr) {
+  xla::DExpr simplified = expr.simplify();
   xla::StringPrinter printer;
-  expr->print(&printer);
+  simplified->print(&printer);
   return std::move(printer).ToString();
 }
 

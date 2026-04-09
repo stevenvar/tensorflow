@@ -109,13 +109,6 @@ auto* xla_launch_counter = monitoring::Counter<1>::New(
     "/tensorflow/core/xla_launch_counter",
     "The number of times a XlaLaunch is called.", "device");
 
-std::string DExprToString(const xla::DExpr& expr) {
-  xla::DExpr simplified = expr.simplify();
-  xla::StringPrinter printer;
-  simplified->print(&printer);
-  return std::move(printer).ToString();
-}
-
 // A closure describing how to run a compiled version of a TensorFlow function.
 //
 // It may seem unusual to stick the resource variable snapshots in this class.

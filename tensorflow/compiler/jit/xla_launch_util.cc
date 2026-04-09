@@ -67,6 +67,14 @@ limitations under the License.
 #include "tsl/platform/statusor.h"
 
 namespace tensorflow {
+
+std::string DExprToString(const xla::DExpr& expr) {
+  xla::DExpr simplified = expr.simplify();
+  xla::StringPrinter printer;
+  simplified->print(&printer);
+  return std::move(printer).ToString();
+}
+
 namespace {
 using xla::ScopedShapedBuffer;
 using xla::ShapedBuffer;
@@ -89,13 +97,6 @@ absl::flat_hash_map<int, int> CreateVariableLookup(
     variable_lookup[variables[i].index()] = i;
   }
   return variable_lookup;
-}
-
-std::string DExprToString(const xla::DExpr& expr) {
-  xla::DExpr simplified = expr.simplify();
-  xla::StringPrinter printer;
-  simplified->print(&printer);
-  return std::move(printer).ToString();
 }
 
 }  // anonymous namespace

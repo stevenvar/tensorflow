@@ -524,8 +524,9 @@ DynExpr* Sub::s() { return SimplifyCanonical(this).release(); }
 DynExpr* Div::s() { return SimplifyCanonical(this).release(); }
 
 std::ostream& operator<<(std::ostream& os, DynExpr* expr) {
+  auto simplified = std::unique_ptr<DynExpr>(expr->s());
   StringPrinter printer;
-  expr->print(&printer);
+  simplified->print(&printer);
   os << std::move(printer).ToString();
   return os;
 }

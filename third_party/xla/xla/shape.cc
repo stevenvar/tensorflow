@@ -154,8 +154,11 @@ CanonicalAffineExpr AddAffine(const CanonicalAffineExpr& lhs,
   int64_t lhs_scale = rhs.denominator / gcd;
   int64_t rhs_scale = lhs.denominator / gcd;
   result.denominator = lhs.denominator * lhs_scale;
-  result.constant = lhs.constant * lhs_scale + rhs_sign * rhs.constant * rhs_scale;
-  result.coefficients = lhs.coefficients;
+  result.constant =
+      lhs.constant * lhs_scale + rhs_sign * rhs.constant * rhs_scale;
+  for (const auto& [id, coeff] : lhs.coefficients) {
+    result.coefficients[id] = coeff * lhs_scale;
+  }
   for (const auto& [id, coeff] : rhs.coefficients) {
     result.coefficients[id] += rhs_sign * coeff * rhs_scale;
   }

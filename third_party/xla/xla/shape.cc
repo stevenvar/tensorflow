@@ -370,8 +370,10 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
       }
       Constant* l = AsConstant(lhs.get());
       Constant* r = AsConstant(rhs.get());
-      // 0 / X -> 0
-      if (l && l->get_val() == 0) return std::make_unique<Constant>(0);
+      // 0 / X -> 0 only when the denominator is proven nonzero.
+      if (l && l->get_val() == 0 && r && r->get_val() != 0) {
+        return std::make_unique<Constant>(0);
+      }
       // X / 1 -> X
       if (r && r->get_val() == 1) return lhs;
       // c1 / c2 -> reduced constant or reduced rational literal when safe

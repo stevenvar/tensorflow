@@ -117,7 +117,7 @@ TEST_F(ShapeTest, DynamicShapeToString) {
 
 TEST_F(ShapeTest, DExprSimplifyScalesMixedDenominators) {
   DExpr expr = (DExpr::Var(1) / 2) + (DExpr::Var(1) / 3);
-  EXPECT_EQ("(5 * A) / 6", DExprToString(expr.simplify()));
+  EXPECT_EQ("((5 * A) / 6)", DExprToString(expr.simplify()));
 }
 
 TEST_F(ShapeTest, DExprSimplifyCombinesEqualFractions) {

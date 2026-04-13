@@ -70,6 +70,9 @@ namespace tensorflow {
 
 std::string DExprToString(const xla::DExpr& expr) {
   xla::DExpr simplified = expr.simplify();
+  if (!simplified && !simplified.is_unknown()) {
+    return "";
+  }
   xla::StringPrinter printer;
   simplified->print(&printer);
   return std::move(printer).ToString();

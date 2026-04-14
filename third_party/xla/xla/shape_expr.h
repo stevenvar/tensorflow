@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef XLA_SHAPE_DYNEXPR_H_
-#define XLA_SHAPE_DYNEXPR_H_
+#ifndef XLA_SHAPE_EXPR_H_
+#define XLA_SHAPE_EXPR_H_
 
 #include <cstdint>
 #include <memory>
@@ -605,4 +605,4 @@ inline DynExpr* DynExpr::V(int var_id) { return new Variable(var_id); }
 
 }  // namespace xla
 
-#endif  // XLA_SHAPE_DYNEXPR_H_
+#endif  // XLA_SHAPE_EXPR_H_

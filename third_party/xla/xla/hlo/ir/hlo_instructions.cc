@@ -74,6 +74,15 @@ namespace {
 using absl::CEscape;
 using absl::StrCat;
 
+std::string DExprToString(const DExpr& expr) {
+  if (!expr) {
+    return "_";
+  }
+  StringPrinter printer;
+  expr.simplify()->print(&printer);
+  return std::move(printer).ToString();
+}
+
 bool IsInstructionElementwiseOnOperand(const HloInstruction* instruction,
                                        const HloInstruction* operand) {
   const auto operand_indices = instruction->OperandIndices(operand);
@@ -1711,6 +1720,12 @@ void HloSliceInstruction::PrintExtraAttributesImpl(
                  AppendCat(printer, "[", slice_start, ":", slice_limits_[i]);
                  if (!omit_stride) {
                    AppendCat(printer, ":", slice_strides_[i]);
+                 }
+                 const DExpr& start_expr = slice_start_exprs_[i];
+                 const DExpr& limit_expr = slice_limit_exprs_[i];
+                 if (start_expr || limit_expr) {
+                   AppendCat(printer, " start_expr=", DExprToString(start_expr),
+                             " limit_expr=", DExprToString(limit_expr));
                  }
                  printer->Append("]");
                });

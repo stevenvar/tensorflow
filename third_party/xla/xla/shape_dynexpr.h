@@ -156,7 +156,8 @@ class DExpr {
 
 inline std::optional<int64_t> SolveSimplifiedIfChanged(const DynExpr* expr,
                                                        int64_t x) {
-  auto simplified = std::unique_ptr<DynExpr>(expr->s());
+  auto original = expr->clone();
+  auto simplified = std::unique_ptr<DynExpr>(original->s());
   xla::ExpressionProto before_proto;
   xla::ExpressionProto after_proto;
   expr->to_proto(&before_proto);

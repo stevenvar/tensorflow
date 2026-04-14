@@ -72,12 +72,33 @@ limitations under the License.
 #include "xla/util.h"
 #include "xla/window_util.h"
 #include "xla/xla_data.pb.h"
+#include "tsl/platform/protobuf.h"
 
 namespace xla {
 
 using absl::StrCat;
 using llvm_ir::IrArray;
 using llvm_ir::IrName;
+
+namespace {
+
+std::optional<DExpr> GetSliceExprAttr(const HloInstruction* hlo,
+                                      absl::string_view prefix, int64_t dim) {
+  const auto& attrs = hlo->frontend_attributes().map();
+  auto it = attrs.find(StrCat(prefix, dim));
+  if (it == attrs.end()) {
+    return std::nullopt;
+  }
+  ExpressionProto expr_proto;
+  if (!tsl::protobuf::TextFormat::ParseFromString(it->second, &expr_proto)) {
+    LOG(WARNING) << "Failed to parse slice expression attr " << prefix << dim
+                 << " on " << hlo->name();
+    return std::nullopt;
+  }
+  return DExprFromProto(expr_proto);
+}
+
+}  // namespace
 using llvm_ir::SetToFirstInsertPoint;
 using xla::float8_fnuz_ir_emitter::EmitF8fnuzToFloating;
 using xla::float8_fnuz_ir_emitter::EmitFloatingToF8fnuz;
@@ -3997,10 +4018,38 @@ llvm_ir::ElementGenerator ElementalIrEmitter::MakeElementGenerator(
     case HloOpcode::kSlice:
       return [this, hlo, &operand_to_generator](
                  const IrArray::Index& index) -> absl::StatusOr<llvm::Value*> {
-        IrArray::Index sliced_index = index.SourceIndexOfSlice(
-            /*operand_shape=*/hlo->operand(0)->shape(),
-            /*starts=*/hlo->slice_starts(),
-            /*strides=*/hlo->slice_strides(), /*builder=*/b_);
+        std::vector<llvm::Value*> source_multi_index;
+        source_multi_index.reserve(index.size());
+        for (int64_t i = 0; i < index.size(); ++i) {
+          llvm::Value* start_value =
+              llvm::ConstantInt::get(index.GetType(), hlo->slice_starts(i));
+          std::optional<DExpr> start_expr =
+              GetSliceExprAttr(hlo, "slice_start_expr_", i);
+          if (!start_expr) {
+            std::optional<DExpr> limit_expr =
+                GetSliceExprAttr(hlo, "slice_limit_expr_", i);
+            const DExpr& output_expr = hlo->shape().expressions(i);
+            if (limit_expr && output_expr && output_expr->is_dynamic()) {
+              start_expr = *limit_expr - output_expr;
+            }
+          }
+          if (start_expr && (*start_expr)->is_dynamic()) {
+            start_value = b_->CreateIntCast(
+                llvm_ir::EmitExpression(b_, start_expr->simplify()),
+                index.GetType(),
+                /*isSigned=*/true);
+          }
+          llvm::Value* dim_index = index[i];
+          if (hlo->slice_strides(i) != 1) {
+            dim_index =
+                b_->CreateMul(dim_index,
+                              llvm::ConstantInt::get(index.GetType(),
+                                                     hlo->slice_strides(i)));
+          }
+          source_multi_index.push_back(b_->CreateAdd(start_value, dim_index));
+        }
+        IrArray::Index sliced_index(source_multi_index,
+                                    hlo->operand(0)->shape(), index.GetType());
         return operand_to_generator.at(hlo->operand(0))(sliced_index);
       };
     case HloOpcode::kDynamicSlice:

@@ -72,33 +72,12 @@ limitations under the License.
 #include "xla/util.h"
 #include "xla/window_util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/protobuf.h"
 
 namespace xla {
 
 using absl::StrCat;
 using llvm_ir::IrArray;
 using llvm_ir::IrName;
-
-namespace {
-
-std::optional<DExpr> GetSliceExprAttr(const HloInstruction* hlo,
-                                      absl::string_view prefix, int64_t dim) {
-  const auto& attrs = hlo->frontend_attributes().map();
-  auto it = attrs.find(StrCat(prefix, dim));
-  if (it == attrs.end()) {
-    return std::nullopt;
-  }
-  ExpressionProto expr_proto;
-  if (!tsl::protobuf::TextFormat::ParseFromString(it->second, &expr_proto)) {
-    LOG(WARNING) << "Failed to parse slice expression attr " << prefix << dim
-                 << " on " << hlo->name();
-    return std::nullopt;
-  }
-  return DExprFromProto(expr_proto);
-}
-
-}  // namespace
 using llvm_ir::SetToFirstInsertPoint;
 using xla::float8_fnuz_ir_emitter::EmitF8fnuzToFloating;
 using xla::float8_fnuz_ir_emitter::EmitFloatingToF8fnuz;
@@ -4018,24 +3997,23 @@ llvm_ir::ElementGenerator ElementalIrEmitter::MakeElementGenerator(
     case HloOpcode::kSlice:
       return [this, hlo, &operand_to_generator](
                  const IrArray::Index& index) -> absl::StatusOr<llvm::Value*> {
+        const auto* slice = Cast<HloSliceInstruction>(hlo);
         std::vector<llvm::Value*> source_multi_index;
         source_multi_index.reserve(index.size());
         for (int64_t i = 0; i < index.size(); ++i) {
           llvm::Value* start_value =
               llvm::ConstantInt::get(index.GetType(), hlo->slice_starts(i));
-          std::optional<DExpr> start_expr =
-              GetSliceExprAttr(hlo, "slice_start_expr_", i);
+          DExpr start_expr = slice->slice_start_exprs(i);
           if (!start_expr) {
-            std::optional<DExpr> limit_expr =
-                GetSliceExprAttr(hlo, "slice_limit_expr_", i);
+            DExpr limit_expr = slice->slice_limit_exprs(i);
             const DExpr& output_expr = hlo->shape().expressions(i);
             if (limit_expr && output_expr && output_expr->is_dynamic()) {
-              start_expr = *limit_expr - output_expr;
+              start_expr = limit_expr - output_expr;
             }
           }
-          if (start_expr && (*start_expr)->is_dynamic()) {
+          if (start_expr && start_expr->is_dynamic()) {
             start_value = b_->CreateIntCast(
-                llvm_ir::EmitExpression(b_, start_expr->simplify()),
+                llvm_ir::EmitExpression(b_, start_expr.simplify()),
                 index.GetType(),
                 /*isSigned=*/true);
           }

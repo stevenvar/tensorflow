@@ -1658,26 +1658,21 @@ XlaOp XlaBuilder::Slice(XlaOp operand, absl::Span<const int64_t> start_indices,
                                                      start_indices,
                                                      limit_indices, strides,
                                                      start_exprs, limit_exprs));
-    TF_ASSIGN_OR_RETURN(
-        XlaOp slice,
-        SliceInternal(shape, operand, start_indices, limit_indices, strides));
-    for (int i = 0, end = start_exprs.size(); i < end; ++i) {
+    HloInstructionProto instr;
+    *instr.mutable_shape() = shape.ToProto();
+    for (int i = 0, end = start_indices.size(); i < end; i++) {
+      auto* slice_config = instr.add_slice_dimensions();
+      slice_config->set_start(start_indices[i]);
+      slice_config->set_limit(limit_indices[i]);
+      slice_config->set_stride(strides[i]);
       if (start_exprs[i] && start_exprs[i]->is_dynamic()) {
-        ExpressionProto expr_proto;
-        start_exprs[i].simplify()->to_proto(&expr_proto);
-        TF_RETURN_IF_ERROR(SetInstructionFrontendAttribute(
-            slice, absl::StrCat("slice_start_expr_", i),
-            tsl::LegacyUnredactedShortDebugString(expr_proto)));
+        start_exprs[i].simplify().to_proto(slice_config->mutable_start_expr());
       }
       if (limit_exprs[i] && limit_exprs[i]->is_dynamic()) {
-        ExpressionProto expr_proto;
-        limit_exprs[i].simplify()->to_proto(&expr_proto);
-        TF_RETURN_IF_ERROR(SetInstructionFrontendAttribute(
-            slice, absl::StrCat("slice_limit_expr_", i),
-            tsl::LegacyUnredactedShortDebugString(expr_proto)));
+        limit_exprs[i].simplify().to_proto(slice_config->mutable_limit_expr());
       }
     }
-    return slice;
+    return AddInstruction(std::move(instr), HloOpcode::kSlice, {operand});
   });
 }
 

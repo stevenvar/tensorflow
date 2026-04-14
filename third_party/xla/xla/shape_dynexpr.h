@@ -154,20 +154,6 @@ class DExpr {
   std::unique_ptr<DynExpr> expr_;
 };
 
-inline std::optional<int64_t> SolveSimplifiedIfChanged(const DynExpr* expr,
-                                                       int64_t x) {
-  auto original = expr->clone();
-  auto simplified = std::unique_ptr<DynExpr>(original->s());
-  xla::ExpressionProto before_proto;
-  xla::ExpressionProto after_proto;
-  expr->to_proto(&before_proto);
-  simplified->to_proto(&after_proto);
-  if (before_proto.SerializeAsString() == after_proto.SerializeAsString()) {
-    return std::nullopt;
-  }
-  return simplified->solve(x);
-}
-
 class UnknownExpr : public DynExpr {
   int id_;
 
@@ -317,10 +303,6 @@ class Add : public DynExpr {
   }
 
   std::optional<int64_t> solve(int64_t x) {
-    if (auto simplified = SolveSimplifiedIfChanged(this, x);
-        simplified.has_value()) {
-      return simplified;
-    }
     // Cannot solve if both lhs and rhs are dynamic...
     if (lhs->is_dynamic() && rhs->is_dynamic()) return std::nullopt;
     if (lhs->get_all_ids().size() == 1 && rhs->is_constant()) {
@@ -385,10 +367,6 @@ class Sub : public DynExpr {
   }
 
   std::optional<int64_t> solve(int64_t x) {
-    if (auto simplified = SolveSimplifiedIfChanged(this, x);
-        simplified.has_value()) {
-      return simplified;
-    }
     // Cannot solve if both lhs and rhs are dynamic...
     if (lhs->is_dynamic() && rhs->is_dynamic()) return std::nullopt;
     if (lhs->get_all_ids().size() == 1 && rhs->is_constant()) {
@@ -453,10 +431,6 @@ class Mul : public DynExpr {
   }
 
   std::optional<int64_t> solve(int64_t x) {
-    if (auto simplified = SolveSimplifiedIfChanged(this, x);
-        simplified.has_value()) {
-      return simplified;
-    }
     // Cannot solve if both lhs and rhs are dynamic...
     if (lhs->is_dynamic() && rhs->is_dynamic()) return std::nullopt;
     if (lhs->get_all_ids().size() == 1 && rhs->is_constant()) {
@@ -534,10 +508,6 @@ class Div : public DynExpr {
   }
 
   std::optional<int64_t> solve(int64_t x) {
-    if (auto simplified = SolveSimplifiedIfChanged(this, x);
-        simplified.has_value()) {
-      return simplified;
-    }
     // Cannot solve if both lhs and rhs are dynamic...
     if (lhs->is_dynamic() && rhs->is_dynamic()) return std::nullopt;
     if (lhs->get_all_ids().size() == 1 && rhs->is_constant()) {

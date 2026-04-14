@@ -460,7 +460,7 @@ cc_library(
         "layout_util.cc",
         "primitive_util.cc",
         "shape.cc",
-        "shape_expr.cc",
+        "shape_dynexpr.cc",
         "shape_partition.cc",
         "shape_util.cc",
     ],

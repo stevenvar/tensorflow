@@ -111,9 +111,9 @@ class SplitOp : public XlaOpKernel {
       begin[split_dim] = i * slice_size;
       limits[split_dim] = (i + 1) * slice_size;
 
-      begin_expr[split_dim] = (i * slice_expr).simplify();
-      limits_expr[split_dim] = ((i + 1) * slice_expr).simplify();
       if (enable_dynamic_sizes) {
+        begin_expr[split_dim] = (i * slice_expr).simplify();
+        limits_expr[split_dim] = ((i + 1) * slice_expr).simplify();
         ctx->SetOutput(i, xla::Slice(input, begin, limits, begin_expr,
                                      limits_expr, strides));
       } else {
@@ -242,8 +242,9 @@ class SplitVOp : public XlaOpKernel {
 
       // Slice out the ith split from the split dimension.
       limits[split_dim] = begin[split_dim] + slice_size;
-      limits_expr[split_dim] = (begin_expr[split_dim] + slice_expr).simplify();
       if (enable_dynamic_sizes) {
+        limits_expr[split_dim] =
+            (begin_expr[split_dim] + slice_expr).simplify();
         ctx->SetOutput(i,
                        xla::Slice(input, begin, limits, begin_expr,
                                   limits_expr, strides));
@@ -251,7 +252,9 @@ class SplitVOp : public XlaOpKernel {
         ctx->SetOutput(i, xla::Slice(input, begin, limits, strides));
       }
       begin[split_dim] = limits[split_dim];
-      begin_expr[split_dim] = limits_expr[split_dim];
+      if (enable_dynamic_sizes) {
+        begin_expr[split_dim] = limits_expr[split_dim];
+      }
     }
   }
 };

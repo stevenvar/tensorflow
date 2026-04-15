@@ -1658,21 +1658,8 @@ XlaOp XlaBuilder::Slice(XlaOp operand, absl::Span<const int64_t> start_indices,
                                                      start_indices,
                                                      limit_indices, strides,
                                                      start_exprs, limit_exprs));
-    HloInstructionProto instr;
-    *instr.mutable_shape() = shape.ToProto();
-    for (int i = 0, end = start_indices.size(); i < end; i++) {
-      auto* slice_config = instr.add_slice_dimensions();
-      slice_config->set_start(start_indices[i]);
-      slice_config->set_limit(limit_indices[i]);
-      slice_config->set_stride(strides[i]);
-      if (start_exprs[i] && start_exprs[i]->is_dynamic()) {
-        start_exprs[i].simplify().to_proto(slice_config->mutable_start_expr());
-      }
-      if (limit_exprs[i] && limit_exprs[i]->is_dynamic()) {
-        limit_exprs[i].simplify().to_proto(slice_config->mutable_limit_expr());
-      }
-    }
-    return AddInstruction(std::move(instr), HloOpcode::kSlice, {operand});
+    return SliceInternal(shape, operand, start_indices, limit_indices,
+                         start_exprs, limit_exprs, strides);
   });
 }
 
@@ -1687,6 +1674,29 @@ absl::StatusOr<XlaOp> XlaBuilder::SliceInternal(
     slice_config->set_start(start_indices[i]);
     slice_config->set_limit(limit_indices[i]);
     slice_config->set_stride(strides[i]);
+  }
+  return AddInstruction(std::move(instr), HloOpcode::kSlice, {operand});
+}
+
+absl::StatusOr<XlaOp> XlaBuilder::SliceInternal(
+    const Shape& shape, XlaOp operand, absl::Span<const int64_t> start_indices,
+    absl::Span<const int64_t> limit_indices,
+    absl::Span<const DExpr> start_exprs,
+    absl::Span<const DExpr> limit_exprs,
+    absl::Span<const int64_t> strides) {
+  HloInstructionProto instr;
+  *instr.mutable_shape() = shape.ToProto();
+  for (int i = 0, end = start_indices.size(); i < end; i++) {
+    auto* slice_config = instr.add_slice_dimensions();
+    slice_config->set_start(start_indices[i]);
+    slice_config->set_limit(limit_indices[i]);
+    slice_config->set_stride(strides[i]);
+    if (start_exprs[i] && start_exprs[i]->is_dynamic()) {
+      start_exprs[i].simplify().to_proto(slice_config->mutable_start_expr());
+    }
+    if (limit_exprs[i] && limit_exprs[i]->is_dynamic()) {
+      limit_exprs[i].simplify().to_proto(slice_config->mutable_limit_expr());
+    }
   }
   return AddInstruction(std::move(instr), HloOpcode::kSlice, {operand});
 }

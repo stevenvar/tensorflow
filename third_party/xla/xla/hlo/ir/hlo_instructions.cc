@@ -1681,14 +1681,6 @@ HloSliceInstruction::HloSliceInstruction(
   if (slice_strides_.empty()) {
     slice_strides_ = std::vector<int64_t>(start_indices.size(), 1LL);
   }
-  if (slice_start_exprs_.empty()) {
-    slice_start_exprs_ =
-        std::vector<DExpr>(start_indices.size(), Shape::MissingExpression());
-  }
-  if (slice_limit_exprs_.empty()) {
-    slice_limit_exprs_ =
-        std::vector<DExpr>(start_indices.size(), Shape::MissingExpression());
-  }
 }
 
 HloInstructionProto HloSliceInstruction::ToProto() const {
@@ -1698,11 +1690,13 @@ HloInstructionProto HloSliceInstruction::ToProto() const {
     slice_dimension->set_start(slice_starts_[i]);
     slice_dimension->set_limit(slice_limits_[i]);
     slice_dimension->set_stride(slice_strides_[i]);
-    if (slice_start_exprs_[i]) {
-      slice_start_exprs_[i].to_proto(slice_dimension->mutable_start_expr());
+    const DExpr& start_expr = slice_start_exprs(i);
+    const DExpr& limit_expr = slice_limit_exprs(i);
+    if (start_expr) {
+      start_expr.to_proto(slice_dimension->mutable_start_expr());
     }
-    if (slice_limit_exprs_[i]) {
-      slice_limit_exprs_[i].to_proto(slice_dimension->mutable_limit_expr());
+    if (limit_expr) {
+      limit_expr.to_proto(slice_dimension->mutable_limit_expr());
     }
   }
   return proto;
@@ -1721,8 +1715,8 @@ void HloSliceInstruction::PrintExtraAttributesImpl(
                  if (!omit_stride) {
                    AppendCat(printer, ":", slice_strides_[i]);
                  }
-                 const DExpr& start_expr = slice_start_exprs_[i];
-                 const DExpr& limit_expr = slice_limit_exprs_[i];
+                 const DExpr& start_expr = slice_start_exprs(i);
+                 const DExpr& limit_expr = slice_limit_exprs(i);
                  if (start_expr || limit_expr) {
                    AppendCat(printer, " start_expr=", DExprToString(start_expr),
                              " limit_expr=", DExprToString(limit_expr));

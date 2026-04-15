@@ -637,11 +637,16 @@ absl::StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
     case HloOpcode::kSlice: {
       std::vector<int64_t> slice_starts, slice_limits, slice_strides;
       std::vector<DExpr> slice_start_exprs, slice_limit_exprs;
+      bool has_symbolic_slice_bounds = false;
       for (const HloInstructionProto::SliceDimensions& slice_dimensions :
            proto.slice_dimensions()) {
         slice_starts.push_back(slice_dimensions.start());
         slice_limits.push_back(slice_dimensions.limit());
         slice_strides.push_back(slice_dimensions.stride());
+        if (slice_dimensions.has_start_expr() ||
+            slice_dimensions.has_limit_expr()) {
+          has_symbolic_slice_bounds = true;
+        }
         slice_start_exprs.push_back(
             slice_dimensions.has_start_expr()
                 ? DExprFromProto(slice_dimensions.start_expr())
@@ -651,9 +656,12 @@ absl::StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
                 ? DExprFromProto(slice_dimensions.limit_expr())
                 : Shape::MissingExpression());
       }
-      instruction =
-          CreateSlice(shape, operands(0), slice_starts, slice_limits,
-                      slice_strides, slice_start_exprs, slice_limit_exprs);
+      instruction = has_symbolic_slice_bounds
+                        ? CreateSlice(shape, operands(0), slice_starts,
+                                      slice_limits, slice_strides,
+                                      slice_start_exprs, slice_limit_exprs)
+                        : CreateSlice(shape, operands(0), slice_starts,
+                                      slice_limits, slice_strides);
       break;
     }
     case HloOpcode::kConstant: {

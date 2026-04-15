@@ -251,6 +251,8 @@ class StridedSliceOp : public XlaOpKernel {
   }
 
   void Compile(XlaOpKernelContext* ctx) override {
+    const bool enable_dynamic_sizes =
+        GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes;
     const TensorShape input_shape = ctx->InputShape(0);
     const TensorShape begin_shape = ctx->InputShape("begin");
     OP_REQUIRES(

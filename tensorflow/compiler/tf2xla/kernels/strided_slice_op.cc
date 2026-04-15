@@ -466,6 +466,8 @@ class StridedSliceGradOp : public XlaOpKernel {
   void CompileAsDynamicUpdateSlice(XlaOpKernelContext* ctx,
                                    const TensorShape& input_shape,
                                    const xla::Literal& strides_literal) {
+    const bool enable_dynamic_sizes =
+        GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes;
     bool dummy = false;
     Tensor strides_tensor;
     PartialTensorShape processing_shape, final_shape;

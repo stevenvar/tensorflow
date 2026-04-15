@@ -3998,37 +3998,12 @@ llvm_ir::ElementGenerator ElementalIrEmitter::MakeElementGenerator(
       return [this, hlo, &operand_to_generator](
                  const IrArray::Index& index) -> absl::StatusOr<llvm::Value*> {
         const auto* slice = Cast<HloSliceInstruction>(hlo);
-        std::vector<llvm::Value*> source_multi_index;
-        source_multi_index.reserve(index.size());
-        for (int64_t i = 0; i < index.size(); ++i) {
-          llvm::Value* start_value =
-              llvm::ConstantInt::get(index.GetType(), hlo->slice_starts(i));
-          DExpr start_expr = slice->slice_start_exprs(i);
-          if (!start_expr) {
-            DExpr limit_expr = slice->slice_limit_exprs(i);
-            const DExpr& output_expr = hlo->shape().expressions(i);
-            if (limit_expr && output_expr && output_expr->is_dynamic()) {
-              start_expr = limit_expr - output_expr;
-            }
-          }
-          if (start_expr && start_expr->is_dynamic()) {
-            start_value = b_->CreateIntCast(
-                llvm_ir::EmitExpression(b_, start_expr.simplify()),
-                index.GetType(),
-                /*isSigned=*/true);
-          }
-          llvm::Value* dim_index = index[i];
-          if (hlo->slice_strides(i) != 1) {
-            dim_index =
-                b_->CreateMul(dim_index,
-                              llvm::ConstantInt::get(index.GetType(),
-                                                     hlo->slice_strides(i)));
-          }
-          source_multi_index.push_back(b_->CreateAdd(start_value, dim_index));
-        }
-        IrArray::Index sliced_index(source_multi_index,
-                                    hlo->operand(0)->shape(), index.GetType());
-        return operand_to_generator.at(hlo->operand(0))(sliced_index);
+        return operand_to_generator.at(hlo->operand(0))(
+            index.SourceIndexOfSlice(hlo->operand(0)->shape(), hlo->shape(),
+                                     hlo->slice_starts(),
+                                     slice->slice_start_exprs(),
+                                     slice->slice_limit_exprs(),
+                                     hlo->slice_strides(), b_));
       };
     case HloOpcode::kDynamicSlice:
       return [this, hlo, &operand_to_generator](

@@ -1691,10 +1691,12 @@ absl::StatusOr<XlaOp> XlaBuilder::SliceInternal(
     slice_config->set_start(start_indices[i]);
     slice_config->set_limit(limit_indices[i]);
     slice_config->set_stride(strides[i]);
-    if (start_exprs[i] && start_exprs[i]->is_dynamic()) {
+    if (i < start_exprs.size() && start_exprs[i] &&
+        start_exprs[i]->is_dynamic()) {
       start_exprs[i].simplify().to_proto(slice_config->mutable_start_expr());
     }
-    if (limit_exprs[i] && limit_exprs[i]->is_dynamic()) {
+    if (i < limit_exprs.size() && limit_exprs[i] &&
+        limit_exprs[i]->is_dynamic()) {
       limit_exprs[i].simplify().to_proto(slice_config->mutable_limit_expr());
     }
   }

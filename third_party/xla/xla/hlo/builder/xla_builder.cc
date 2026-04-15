@@ -1684,6 +1684,8 @@ absl::StatusOr<XlaOp> XlaBuilder::SliceInternal(
     absl::Span<const DExpr> start_exprs,
     absl::Span<const DExpr> limit_exprs,
     absl::Span<const int64_t> strides) {
+  CHECK(start_exprs.empty() || start_exprs.size() == start_indices.size());
+  CHECK(limit_exprs.empty() || limit_exprs.size() == start_indices.size());
   HloInstructionProto instr;
   *instr.mutable_shape() = shape.ToProto();
   for (int i = 0, end = start_indices.size(); i < end; i++) {

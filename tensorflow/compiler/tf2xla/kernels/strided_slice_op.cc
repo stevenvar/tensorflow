@@ -67,8 +67,6 @@ class StridedSliceOp : public XlaOpKernel {
                         const StridedSliceShapeSpec& shape_spec,
                         const std::vector<bool>& begins_are_dynamic,
                         const std::vector<bool>& ends_are_dynamic) {
-    const bool enable_dynamic_sizes =
-        GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes;
     const TensorShape input_shape = ctx->InputShape(0);
     xla::XlaOp slice = ctx->Input(0);
     for (int64_t i = 0; i < ctx->InputShape("begin").dims(); ++i) {
@@ -573,8 +571,6 @@ class StridedSliceGradOp : public XlaOpKernel {
     ctx->SetOutput(0, grad);
   }
   void Compile(XlaOpKernelContext* ctx) override {
-    const bool enable_dynamic_sizes =
-        GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes;
     TensorShape processing_shape, final_shape;
     absl::InlinedVector<int64_t, 4> begin;
     absl::InlinedVector<int64_t, 4> end;

@@ -315,8 +315,9 @@ IrArray::Index IrArray::Index::SourceIndexOfSlice(
   std::vector<llvm::Value*> source_multi_index(multidim_.size());
   for (int i = 0; i < multidim_.size(); ++i) {
     llvm::Value* start_value = GetConstantWithIndexType(starts[i]);
-    DExpr start_expr =
-        i < start_exprs.size() ? start_exprs[i] : Shape::MissingExpression();
+    DExpr start_expr = i < start_exprs.size()
+                           ? start_exprs[i]
+                           : DExpr::Unknown(kMissingExpressionSentinel);
     if (start_expr && start_expr->is_dynamic()) {
       start_value = builder->CreateIntCast(
           llvm_ir::EmitExpression(builder, start_expr), index_type_,

@@ -650,11 +650,11 @@ absl::StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
         slice_start_exprs.push_back(
             slice_dimensions.has_start_expr()
                 ? DExprFromProto(slice_dimensions.start_expr())
-                : DExpr());
+                : DExpr::Unknown(kMissingExpressionSentinel));
         slice_limit_exprs.push_back(
             slice_dimensions.has_limit_expr()
                 ? DExprFromProto(slice_dimensions.limit_expr())
-                : DExpr());
+                : DExpr::Unknown(kMissingExpressionSentinel));
       }
       instruction = has_symbolic_slice_bounds
                         ? CreateSlice(shape, operands(0), slice_starts,

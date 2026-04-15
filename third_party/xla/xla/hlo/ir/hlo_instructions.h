@@ -1282,7 +1282,8 @@ class HloSliceInstruction : public HloInstruction {
   std::vector<int64_t>* mutable_slice_strides() { return &slice_strides_; }
 
   const DExpr& slice_start_exprs(int64_t dimension) const {
-    static const DExpr kMissingSliceExpr;
+    static const DExpr kMissingSliceExpr =
+        DExpr::Unknown(kMissingExpressionSentinel);
     if (dimension < 0 ||
         dimension >= static_cast<int64_t>(slice_start_exprs_.size())) {
       return kMissingSliceExpr;
@@ -1294,7 +1295,8 @@ class HloSliceInstruction : public HloInstruction {
   }
 
   const DExpr& slice_limit_exprs(int64_t dimension) const {
-    static const DExpr kMissingSliceExpr;
+    static const DExpr kMissingSliceExpr =
+        DExpr::Unknown(kMissingExpressionSentinel);
     if (dimension < 0 ||
         dimension >= static_cast<int64_t>(slice_limit_exprs_.size())) {
       return kMissingSliceExpr;

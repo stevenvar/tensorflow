@@ -2057,10 +2057,8 @@ absl::Status IrEmitter::HandleSlice(HloInstruction* slice) {
 
   llvm_ir::IrArray source_array = GetIrArrayFor(operand);
   const llvm_ir::IrArray::Index source_index = target_index.SourceIndexOfSlice(
-      /*operand_shape=*/operand->shape(), /*slice_shape=*/slice->shape(),
-      /*starts=*/slice->slice_starts(),
+      /*operand_shape=*/operand->shape(), /*starts=*/slice->slice_starts(),
       /*start_exprs=*/slice->slice_start_exprs(),
-      /*limit_exprs=*/slice->slice_limit_exprs(),
       /*strides=*/slice->slice_strides(), /*builder=*/b());
 
   llvm::Value* memcpy_dest =

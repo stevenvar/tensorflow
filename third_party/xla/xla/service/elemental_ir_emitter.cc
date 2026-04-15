@@ -3999,10 +3999,9 @@ llvm_ir::ElementGenerator ElementalIrEmitter::MakeElementGenerator(
                  const IrArray::Index& index) -> absl::StatusOr<llvm::Value*> {
         const auto* slice = Cast<HloSliceInstruction>(hlo);
         return operand_to_generator.at(hlo->operand(0))(
-            index.SourceIndexOfSlice(hlo->operand(0)->shape(), hlo->shape(),
+            index.SourceIndexOfSlice(hlo->operand(0)->shape(),
                                      hlo->slice_starts(),
                                      slice->slice_start_exprs(),
-                                     slice->slice_limit_exprs(),
                                      hlo->slice_strides(), b_));
       };
     case HloOpcode::kDynamicSlice:

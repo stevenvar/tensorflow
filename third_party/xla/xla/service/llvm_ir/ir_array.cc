@@ -309,21 +309,13 @@ IrArray::Index IrArray::Index::SourceIndexOfReshape(
 }
 
 IrArray::Index IrArray::Index::SourceIndexOfSlice(
-    const Shape& operand_shape, const Shape& slice_shape,
-    absl::Span<const int64_t> starts, absl::Span<const DExpr> start_exprs,
-    absl::Span<const DExpr> limit_exprs, absl::Span<const int64_t> strides,
+    const Shape& operand_shape, absl::Span<const int64_t> starts,
+    absl::Span<const DExpr> start_exprs, absl::Span<const int64_t> strides,
     llvm::IRBuilderBase* builder) const {
   std::vector<llvm::Value*> source_multi_index(multidim_.size());
   for (int i = 0; i < multidim_.size(); ++i) {
     llvm::Value* start_value = GetConstantWithIndexType(starts[i]);
     DExpr start_expr = start_exprs[i];
-    if (!start_expr) {
-      const DExpr& limit_expr = limit_exprs[i];
-      const DExpr& output_expr = slice_shape.expressions(i);
-      if (limit_expr && output_expr && output_expr->is_dynamic()) {
-        start_expr = limit_expr - output_expr;
-      }
-    }
     if (start_expr && start_expr->is_dynamic()) {
       start_value = builder->CreateIntCast(
           llvm_ir::EmitExpression(builder, start_expr.simplify()), index_type_,

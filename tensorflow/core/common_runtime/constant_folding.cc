@@ -31,6 +31,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/rendezvous_mgr.h"
 #include "tensorflow/core/framework/log_memory.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/tensor_shape_expr.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
@@ -41,6 +42,7 @@ limitations under the License.
 #include "tensorflow/core/lib/gtl/cleanup.h"
 #include "tensorflow/core/lib/gtl/flatset.h"
 #include "tensorflow/core/lib/strings/strcat.h"
+#include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/denormal.h"
 #include "tensorflow/core/platform/setround.h"
 #include "tensorflow/core/public/session_options.h"
@@ -51,6 +53,31 @@ namespace {
 
 const char kScopedAllocatorAttrName[] = "_scoped_allocator";
 const char kXlaShapeDerivedAttrName[] = "_xla_shape_derived";
+
+bool GetShapeFromDynamicAncestor(const Node* node,
+                                 TensorShapeProto* out_shape);
+
+bool IsDynamicExpressionProto(const ExpressionProto& proto) {
+  switch (proto.node_type_case()) {
+    case ExpressionProto::kVariableId:
+      return true;
+    case ExpressionProto::kAddNode:
+      return IsDynamicExpressionProto(proto.add_node().lhs()) ||
+             IsDynamicExpressionProto(proto.add_node().rhs());
+    case ExpressionProto::kSubNode:
+      return IsDynamicExpressionProto(proto.sub_node().lhs()) ||
+             IsDynamicExpressionProto(proto.sub_node().rhs());
+    case ExpressionProto::kMulNode:
+      return IsDynamicExpressionProto(proto.mul_node().lhs()) ||
+             IsDynamicExpressionProto(proto.mul_node().rhs());
+    case ExpressionProto::kDivNode:
+      return IsDynamicExpressionProto(proto.div_node().lhs()) ||
+             IsDynamicExpressionProto(proto.div_node().rhs());
+    case ExpressionProto::kConstantValue:
+    case ExpressionProto::NODE_TYPE_NOT_SET:
+      return false;
+  }
+}
 
 // For stateless RNGs ops, they are pure but device-dependent. Those ops are not
 // constant-foldable.
@@ -246,6 +273,13 @@ bool IsConstantFoldable(
     int64_t max_constant_size_in_bytes,
     std::unordered_map<const Node*, std::vector<Tensor>>*
         shape_replacement_map) {
+  TensorShapeProto dynamic_shape;
+  if (GetShapeFromDynamicAncestor(n, &dynamic_shape)) {
+    VLOG(1) << "Skipping constant folding for dynamic shape-derived node "
+            << n->name() << " op=" << n->type_string()
+            << " inferred_shape=" << dynamic_shape.DebugString();
+    return false;
+  }
   if (n->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) {
     VLOG(1) << "Skipping constant folding for shape-derived node "
             << n->name() << " op=" << n->type_string();
@@ -468,6 +502,29 @@ bool GetShapeFromArgNode(const Node* node, TensorShapeProto* out_shape) {
   return false;
 }
 
+bool GetShapeFromDynamicAncestor(const Node* node, TensorShapeProto* out_shape) {
+  std::vector<const Node*> stack = {node};
+  absl::flat_hash_set<const Node*> visited;
+  while (!stack.empty()) {
+    const Node* current = stack.back();
+    stack.pop_back();
+    if (!visited.insert(current).second) {
+      continue;
+    }
+    if ((IsShapeOp(current) ||
+         current->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) &&
+        GetShapeFromArgNode(current, out_shape)) {
+      return true;
+    }
+    for (const Edge* edge : current->in_edges()) {
+      if (!edge->IsControlEdge()) {
+        stack.push_back(edge->src());
+      }
+    }
+  }
+  return false;
+}
+
 // Replaces constant-foldable shape node n by a vector of constants in
 // constant_graph, which is being built up for subsequent evaluation of constant
 // propagation. node_map is the mapping of nodes in the original graph to nodes
@@ -480,10 +537,13 @@ void AddShapeNodeToConstantGraph(
         shape_replacement_map,
     std::unordered_map<Node*, std::vector<Node*>>* node_map,
     const ConstantFoldNameGenerator& generate_new_name, Graph* constant_graph) {
-
   TensorShapeProto user_inferred_shape;
-  bool has_dynamic = GetShapeFromArgNode(n, &user_inferred_shape);
-
+  const bool has_dynamic = GetShapeFromDynamicAncestor(n, &user_inferred_shape);
+  if (has_dynamic) {
+    VLOG(1) << "AddShapeNodeToConstantGraph preserving dynamic metadata for "
+              << n->name() << " op=" << n->type_string()
+              << " inferred_shape=" << user_inferred_shape.DebugString();
+  }
   std::vector<Node*>& added = (*node_map)[n];
   const string& node_name = n->name();
   for (const Tensor& t : shape_replacement_map.at(n)) {
@@ -492,9 +552,11 @@ void AddShapeNodeToConstantGraph(
     auto builder =
         NodeDefBuilder(generate_new_name(constant_graph, node_name), "Const")
             .Attr("dtype", t.dtype())
-            .Attr("has_dynamic", has_dynamic)
-            .Attr("user_inferred_shape", user_inferred_shape)
             .Attr("value", t);
+    if (has_dynamic) {
+      builder.Attr("has_dynamic", has_dynamic)
+          .Attr("user_inferred_shape", user_inferred_shape);
+    }
     NodeDef def;
     CHECK(builder.Finalize(&def).ok());
     Node* constant_node;
@@ -613,15 +675,22 @@ bool ReplaceTensorWithConstant(
     }
   }
   const string& node_name = n->name();
-  Node* constant_node;
-
   TensorShapeProto user_inferred_shape;
-  bool has_dynamic = GetShapeFromArgNode(tensor.first, &user_inferred_shape);
+  const bool has_dynamic =
+      GetShapeFromDynamicAncestor(tensor.first, &user_inferred_shape);
+  if (has_dynamic) {
+    VLOG(1) << "ReplaceTensorWithConstant preserving dynamic metadata for "
+              << tensor.first->name() << " output=" << tensor.second
+              << " inferred_shape=" << user_inferred_shape.DebugString();
+  }
+  Node* constant_node;
   auto builder = NodeDefBuilder(generate_new_name(graph, node_name), "Const")
                      .Attr("dtype", constant.dtype())
-                     .Attr("has_dynamic", has_dynamic)
-                     .Attr("user_inferred_shape", user_inferred_shape)
                      .Attr("value", constant);
+  if (has_dynamic) {
+    builder.Attr("has_dynamic", has_dynamic)
+        .Attr("user_inferred_shape", user_inferred_shape);
+  }
   if (partition_device) {
     builder.Device(partition_device->name());
   }

@@ -80,6 +80,9 @@ bool GetShapeFromDirectDynamicSource(const Node* node,
          GetShapeFromArgNode(node, out_shape);
 }
 
+bool GetShapeFromDynamicAncestor(const Node* node,
+                                 TensorShapeProto* out_shape);
+
 // For stateless RNGs ops, they are pure but device-dependent. Those ops are not
 // constant-foldable.
 static absl::flat_hash_set<std::string>* kBlockList =
@@ -272,9 +275,10 @@ bool IsConstantFoldable(
         shape_map,
     const std::function<bool(const Node*)>& consider,
     int64_t max_constant_size_in_bytes,
-    std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map) {
+    std::unordered_map<const Node*, std::vector<Tensor>>*
+        shape_replacement_map) {
   TensorShapeProto dynamic_shape;
-  if (GetShapeFromDirectDynamicSource(n, &dynamic_shape)) {
+  if (GetShapeFromDynamicAncestor(n, &dynamic_shape)) {
     VLOG(1) << "Skipping constant folding for dynamic shape-derived node "
             << n->name() << " op=" << n->type_string()
             << " inferred_shape=" << dynamic_shape.DebugString();
@@ -477,6 +481,28 @@ void AddNodeToConstantGraph(
   }
 }
 
+bool GetShapeFromDynamicAncestor(const Node* node, TensorShapeProto* out_shape) {
+  std::vector<const Node*> stack = {node};
+  absl::flat_hash_set<const Node*> visited;
+  while (!stack.empty()) {
+    const Node* current = stack.back();
+    stack.pop_back();
+    if (!visited.insert(current).second) {
+      continue;
+    }
+    if ((IsShapeOp(current) ||
+         current->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) &&
+        GetShapeFromArgNode(current, out_shape)) {
+      return true;
+    }
+    for (const Edge* edge : current->in_edges()) {
+      if (!edge->IsControlEdge()) {
+        stack.push_back(edge->src());
+      }
+    }
+  }
+  return false;
+}
 // Replaces constant-foldable shape node n by a vector of constants in
 // constant_graph, which is being built up for subsequent evaluation of constant
 // propagation. node_map is the mapping of nodes in the original graph to nodes
@@ -490,8 +516,12 @@ void AddShapeNodeToConstantGraph(
     std::unordered_map<Node*, std::vector<Node*>>* node_map,
     const ConstantFoldNameGenerator& generate_new_name, Graph* constant_graph) {
   TensorShapeProto user_inferred_shape;
-  const bool has_dynamic =
-      GetShapeFromDirectDynamicSource(n, &user_inferred_shape);
+  const bool has_dynamic = GetShapeFromDynamicAncestor(n, &user_inferred_shape);
+  if (has_dynamic) {
+    VLOG(1) << "AddShapeNodeToConstantGraph preserving dynamic metadata for "
+              << n->name() << " op=" << n->type_string()
+              << " inferred_shape=" << user_inferred_shape.DebugString();
+  }
   std::vector<Node*>& added = (*node_map)[n];
   const string& node_name = n->name();
   for (const Tensor& t : shape_replacement_map.at(n)) {
@@ -625,7 +655,12 @@ bool ReplaceTensorWithConstant(
   const string& node_name = n->name();
   TensorShapeProto user_inferred_shape;
   const bool has_dynamic =
-      GetShapeFromDirectDynamicSource(tensor.first, &user_inferred_shape);
+      GetShapeFromDynamicAncestor(tensor.first, &user_inferred_shape);
+  if (has_dynamic) {
+    VLOG(1) << "ReplaceTensorWithConstant preserving dynamic metadata for "
+              << tensor.first->name() << " output=" << tensor.second
+              << " inferred_shape=" << user_inferred_shape.DebugString();
+  }
   Node* constant_node;
   auto builder = NodeDefBuilder(generate_new_name(graph, node_name), "Const")
                      .Attr("dtype", constant.dtype())

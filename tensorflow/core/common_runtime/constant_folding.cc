@@ -22,6 +22,7 @@ limitations under the License.
 #include <unordered_map>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/common_runtime/executor.h"
@@ -72,16 +73,20 @@ bool GetShapeFromArgNode(const Node* node, TensorShapeProto* out_shape) {
   }
   return false;
 }
+struct DynamicAncestorCacheEntry {
+  bool computed = false;
+  bool computing = false;
+  bool has_dynamic = false;
+  TensorShapeProto shape;
+};
 
-bool GetShapeFromDirectDynamicSource(const Node* node,
-                                     TensorShapeProto* out_shape) {
-  return (IsShapeOp(node) ||
-          node->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) &&
-         GetShapeFromArgNode(node, out_shape);
-}
+using DynamicAncestorCache =
+    absl::flat_hash_map<const Node*, DynamicAncestorCacheEntry>;
 
 bool GetShapeFromDynamicAncestor(const Node* node,
                                  TensorShapeProto* out_shape);
+bool GetShapeFromDynamicAncestor(const Node* node, TensorShapeProto* out_shape,
+                                 DynamicAncestorCache* cache);
 
 // For stateless RNGs ops, they are pure but device-dependent. Those ops are not
 // constant-foldable.
@@ -275,10 +280,10 @@ bool IsConstantFoldable(
         shape_map,
     const std::function<bool(const Node*)>& consider,
     int64_t max_constant_size_in_bytes,
-    std::unordered_map<const Node*, std::vector<Tensor>>*
-        shape_replacement_map) {
+    std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map,
+    DynamicAncestorCache* dynamic_ancestor_cache) {
   TensorShapeProto dynamic_shape;
-  if (GetShapeFromDynamicAncestor(n, &dynamic_shape)) {
+  if (GetShapeFromDynamicAncestor(n, &dynamic_shape, dynamic_ancestor_cache)) {
     VLOG(1) << "Skipping constant folding for dynamic shape-derived node "
             << n->name() << " op=" << n->type_string()
             << " inferred_shape=" << dynamic_shape.DebugString();
@@ -371,10 +376,11 @@ void ConsiderConstantFoldableNode(
     Node* n, const ConstantFoldingOptions& opts, std::vector<Node*>* nodes,
     std::unordered_map<const Node*, gtl::FlatSet<Node*>>* constant_control_deps,
     std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map,
-    bool* internal_node_inserted) {
+    bool* internal_node_inserted,
+    DynamicAncestorCache* dynamic_ancestor_cache) {
   if (!IsConstantFoldable(n, opts.shape_map, opts.consider,
                           opts.max_constant_size_in_bytes,
-                          shape_replacement_map)) {
+                          shape_replacement_map, dynamic_ancestor_cache)) {
     return;
   }
   // A node is constant provided all of its non-control incoming Tensors come
@@ -428,16 +434,19 @@ void FindConstantFoldableNodes(
     const Graph* graph, const ConstantFoldingOptions& opts,
     std::vector<Node*>* nodes,
     std::unordered_map<const Node*, gtl::FlatSet<Node*>>* constant_control_deps,
-    std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map) {
+    std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map,
+    DynamicAncestorCache* dynamic_ancestor_cache) {
   bool internal_node_inserted = false;
   // Walk the nodes in data flow order.
   ReverseDFS(
       *graph, nullptr,
       [nodes, constant_control_deps, shape_replacement_map,
-       &internal_node_inserted, &opts](Node* n) {
+       &internal_node_inserted, &opts,
+       dynamic_ancestor_cache](Node* n) {
         ConsiderConstantFoldableNode(n, opts, nodes, constant_control_deps,
                                      shape_replacement_map,
-                                     &internal_node_inserted);
+                                     &internal_node_inserted,
+                                     dynamic_ancestor_cache);
       },
       NodeComparatorName());
   // If we have inserted just leaf level nodes, then there is nothing to fold.
@@ -481,27 +490,46 @@ void AddNodeToConstantGraph(
   }
 }
 
-bool GetShapeFromDynamicAncestor(const Node* node, TensorShapeProto* out_shape) {
-  std::vector<const Node*> stack = {node};
-  absl::flat_hash_set<const Node*> visited;
-  while (!stack.empty()) {
-    const Node* current = stack.back();
-    stack.pop_back();
-    if (!visited.insert(current).second) {
-      continue;
+bool GetShapeFromDynamicAncestor(const Node* node, TensorShapeProto* out_shape,
+                                 DynamicAncestorCache* cache) {
+  auto& entry = (*cache)[node];
+  if (entry.computed) {
+    if (entry.has_dynamic) {
+      *out_shape = entry.shape;
     }
-    if ((IsShapeOp(current) ||
-         current->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) &&
-        GetShapeFromArgNode(current, out_shape)) {
-      return true;
-    }
-    for (const Edge* edge : current->in_edges()) {
-      if (!edge->IsControlEdge()) {
-        stack.push_back(edge->src());
+    return entry.has_dynamic;
+  }
+  if (entry.computing) {
+    return false;
+  }
+
+  entry.computing = true;
+  if ((IsShapeOp(node) ||
+       node->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) &&
+      GetShapeFromArgNode(node, &entry.shape)) {
+    entry.has_dynamic = true;
+  } else {
+    for (const Edge* edge : node->in_edges()) {
+      if (edge->IsControlEdge()) {
+        continue;
+      }
+      if (GetShapeFromDynamicAncestor(edge->src(), &entry.shape, cache)) {
+        entry.has_dynamic = true;
+        break;
       }
     }
   }
-  return false;
+  entry.computing = false;
+  entry.computed = true;
+  if (entry.has_dynamic) {
+    *out_shape = entry.shape;
+  }
+  return entry.has_dynamic;
+}
+
+bool GetShapeFromDynamicAncestor(const Node* node, TensorShapeProto* out_shape) {
+  DynamicAncestorCache cache;
+  return GetShapeFromDynamicAncestor(node, out_shape, &cache);
 }
 // Replaces constant-foldable shape node n by a vector of constants in
 // constant_graph, which is being built up for subsequent evaluation of constant
@@ -514,9 +542,12 @@ void AddShapeNodeToConstantGraph(
     const std::unordered_map<const Node*, std::vector<Tensor>>&
         shape_replacement_map,
     std::unordered_map<Node*, std::vector<Node*>>* node_map,
-    const ConstantFoldNameGenerator& generate_new_name, Graph* constant_graph) {
+    const ConstantFoldNameGenerator& generate_new_name, Graph* constant_graph,
+    DynamicAncestorCache* dynamic_ancestor_cache) {
   TensorShapeProto user_inferred_shape;
-  const bool has_dynamic = GetShapeFromDynamicAncestor(n, &user_inferred_shape);
+  const bool has_dynamic =
+      GetShapeFromDynamicAncestor(n, &user_inferred_shape,
+                                  dynamic_ancestor_cache);
   if (has_dynamic) {
     VLOG(1) << "AddShapeNodeToConstantGraph preserving dynamic metadata for "
               << n->name() << " op=" << n->type_string()
@@ -554,7 +585,8 @@ Graph* GetConstantGraph(
     const std::unordered_map<const Node*, std::vector<Tensor>>&
         shape_replacement_map,
     std::map<NodeAndOutput, NodeAndOutput>* tensors_to_fetch,
-    const ConstantFoldNameGenerator& generate_new_name) {
+    const ConstantFoldNameGenerator& generate_new_name,
+    DynamicAncestorCache* dynamic_ancestor_cache) {
   Graph* constant_graph = new Graph(orig_graph->op_registry());
   std::unordered_map<Node*, std::vector<Node*>> node_map;
   node_map[orig_graph->source_node()] = {constant_graph->source_node()};
@@ -564,7 +596,8 @@ Graph* GetConstantGraph(
       AddNodeToConstantGraph(n, &node_map, constant_graph);
     } else {
       AddShapeNodeToConstantGraph(n, shape_replacement_map, &node_map,
-                                  generate_new_name, constant_graph);
+                                  generate_new_name, constant_graph,
+                                  dynamic_ancestor_cache);
     }
   }
 
@@ -602,7 +635,8 @@ bool ReplaceTensorWithConstant(
     Graph* graph, const Device* partition_device, NodeAndOutput tensor,
     const Tensor& constant, const gtl::FlatSet<Node*>& control_deps,
     int64_t max_constant_size_in_bytes,
-    const ConstantFoldNameGenerator& generate_new_name) {
+    const ConstantFoldNameGenerator& generate_new_name,
+    DynamicAncestorCache* dynamic_ancestor_cache) {
   // Be conservative when replacing a tensor with a constant, when not
   // running on CPU.
   // 1) Do not replace another constant.
@@ -655,7 +689,8 @@ bool ReplaceTensorWithConstant(
   const string& node_name = n->name();
   TensorShapeProto user_inferred_shape;
   const bool has_dynamic =
-      GetShapeFromDynamicAncestor(tensor.first, &user_inferred_shape);
+      GetShapeFromDynamicAncestor(tensor.first, &user_inferred_shape,
+                                  dynamic_ancestor_cache);
   if (has_dynamic) {
     VLOG(1) << "ReplaceTensorWithConstant preserving dynamic metadata for "
               << tensor.first->name() << " output=" << tensor.second
@@ -732,8 +767,10 @@ absl::Status ConstantFold(const ConstantFoldingOptions& opts,
   std::vector<Node*> constant_foldable_nodes;
   std::unordered_map<const Node*, gtl::FlatSet<Node*>> constant_control_deps;
   std::unordered_map<const Node*, std::vector<Tensor>> shape_replacement_map;
+  DynamicAncestorCache dynamic_ancestor_cache;
   FindConstantFoldableNodes(graph, opts, &constant_foldable_nodes,
-                            &constant_control_deps, &shape_replacement_map);
+                            &constant_control_deps, &shape_replacement_map,
+                            &dynamic_ancestor_cache);
   if (constant_foldable_nodes.empty()) {
     VLOG(1) << "No constant foldable nodes found";
     *was_mutated = false;
@@ -744,7 +781,8 @@ absl::Status ConstantFold(const ConstantFoldingOptions& opts,
   std::map<NodeAndOutput, NodeAndOutput> tensors_to_fetch;
   std::unique_ptr<Graph> constant_graph(
       GetConstantGraph(graph, constant_foldable_nodes, shape_replacement_map,
-                       &tensors_to_fetch, generate_new_name));
+                       &tensors_to_fetch, generate_new_name,
+                       &dynamic_ancestor_cache));
   DumpGraph("Constant graph", constant_graph.get());
 
   if (tensors_to_fetch.empty()) {
@@ -800,7 +838,8 @@ absl::Status ConstantFold(const ConstantFoldingOptions& opts,
         constant_control_deps[tensors_to_replace[c].first];
     if (ReplaceTensorWithConstant(
             graph, partition_device, tensors_to_replace[c], outputs[c],
-            control_deps, opts.max_constant_size_in_bytes, generate_new_name)) {
+            control_deps, opts.max_constant_size_in_bytes, generate_new_name,
+            &dynamic_ancestor_cache)) {
       ++num_nodes_replaced;
     }
   }

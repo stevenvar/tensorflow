@@ -17,6 +17,7 @@ limitations under the License.
 #include <type_traits>
 #include <vector>
 
+#include "xla/printer.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
@@ -171,10 +172,16 @@ std::vector<xla::DExpr> BuildShapeContentsFromTensorShapeProto(
       auto tf_expr = DimExpr::FromProto(shape.expressions(i));
       expr = DimExprToDExpr(tf_expr.get());
     }
-    VLOG(1) << "BuildShapeContentsFromTensorShape dim=" << i
-              << " expr=" << expr
-              << " dynamic="
-              << (expr && expr->is_dynamic() ? "true" : "false");
+    if (expr) {
+      xla::StringPrinter printer;
+      expr->print(&printer);
+      VLOG(1) << "BuildShapeContentsFromTensorShape dim=" << i
+              << " expr=" << std::move(printer).ToString()
+              << " dynamic=" << (expr->is_dynamic() ? "true" : "false");
+    } else {
+      VLOG(1) << "BuildShapeContentsFromTensorShape dim=" << i
+              << " expr=_ dynamic=false";
+    }
     contents.push_back(expr && expr->is_dynamic()
                            ? std::move(expr)
                            : xla::DExpr::Unknown(

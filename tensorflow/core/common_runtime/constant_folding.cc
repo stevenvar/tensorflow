@@ -508,16 +508,6 @@ bool GetShapeFromDynamicAncestor(const Node* node, TensorShapeProto* out_shape,
        node->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) &&
       GetShapeFromArgNode(node, &entry.shape)) {
     entry.has_dynamic = true;
-  } else {
-    for (const Edge* edge : node->in_edges()) {
-      if (edge->IsControlEdge()) {
-        continue;
-      }
-      if (GetShapeFromDynamicAncestor(edge->src(), &entry.shape, cache)) {
-        entry.has_dynamic = true;
-        break;
-      }
-    }
   }
   entry.computing = false;
   entry.computed = true;

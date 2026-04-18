@@ -1828,6 +1828,120 @@ class SymbolicShapeRefiner {
         for (int i = 0; i < c->inference_context->num_inputs(); ++i) {
           c->output_tensors_as_shapes[i] = c->inference_context->input(i);
         }
+      } else if (op == "GatherV2") {
+        if (c->input_tensors_as_shapes_to_propagate.empty()) {
+          return absl::OkStatus();
+        }
+        const ShapeHandle& params = c->input_tensors_as_shapes_to_propagate[0];
+        // Shape-like tensors are propagated here by storing each tensor value
+        // as one dimension of a ShapeHandle. Gather(axis=0) therefore becomes
+        // "pick those propagated entries by index".
+        const Tensor* indices = ic->input_tensor(1);
+        const Tensor* axis = ic->input_tensor(2);
+        bool valid = ic->RankKnown(params) && indices != nullptr &&
+                     axis != nullptr && axis->NumElements() == 1;
+        int64_t axis_value = 0;
+        if (valid) {
+          axis_value = axis->dtype() == DT_INT32 ? axis->scalar<int32>()()
+                                                 : axis->scalar<int64_t>()();
+          valid = (axis_value == 0);
+        }
+        if (valid) {
+          std::vector<DimensionHandle> dims;
+          auto add_index = [&](int64_t raw_index) -> bool {
+            int64_t index = raw_index;
+            if (index < 0) {
+              // Match Gather's negative-index semantics.
+              index += ic->Rank(params);
+            }
+            if (index < 0 || index >= ic->Rank(params)) {
+              return false;
+            }
+            // In this side channel, shape-tensor contents live in the dims.
+            dims.push_back(ic->Dim(params, index));
+            return true;
+          };
+          auto add_indices = [&](const auto& values) -> bool {
+            for (int i = 0; i < values.size(); ++i) {
+              if (!add_index(values(i))) {
+                return false;
+              }
+            }
+            return true;
+          };
+          if (indices->dims() == 0) {
+            valid =
+                add_index(indices->dtype() == DT_INT32 ? indices->scalar<int32>()()
+                                                       : indices->scalar<int64_t>()());
+          } else if (indices->dims() == 1) {
+            if (indices->dtype() == DT_INT32) {
+              valid = add_indices(indices->vec<int32>());
+            } else if (indices->dtype() == DT_INT64) {
+              valid = add_indices(indices->vec<int64_t>());
+            } else {
+              valid = false;
+            }
+          } else {
+            valid = false;
+          }
+          if (valid) {
+            c->output_tensors_as_shapes.resize(1);
+            c->output_tensors_as_shapes[0] = ic->MakeShape(dims);
+          }
+        }
+      } else if (op == "Prod") {
+        if (c->input_tensors_as_shapes_to_propagate.empty()) {
+          return absl::OkStatus();
+        }
+        const ShapeHandle& input = c->input_tensors_as_shapes_to_propagate[0];
+        // Here `input` represents a propagated shape-vector value, so its
+        // entries live in the dimensions of the ShapeHandle rather than in a
+        // normal tensor buffer.
+        const Tensor* reduction_indices = ic->input_tensor(1);
+        bool valid = ic->RankKnown(input) && reduction_indices != nullptr &&
+                     !node.attr().at("keep_dims").b();
+        if (valid) {
+          std::vector<int64_t> axes;
+          auto read_axes = [&](const auto& values) {
+            axes.reserve(values.size());
+            for (int i = 0; i < values.size(); ++i) {
+              axes.push_back(values(i));
+            }
+          };
+          if (reduction_indices->dtype() == DT_INT32) {
+            if (reduction_indices->dims() == 0) {
+              axes.push_back(reduction_indices->scalar<int32>()());
+            } else if (reduction_indices->dims() == 1) {
+              read_axes(reduction_indices->vec<int32>());
+            } else {
+              valid = false;
+            }
+          } else if (reduction_indices->dtype() == DT_INT64) {
+            if (reduction_indices->dims() == 0) {
+              axes.push_back(reduction_indices->scalar<int64_t>()());
+            } else if (reduction_indices->dims() == 1) {
+              read_axes(reduction_indices->vec<int64_t>());
+            } else {
+              valid = false;
+            }
+          } else {
+            valid = false;
+          }
+          if (valid) {
+            // For shape-vector contents, Prod(axis=0) means multiply the
+            // propagated entries together.
+            valid = axes.size() == 1 && axes[0] == 0 && ic->Rank(input) > 0;
+          }
+          if (valid) {
+            DimensionHandle product = ic->Dim(input, 0);
+            for (int i = 1; i < ic->Rank(input); ++i) {
+              TF_RETURN_IF_ERROR(ic->Multiply(product, ic->Dim(input, i),
+                                              &product));
+            }
+            c->output_tensors_as_shapes.resize(1);
+            c->output_tensors_as_shapes[0] = ic->MakeShape({product});
+          }
+        }
       } else if (op == "ConcatV2") {
         bool valid = true;
         ShapeHandle result;
@@ -2042,7 +2156,6 @@ class SymbolicShapeRefiner {
       bool changed = false;
       std::vector<DimensionHandle> dims;
       dims.reserve(ic->Rank(s));
-      const bool is_reshape = node->op() == "Reshape";
       for (int d = 0; d < ic->Rank(s); ++d) {
         DimensionHandle dim = ic->Dim(s, d);
         const int64_t v = ic->Value(dim);
@@ -2053,10 +2166,7 @@ class SymbolicShapeRefiner {
         }
         // If already tagged with expr, keep it.
         auto* dim_expr = ic->GetDimExpr(dim);
-        const bool refresh_reshape_expr =
-            is_reshape && dim_expr != nullptr &&
-            dim_expr->kind() != DimExpr::Kind::kVariable;
-        if (dim_expr != nullptr && !refresh_reshape_expr) {
+        if (dim_expr != nullptr) {
           dims.push_back(dim);
           continue;
         }

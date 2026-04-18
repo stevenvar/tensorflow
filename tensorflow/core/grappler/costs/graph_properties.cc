@@ -1789,6 +1789,18 @@ class SymbolicShapeRefiner {
         c->output_tensors_as_shapes.resize(1);
         MaybeTensorProtoToShape(ic, tensor_proto,
                                 &c->output_tensors_as_shapes[0]);
+      } else if (IsCast(node)) {
+        if (c->input_tensors_as_shapes_to_propagate.empty()) {
+          return absl::OkStatus();
+        }
+        const DataType src_type = node.attr().at("SrcT").type();
+        const DataType dst_type = node.attr().at("DstT").type();
+        if ((src_type == DT_INT32 || src_type == DT_INT64) &&
+            (dst_type == DT_INT32 || dst_type == DT_INT64)) {
+          c->output_tensors_as_shapes.resize(1);
+          c->output_tensors_as_shapes[0] =
+              c->input_tensors_as_shapes_to_propagate[0];
+        }
       } else if (IsRank(node)) {
         if (ic->RankKnown(ic->input(0))) {
           // Propagate rank value.
@@ -1995,6 +2007,26 @@ class SymbolicShapeRefiner {
           c->output_tensors_as_shapes.resize(1);
           c->output_tensors_as_shapes[0] = ic->MakeShape(dims);
         }
+      } else if (IsUnpack(node)) {
+        if (c->input_tensors_as_shapes_to_propagate.empty()) {
+          return absl::OkStatus();
+        }
+        const ShapeHandle& input = c->input_tensors_as_shapes_to_propagate[0];
+        bool valid = ic->RankKnown(input);
+        int axis = 0;
+        if (valid) {
+          TF_RETURN_IF_ERROR(GetNodeAttr(node, "axis", &axis));
+          if (axis < 0) {
+            axis += ic->Rank(input);
+          }
+          valid = (axis == 0 && ic->num_outputs() == ic->Rank(input));
+        }
+        if (valid) {
+          c->output_tensors_as_shapes.resize(ic->num_outputs());
+          for (int i = 0; i < ic->num_outputs(); ++i) {
+            c->output_tensors_as_shapes[i] = ic->MakeShape({ic->Dim(input, i)});
+          }
+        }
       } else if (IsIdentity(node) || IsIdentityNSingleInput(node)) {
         c->output_tensors_as_shapes.resize(1);
         c->output_tensors_as_shapes[0] =
@@ -2061,6 +2093,8 @@ class SymbolicShapeRefiner {
           valid = false;
         }
         if (valid) {
+          // This side channel encodes shape-vector contents in the dimensions
+          // of `input`, so slicing the vector is the same as taking a subshape.
           int64_t begin = 0;
           if (begin_mask == 0) {
             begin = slice_begin->dtype() == DT_INT32

@@ -1849,11 +1849,14 @@ class SymbolicShapeRefiner {
         // as one dimension of a ShapeHandle. Gather(axis=0) therefore becomes
         // "pick those propagated entries by index".
         const Tensor* indices = ic->input_tensor(1);
-        const Tensor* axis = ic->input_tensor(2);
-        bool valid = ic->RankKnown(params) && indices != nullptr &&
-                     axis != nullptr && axis->NumElements() == 1;
+        const bool has_axis_input = ic->num_inputs() >= 3;
+        const Tensor* axis = has_axis_input ? ic->input_tensor(2) : nullptr;
+        bool valid = ic->RankKnown(params) && indices != nullptr;
         int64_t axis_value = 0;
-        if (valid) {
+        if (valid && has_axis_input) {
+          valid = axis != nullptr && axis->NumElements() == 1;
+        }
+        if (valid && has_axis_input) {
           axis_value = axis->dtype() == DT_INT32 ? axis->scalar<int32>()()
                                                  : axis->scalar<int64_t>()();
           valid = (axis_value == 0);
@@ -1910,8 +1913,10 @@ class SymbolicShapeRefiner {
         // entries live in the dimensions of the ShapeHandle rather than in a
         // normal tensor buffer.
         const Tensor* reduction_indices = ic->input_tensor(1);
-        bool valid = ic->RankKnown(input) && reduction_indices != nullptr &&
-                     !node.attr().at("keep_dims").b();
+        bool keep_dims = false;
+        TF_RETURN_IF_ERROR(GetNodeAttr(node, "keep_dims", &keep_dims));
+        bool valid =
+            ic->RankKnown(input) && reduction_indices != nullptr && !keep_dims;
         if (valid) {
           std::vector<int64_t> axes;
           auto read_axes = [&](const auto& values) {

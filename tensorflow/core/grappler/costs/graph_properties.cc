@@ -1840,7 +1840,7 @@ class SymbolicShapeRefiner {
         for (int i = 0; i < c->inference_context->num_inputs(); ++i) {
           c->output_tensors_as_shapes[i] = c->inference_context->input(i);
         }
-      } else if (op == "GatherV2") {
+      } else if (IsGather(node)) {
         if (c->input_tensors_as_shapes_to_propagate.empty()) {
           return absl::OkStatus();
         }
@@ -1901,7 +1901,7 @@ class SymbolicShapeRefiner {
             c->output_tensors_as_shapes[0] = ic->MakeShape(dims);
           }
         }
-      } else if (op == "Prod") {
+      } else if (IsProd(node)) {
         if (c->input_tensors_as_shapes_to_propagate.empty()) {
           return absl::OkStatus();
         }
@@ -2093,8 +2093,6 @@ class SymbolicShapeRefiner {
           valid = false;
         }
         if (valid) {
-          // This side channel encodes shape-vector contents in the dimensions
-          // of `input`, so slicing the vector is the same as taking a subshape.
           int64_t begin = 0;
           if (begin_mask == 0) {
             begin = slice_begin->dtype() == DT_INT32

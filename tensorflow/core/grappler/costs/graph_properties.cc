@@ -1954,7 +1954,7 @@ class SymbolicShapeRefiner {
             c->output_tensors_as_shapes[0] = ic->MakeShape({product});
           }
         }
-      } else if (op == "ConcatV2") {
+      } else if (IsConcat(node)) {
         bool valid = true;
         ShapeHandle result;
         for (int i = 0; i < ic->num_inputs() - 1; ++i) {

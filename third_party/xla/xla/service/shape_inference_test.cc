@@ -2822,6 +2822,18 @@ TEST_F(ShapeInferenceTest, BinOpBroadcastBadDimension) {
               HasSubstr("dimensions order is wrong"));
 }
 
+TEST_F(ShapeInferenceTest, BinOpPreservesBroadcastedExpressionSameRank) {
+  Shape lhs = ShapeUtil::MakeShape(F32, {1}, {true});
+  lhs.set_expression(0, DExpr::Const(1));
+  Shape rhs = ShapeUtil::MakeShape(F32, {1}, {true});
+  rhs.set_expression(0, DExpr::Var(1));
+
+  const absl::StatusOr<Shape> inferred_shape =
+      ShapeInference::InferBinaryOpShape(HloOpcode::kAdd, lhs, rhs, {0});
+  ASSERT_IS_OK(inferred_shape.status());
+  EXPECT_EQ(inferred_shape->expressions(0), DExpr::Var(1));
+}
+
 // Tests for the while instruction with proper shapes.
 TEST_F(ShapeInferenceTest, WhileWithCorrectShapes) {
   const Shape result_shape = ShapeUtil::MakeTupleShape({s32_, vector_32_});

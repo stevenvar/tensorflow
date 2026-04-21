@@ -1342,33 +1342,25 @@ absl::Status MarkForCompilationPassImpl::CreateClusters() {
                         GetNextClusterSequenceNumber(graph_fingerprint_));
       }
 
+      int num_args = 0;
+      for (const Edge* edge : n->in_edges()) {
+        if (edge->IsControlEdge()) {
+          continue;
+        }
+        std::optional<absl::string_view> src_cluster =
+            GetXlaClusterForNode(*edge->src());
+        if (src_cluster && *src_cluster == name) {
+          continue;
+        }
+        ++num_args;
+      }
+
       n->AddAttr(kXlaClusterAttr, name);
       n->AddAttr(kXlaAlreadyClustered, true);
+      LOG(INFO) << "[MFC][CLUSTER] node=" << n->name() << " name=" << name
+                << " num_args=" << num_args;
       VLOG(3) << "Assigning node " << n->name() << " to cluster " << name;
     }
-  }
-
-  std::unordered_map<string, int> cluster_arg_counts;
-  for (const Edge* edge : graph_->edges()) {
-    if (edge->IsControlEdge()) {
-      continue;
-    }
-    std::optional<absl::string_view> dst_cluster =
-        GetXlaClusterForNode(*edge->dst());
-    if (!dst_cluster) {
-      continue;
-    }
-    std::optional<absl::string_view> src_cluster =
-        GetXlaClusterForNode(*edge->src());
-    if (src_cluster && *src_cluster == *dst_cluster) {
-      continue;
-    }
-    cluster_arg_counts[string(*dst_cluster)]++;
-  }
-
-  for (const auto& cluster_name : cluster_names) {
-    LOG(INFO) << "[MFC][CLUSTER] name=" << cluster_name.second
-              << " num_args=" << cluster_arg_counts[cluster_name.second];
   }
 
   return absl::OkStatus();

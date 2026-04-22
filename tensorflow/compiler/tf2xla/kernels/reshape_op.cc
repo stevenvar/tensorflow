@@ -44,8 +44,9 @@ std::string FormatShapeWithExprs(const TensorShape& shape) {
     std::string dim = absl::StrCat(shape.dim_size(i));
     if (shape.get_filled_expression(i) &&
         shape.get_filled_expression(i)->is_dynamic()) {
+      xla::DExpr simplified = shape.get_filled_expression(i).simplify();
       std::ostringstream oss;
-      oss << shape.get_filled_expression(i).simplify();
+      oss << simplified.get();
       dim = absl::StrCat(dim, "<", oss.str(), ">");
     }
     dims.push_back(std::move(dim));

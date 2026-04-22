@@ -725,7 +725,7 @@ std::string ExprProtoToString(const ExpressionProto& e) {
 std::string SimplifiedExprProtoToString(const ExpressionProto& e) {
   xla::DExpr expr = DimExprToDExpr(ExprFromProto(e).get()).simplify();
   std::ostringstream oss;
-  oss << expr;
+  oss << expr.get();
   return oss.str();
 }
 

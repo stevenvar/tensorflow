@@ -25,6 +25,7 @@ limitations under the License.
 #include <optional>
 #include <regex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -695,6 +696,8 @@ absl::Status IgnoreResourceOpForSafetyAnalysis(
 // order)
 static std::map<std::string, std::vector<std::vector<std::unique_ptr<DimExpr>>>>
     expr_map;
+std::unique_ptr<DimExpr> ExprFromProto(const ExpressionProto& proto);
+static xla::DExpr DimExprToDExpr(const DimExpr* e);
 // Helper to convert ExpressionProto to a readable string.
 std::string ExprProtoToString(const ExpressionProto& e) {
   switch (e.node_type_case()) {
@@ -717,6 +720,34 @@ std::string ExprProtoToString(const ExpressionProto& e) {
     default:
       return "<none>";
   }
+}
+
+std::string SimplifiedExprProtoToString(const ExpressionProto& e) {
+  xla::DExpr expr = DimExprToDExpr(ExprFromProto(e).get()).simplify();
+  std::ostringstream oss;
+  oss << expr;
+  return oss.str();
+}
+
+std::string ShapeProtoWithExprsToString(const TensorShapeProto& shape) {
+  if (shape.unknown_rank()) {
+    return "<unknown>";
+  }
+  std::vector<std::string> dims;
+  dims.reserve(shape.dim_size());
+  for (int i = 0; i < shape.dim_size(); ++i) {
+    const auto& dim = shape.dim(i);
+    std::string dim_str = absl::StrCat(dim.size());
+    if (i < shape.expressions_size() &&
+        shape.expressions(i).node_type_case() !=
+            ExpressionProto::NODE_TYPE_NOT_SET) {
+      dim_str = absl::StrCat(dim_str, "<",
+                             SimplifiedExprProtoToString(shape.expressions(i)),
+                             ">");
+    }
+    dims.push_back(std::move(dim_str));
+  }
+  return absl::StrCat("[", absl::StrJoin(dims, ","), "]");
 }
 
 std::unique_ptr<DimExpr> ExprFromProto(const ExpressionProto& proto) {
@@ -872,6 +903,25 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
     if (node_it != node_name_index.end()) {
       node_it->second->AddAttr(kXlaInferredOutputTensorShapesAttrName,
                                inferred_output_shapes);
+      std::vector<std::string> inputs;
+      for (const Edge* edge : node_it->second->in_edges()) {
+        if (edge->IsControlEdge()) {
+          continue;
+        }
+        inputs.push_back(absl::StrCat(edge->dst_input(), ":",
+                                      edge->src()->name(), "(",
+                                      edge->src()->type_string(), ")"));
+      }
+      for (int out_idx = 0;
+           out_idx < static_cast<int>(inferred_output_shapes.size());
+           ++out_idx) {
+        LOG(INFO) << "[MFC][INFER] node=" << n.name()
+                  << " op=" << n.op()
+                  << " inputs=[" << absl::StrJoin(inputs, ", ") << "]"
+                  << " output=" << out_idx
+                  << " shape="
+                  << ShapeProtoWithExprsToString(inferred_output_shapes[out_idx]);
+      }
     }
 
   }

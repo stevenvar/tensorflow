@@ -100,6 +100,13 @@ class ReshapeOp : public OpKernel {
       }
       shape.set_dim(unknown_index, missing);
     }
+    if (shape.num_elements() != input.NumElements()) {
+      LOG(INFO) << "[TFRESHAPE][MISMATCH] node=" << context->op_kernel().name()
+                << " input_shape=" << input.shape().DebugString()
+                << " requested_shape=" << shape.DebugString()
+                << " input_elems=" << input.NumElements()
+                << " requested_elems=" << shape.num_elements();
+    }
     OP_REQUIRES(context, shape.num_elements() == input.NumElements(),
                 errors::InvalidArgument("Input to reshape is a tensor with ",
                                         input.NumElements(),

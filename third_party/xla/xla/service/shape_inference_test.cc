@@ -2835,10 +2835,9 @@ TEST_F(ShapeInferenceTest, BinOpBroadcastBadDimension) {
 }
 
 TEST_F(ShapeInferenceTest, BinOpPreservesBroadcastedExpressionSameRank) {
-  Shape lhs = ShapeUtil::MakeShape(F32, {1}, {true});
-  lhs.set_expression(0, DExpr::Const(1));
-  Shape rhs = ShapeUtil::MakeShape(F32, {1}, {true});
-  rhs.set_expression(0, DExpr::Var(1));
+  Shape lhs = ShapeUtil::MakeShape(F32, {1});
+  Shape rhs =
+      ShapeUtil::MakeShape(F32, {1}, std::vector<bool>{true}, {DExpr::Var(1)});
 
   const absl::StatusOr<Shape> inferred_shape =
       ShapeInference::InferBinaryOpShape(HloOpcode::kAdd, lhs, rhs, {0});

@@ -1916,7 +1916,7 @@ ShapeInference::InferScalarBroadcastShape(absl::Span<const Shape> shapes) {
 
   Shape output_shape_for_mean_and_var =
       ShapeUtil::MakeShape(operand_shape.element_type(), {feature_count},
-                           std::vector<bool>{dynamic_feature},
+                           {dynamic_feature},
                            feature_expressions);
 
   if (!CompatibleDimensionSizes(ShapeUtil::GetDimension(offset_shape, 0),
@@ -2204,8 +2204,7 @@ ShapeInference::InferScalarBroadcastShape(absl::Span<const Shape> shapes) {
   std::array<DExpr, 1> feature_expressions = {expression_feature};
 
   Shape feature_shape = ShapeUtil::MakeShape(
-      operand_shape.element_type(), {feature_count},
-      std::vector<bool>{dynamic_feature},
+      operand_shape.element_type(), {feature_count}, {dynamic_feature},
       feature_expressions);
 
   if (!CompatibleDimensionSizes(ShapeUtil::GetDimension(mean_shape, 0),

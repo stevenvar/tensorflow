@@ -1227,6 +1227,8 @@ void GenerateDotResultDimensions(
   if (mode == kContracting) {
     dimensions.push_back(num_groups);
     is_dynamic.push_back(is_dynamic_group_sizes);
+    expressions.push_back(is_dynamic_group_sizes ? DExpr::Unknown(70)
+                                                 : DExpr::Const(num_groups));
   }
   GenerateDotResultDimensions(lhs, rhs, dimension_numbers, dimensions,
                               expressions, is_dynamic, rhs_group_dimensions);

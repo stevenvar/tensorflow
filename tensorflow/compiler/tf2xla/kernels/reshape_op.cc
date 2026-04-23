@@ -16,11 +16,8 @@ limitations under the License.
 // XLA-specific reshape Op.
 
 #include <cstdint>
-#include <sstream>
 #include <vector>
 
-#include "absl/strings/str_cat.h"
-#include "absl/strings/str_join.h"
 #include "absl/log/log.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
@@ -36,23 +33,6 @@ limitations under the License.
 
 namespace tensorflow {
 namespace {
-
-std::string FormatShapeWithExprs(const TensorShape& shape) {
-  std::vector<std::string> dims;
-  dims.reserve(shape.dims());
-  for (int i = 0; i < shape.dims(); ++i) {
-    std::string dim = absl::StrCat(shape.dim_size(i));
-    if (shape.get_filled_expression(i) &&
-        shape.get_filled_expression(i)->is_dynamic()) {
-      xla::DExpr simplified = shape.get_filled_expression(i).simplify();
-      std::ostringstream oss;
-      oss << simplified.get();
-      dim = absl::StrCat(dim, "<", oss.str(), ">");
-    }
-    dims.push_back(std::move(dim));
-  }
-  return absl::StrCat("[", absl::StrJoin(dims, ","), "]");
-}
 
 class ReshapeOp : public XlaOpKernel {
  public:
@@ -197,13 +177,6 @@ class ReshapeOp : public XlaOpKernel {
       shape.set_expression(unknown_index, missing_expr.simplify());
     }
 
-    if (shape.num_elements() != input_shape.num_elements()) {
-      LOG(INFO) << "[RESHAPE][MISMATCH] node=" << ctx->op_kernel().name()
-                << " input_shape=" << FormatShapeWithExprs(input_shape)
-                << " requested_shape=" << FormatShapeWithExprs(shape)
-                << " input_elems=" << input_shape.num_elements()
-                << " requested_elems=" << shape.num_elements();
-    }
     OP_REQUIRES(ctx, shape.num_elements() == input_shape.num_elements(),
                 errors::InvalidArgument("Input to reshape is a tensor with ",
                                         input_shape.num_elements(),

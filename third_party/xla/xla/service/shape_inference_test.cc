@@ -5231,7 +5231,8 @@ TEST_F(ShapeInferenceTest, UnboundedDynamicSlice) {
       const Shape inferred_shape,
       ShapeInference::InferDynamicSliceShape(
           operand, /*start_index_shapes=*/{start_index, start_index},
-          /*slice_sizes=*/{2, 2}, /*allow_scalar_indices=*/true));
+          /*slice_sizes=*/{2, 2}, /*slice_exprs=*/{},
+          /*allow_scalar_indices=*/true));
   EXPECT_TRUE(ShapeUtil::Equal(inferred_shape, expected))
       << "inferred: " << ShapeUtil::HumanString(inferred_shape)
       << " expected: " << ShapeUtil::HumanString(expected);

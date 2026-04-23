@@ -1028,9 +1028,9 @@ TEST_F(ShapeInferenceTest, InferFftShapeTestFftRanks) {
 
 TEST_F(ShapeInferenceTest, InferFftShapeTestFftRanksBounded) {
   FftType type = FftType::FFT;
-  const Shape shape = ShapeUtil::MakeShape(
-      C64, {16, 8}, std::vector<bool>{false, true},
-      absl::Span<const DExpr>{});
+  const Shape shape = ShapeUtil::MakeShape(C64, std::vector<int64_t>{16, 8},
+                                           std::vector<bool>{false, true},
+                                           std::vector<DExpr>{});
   fft::Fail(shape, type, {}, fft::unsupported_rank);
   fft::Pass(shape, type, {8}, shape);
   fft::Pass(shape, type, {16, 8}, shape);
@@ -1058,9 +1058,9 @@ TEST_F(ShapeInferenceTest, InferFftShapeTestIfftRanks) {
 
 TEST_F(ShapeInferenceTest, InferFftShapeTestIfftRanksBounded) {
   FftType type = FftType::IFFT;
-  const Shape shape = ShapeUtil::MakeShape(
-      C64, {16, 8}, std::vector<bool>{false, true},
-      absl::Span<const DExpr>{});
+  const Shape shape = ShapeUtil::MakeShape(C64, std::vector<int64_t>{16, 8},
+                                           std::vector<bool>{false, true},
+                                           std::vector<DExpr>{});
   fft::Fail(shape, type, {}, fft::unsupported_rank);
   fft::Pass(shape, type, {8}, shape);
   fft::Pass(shape, type, {16, 8}, shape);
@@ -1107,11 +1107,13 @@ TEST_F(ShapeInferenceTest, InferFftShapeTestRfftDimensions) {
   fft::Pass(odd_shape_in, type, {16, 9}, shape_out);
 
   const Shape bounded_shape_in =
-      ShapeUtil::MakeShape(F32, {16, 8}, std::vector<bool>{false, true},
-                           absl::Span<const DExpr>{});
+      ShapeUtil::MakeShape(F32, std::vector<int64_t>{16, 8},
+                           std::vector<bool>{false, true},
+                           std::vector<DExpr>{});
   const Shape bounded_shape_out =
-      ShapeUtil::MakeShape(C64, {16, 5}, std::vector<bool>{false, true},
-                           absl::Span<const DExpr>{});
+      ShapeUtil::MakeShape(C64, std::vector<int64_t>{16, 5},
+                           std::vector<bool>{false, true},
+                           std::vector<DExpr>{});
   fft::Pass(bounded_shape_in, type, {16, 8}, bounded_shape_out);
 }
 
@@ -1153,11 +1155,13 @@ TEST_F(ShapeInferenceTest, InferFftShapeTestIrfftDimensions) {
   fft::Pass(shape, type, {16, 9}, odd_shape_out);
 
   const Shape bounded_shape_in =
-      ShapeUtil::MakeShape(C64, {16, 5}, std::vector<bool>{false, true},
-                           absl::Span<const DExpr>{});
+      ShapeUtil::MakeShape(C64, std::vector<int64_t>{16, 5},
+                           std::vector<bool>{false, true},
+                           std::vector<DExpr>{});
   const Shape bounded_shape_out =
-      ShapeUtil::MakeShape(F32, {16, 9}, std::vector<bool>{false, true},
-                           absl::Span<const DExpr>{});
+      ShapeUtil::MakeShape(F32, std::vector<int64_t>{16, 9},
+                           std::vector<bool>{false, true},
+                           std::vector<DExpr>{});
   fft::Pass(bounded_shape_in, type, {16, 9}, bounded_shape_out);
 }
 
@@ -1529,14 +1533,16 @@ TEST_F(ShapeInferenceTest, InferSliceShapeRank2) {
 
 TEST_F(ShapeInferenceTest, InferSliceWithDynamicDimensions) {
   const Shape matrix_shape =
-      ShapeUtil::MakeShape(F32, {128, 64}, std::vector<bool>{true, true},
-                           absl::Span<const DExpr>{});
+      ShapeUtil::MakeShape(F32, std::vector<int64_t>{128, 64},
+                           std::vector<bool>{true, true},
+                           std::vector<DExpr>{});
   const absl::StatusOr<Shape> inferred_shape =
       ShapeInference::InferSliceShape(matrix_shape, {32, 0}, {33, 64}, {1, 1});
   ASSERT_IS_OK(inferred_shape.status());
   ASSERT_TRUE(ShapeUtil::Equal(
-      ShapeUtil::MakeShape(F32, {1, 64}, std::vector<bool>{false, true},
-                           absl::Span<const DExpr>{}),
+      ShapeUtil::MakeShape(F32, std::vector<int64_t>{1, 64},
+                           std::vector<bool>{false, true},
+                           std::vector<DExpr>{}),
       *inferred_shape));
 }
 
@@ -1634,13 +1640,15 @@ TEST_F(ShapeInferenceTest, InferReshapeDegenerateCombine) {
   // [<=1]
   //
   // Both output dimension can be dynamic, use inferred_dimension to tie-break.
-  const Shape operand = ShapeUtil::MakeShape(
-      F32, {1, 1}, std::vector<bool>{false, true}, absl::Span<const DExpr>{});
+  const Shape operand = ShapeUtil::MakeShape(F32, std::vector<int64_t>{1, 1},
+                                             std::vector<bool>{false, true},
+                                             std::vector<DExpr>{});
   const auto status =
       ShapeInference::InferReshapeShape(operand, {1},
                                         /*inferred_dimension=*/-1);
-  ASSERT_EQ(ShapeUtil::MakeShape(F32, {1}, std::vector<bool>{true},
-                                 absl::Span<const DExpr>{}),
+  ASSERT_EQ(ShapeUtil::MakeShape(F32, std::vector<int64_t>{1},
+                                 std::vector<bool>{true},
+                                 std::vector<DExpr>{}),
             *status);
 }
 
@@ -1650,14 +1658,16 @@ TEST_F(ShapeInferenceTest, InferReshapeSplit) {
   // [1, 10]
   //
   // Both output dimension can be dynamic, use inferred_dimension to tie-break.
-  const Shape operand = ShapeUtil::MakeShape(
-      F32, {10}, std::vector<bool>{true}, absl::Span<const DExpr>{});
+  const Shape operand = ShapeUtil::MakeShape(F32, std::vector<int64_t>{10},
+                                             std::vector<bool>{true},
+                                             std::vector<DExpr>{});
   const auto status =
       ShapeInference::InferReshapeShape(operand, {1, 10},
                                         /*inferred_dimension=*/0);
   ASSERT_EQ(
-      ShapeUtil::MakeShape(F32, {1, 10}, std::vector<bool>{true, false},
-                           absl::Span<const DExpr>{}),
+      ShapeUtil::MakeShape(F32, std::vector<int64_t>{1, 10},
+                           std::vector<bool>{true, false},
+                           std::vector<DExpr>{}),
       *status);
 }
 
@@ -1665,14 +1675,15 @@ TEST_F(ShapeInferenceTest, InferReshapeCombine) {
   // [6, <=10]
   //   | reshape
   // [<=60]
-  const Shape operand = ShapeUtil::MakeShape(
-      F32, {6, 10}, std::vector<bool>{false, true},
-      absl::Span<const DExpr>{});
+  const Shape operand = ShapeUtil::MakeShape(F32, std::vector<int64_t>{6, 10},
+                                             std::vector<bool>{false, true},
+                                             std::vector<DExpr>{});
   const auto status =
       ShapeInference::InferReshapeShape(operand, {60},
                                         /*inferred_dimension=*/-11);
-  ASSERT_EQ(ShapeUtil::MakeShape(F32, {60}, std::vector<bool>{true},
-                                 absl::Span<const DExpr>{}),
+  ASSERT_EQ(ShapeUtil::MakeShape(F32, std::vector<int64_t>{60},
+                                 std::vector<bool>{true},
+                                 std::vector<DExpr>{}),
             *status);
 }
 
@@ -1680,15 +1691,15 @@ TEST_F(ShapeInferenceTest, UnchangedDimension) {
   // [6, <=10]
   //   | reshape
   // [2, 3, <=10]
-  const Shape operand = ShapeUtil::MakeShape(
-      F32, {6, 10}, std::vector<bool>{false, true},
-      absl::Span<const DExpr>{});
+  const Shape operand = ShapeUtil::MakeShape(F32, std::vector<int64_t>{6, 10},
+                                             std::vector<bool>{false, true},
+                                             std::vector<DExpr>{});
   const auto status =
       ShapeInference::InferReshapeShape(operand, {2, 3, 10},
                                         /*inferred_dimension=*/-11);
-  ASSERT_EQ(ShapeUtil::MakeShape(F32, {2, 3, 10},
+  ASSERT_EQ(ShapeUtil::MakeShape(F32, std::vector<int64_t>{2, 3, 10},
                                  std::vector<bool>{false, false, true},
-                                 absl::Span<const DExpr>{}),
+                                 std::vector<DExpr>{}),
             *status);
 }
 
@@ -1696,13 +1707,15 @@ TEST_F(ShapeInferenceTest, InferDynamicBroadcast) {
   // CHECK:
   // %broadcast = s32[15,<=15]{1,0} broadcast(s32[<=15]{0}), dimensions={1}
 
-  const Shape operand_shape = ShapeUtil::MakeShape(
-      F32, {15}, std::vector<bool>{true}, absl::Span<const DExpr>{});
+  const Shape operand_shape = ShapeUtil::MakeShape(F32, std::vector<int64_t>{15},
+                                                   std::vector<bool>{true},
+                                                   std::vector<DExpr>{});
   const absl::StatusOr<Shape> inferred_shape =
       ShapeInference::InferBroadcastShape(operand_shape, {15});
   ASSERT_IS_OK(inferred_shape.status());
-  ASSERT_EQ(ShapeUtil::MakeShape(F32, {15, 15}, std::vector<bool>{false, true},
-                                 absl::Span<const DExpr>{}),
+  ASSERT_EQ(ShapeUtil::MakeShape(F32, std::vector<int64_t>{15, 15},
+                                 std::vector<bool>{false, true},
+                                 std::vector<DExpr>{}),
             *inferred_shape);
 }
 
@@ -2904,21 +2917,21 @@ TEST_F(ShapeInferenceTest, WhileWithBadShapes) {
 // Tests for the concatenate instruction with dynamic shapes.
 TEST_F(ShapeInferenceTest, ConcatenateWithDynamicShapes) {
   const auto dynamic_shape_1 =
-      ShapeUtil::MakeShape(F32, {32, 160, 10},
+      ShapeUtil::MakeShape(F32, std::vector<int64_t>{32, 160, 10},
                            std::vector<bool>{true, false, false},
-                           absl::Span<const DExpr>{});
+                           std::vector<DExpr>{});
   const auto dynamic_shape_2 =
-      ShapeUtil::MakeShape(F32, {32, 160, 10},
+      ShapeUtil::MakeShape(F32, std::vector<int64_t>{32, 160, 10},
                            std::vector<bool>{false, true, false},
-                           absl::Span<const DExpr>{});
+                           std::vector<DExpr>{});
   const absl::StatusOr<Shape> inferred_shape =
       ShapeInference::InferConcatOpShape({&dynamic_shape_1, &dynamic_shape_2},
                                          /*dimension=*/0);
   ASSERT_IS_OK(inferred_shape.status());
   ASSERT_TRUE(ShapeUtil::Equal(
-      ShapeUtil::MakeShape(F32, {64, 160, 10},
+      ShapeUtil::MakeShape(F32, std::vector<int64_t>{64, 160, 10},
                            std::vector<bool>{true, true, false},
-                           absl::Span<const DExpr>{}),
+                           std::vector<DExpr>{}),
       *inferred_shape));
 }
 
@@ -3295,10 +3308,12 @@ TEST_F(ShapeInferenceTest, ConditionalIndexed) {
 
 TEST_F(ShapeInferenceTest, ConditionalDynamic) {
   const Shape r0s32 = ShapeUtil::MakeShape(S32, {});
-  const Shape static_shape = ShapeUtil::MakeShape(
-      S32, {4}, std::vector<bool>{false}, absl::Span<const DExpr>{});
-  const Shape dynamic_shape = ShapeUtil::MakeShape(
-      S32, {4}, std::vector<bool>{true}, absl::Span<const DExpr>{});
+  const Shape static_shape = ShapeUtil::MakeShape(S32, std::vector<int64_t>{4},
+                                                  std::vector<bool>{false},
+                                                  std::vector<DExpr>{});
+  const Shape dynamic_shape = ShapeUtil::MakeShape(S32, std::vector<int64_t>{4},
+                                                   std::vector<bool>{true},
+                                                   std::vector<DExpr>{});
   const absl::StatusOr<Shape> inferred_shape0 =
       ShapeInference::InferConditionalShape(
           r0s32,
@@ -3529,9 +3544,9 @@ TEST_F(GatherShapeInferenceTest, DynamicGatherEntireDimension) {
   TF_ASSERT_OK_AND_ASSIGN(
       const Shape gather_shape,
       ShapeInference::InferGatherShape(
-          ShapeUtil::MakeShape(F32, {3, 2, 1},
+          ShapeUtil::MakeShape(F32, std::vector<int64_t>{3, 2, 1},
                                std::vector<bool>{false, true, false},
-                               absl::Span<const DExpr>{}),
+                               std::vector<DExpr>{}),
           ShapeUtil::MakeShape(S64, {}),
           HloGatherInstruction::MakeGatherDimNumbers(
               /*offset_dims=*/{0, 1},
@@ -3541,8 +3556,9 @@ TEST_F(GatherShapeInferenceTest, DynamicGatherEntireDimension) {
           /*slice_sizes=*/{1, 2, 1}));
   EXPECT_TRUE(ShapeUtil::Equal(
       gather_shape,
-      ShapeUtil::MakeShape(F32, {2, 1}, std::vector<bool>{true, false},
-                           absl::Span<const DExpr>{})))
+      ShapeUtil::MakeShape(F32, std::vector<int64_t>{2, 1},
+                           std::vector<bool>{true, false},
+                           std::vector<DExpr>{})))
       << ShapeUtil::HumanString(gather_shape);
 }
 
@@ -3550,9 +3566,9 @@ TEST_F(GatherShapeInferenceTest, DynamicGatherCollapsedDimension) {
   TF_ASSERT_OK_AND_ASSIGN(
       const Shape gather_shape,
       ShapeInference::InferGatherShape(
-          ShapeUtil::MakeShape(F32, {3, 2, 1},
+          ShapeUtil::MakeShape(F32, std::vector<int64_t>{3, 2, 1},
                                std::vector<bool>{true, false, false},
-                               absl::Span<const DExpr>{}),
+                               std::vector<DExpr>{}),
           ShapeUtil::MakeShape(S64, {}),
           HloGatherInstruction::MakeGatherDimNumbers(
               /*offset_dims=*/{0, 1},
@@ -3562,8 +3578,9 @@ TEST_F(GatherShapeInferenceTest, DynamicGatherCollapsedDimension) {
           /*slice_sizes=*/{1, 2, 1}));
   EXPECT_TRUE(ShapeUtil::Equal(
       gather_shape,
-      ShapeUtil::MakeShape(F32, {2, 1}, std::vector<bool>{false, false},
-                           absl::Span<const DExpr>{})))
+      ShapeUtil::MakeShape(F32, std::vector<int64_t>{2, 1},
+                           std::vector<bool>{false, false},
+                           std::vector<DExpr>{})))
       << ShapeUtil::HumanString(gather_shape);
 }
 
@@ -3572,9 +3589,9 @@ TEST_F(GatherShapeInferenceTest, DynamicIndices) {
       const Shape gather_shape,
       ShapeInference::InferGatherShape(
           ShapeUtil::MakeShape(F32, {3, 2, 2}),
-          ShapeUtil::MakeShape(S64, {3, 4, 2},
+          ShapeUtil::MakeShape(S64, std::vector<int64_t>{3, 4, 2},
                                std::vector<bool>{false, true, false},
-                               absl::Span<const DExpr>{}),
+                               std::vector<DExpr>{}),
           HloGatherInstruction::MakeGatherDimNumbers(
               /*offset_dims=*/{2, 3},
               /*collapsed_slice_dims=*/{0},
@@ -3583,9 +3600,9 @@ TEST_F(GatherShapeInferenceTest, DynamicIndices) {
           /*slice_sizes=*/{1, 2, 2}));
   EXPECT_TRUE(ShapeUtil::Equal(
       gather_shape,
-      ShapeUtil::MakeShape(F32, {3, 4, 2, 2},
+      ShapeUtil::MakeShape(F32, std::vector<int64_t>{3, 4, 2, 2},
                            std::vector<bool>{false, true, false, false},
-                           absl::Span<const DExpr>{})))
+                           std::vector<DExpr>{})))
       << ShapeUtil::HumanString(gather_shape);
 }
 

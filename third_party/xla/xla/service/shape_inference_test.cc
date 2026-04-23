@@ -5574,7 +5574,8 @@ TEST_F(ShapeInferenceTest, UnboundedReshape) {
   TF_ASSERT_OK_AND_ASSIGN(const Shape expected, ParseShape("f32[2,3]"));
   TF_ASSERT_OK_AND_ASSIGN(
       const Shape inferred,
-      ShapeInference::InferReshapeShape(operand, /*dimensions=*/{2, 3}, -1));
+      ShapeInference::InferReshapeShape(operand, /*dimensions=*/{2, 3}, -1,
+                                        /*expressions=*/{}));
   ASSERT_TRUE(ShapeUtil::Equal(inferred, expected))
       << "inferred: " << ShapeUtil::HumanString(inferred)
       << " expected: " << ShapeUtil::HumanString(expected);

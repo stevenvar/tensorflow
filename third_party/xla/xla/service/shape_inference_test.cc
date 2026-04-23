@@ -1645,7 +1645,8 @@ TEST_F(ShapeInferenceTest, InferReshapeDegenerateCombine) {
                                              std::vector<DExpr>{});
   const auto status =
       ShapeInference::InferReshapeShape(operand, {1},
-                                        /*inferred_dimension=*/-1);
+                                        /*inferred_dimension=*/-1,
+                                        /*expressions=*/{});
   ASSERT_EQ(ShapeUtil::MakeShape(F32, std::vector<int64_t>{1},
                                  std::vector<bool>{true},
                                  std::vector<DExpr>{}),
@@ -1663,7 +1664,8 @@ TEST_F(ShapeInferenceTest, InferReshapeSplit) {
                                              std::vector<DExpr>{});
   const auto status =
       ShapeInference::InferReshapeShape(operand, {1, 10},
-                                        /*inferred_dimension=*/0);
+                                        /*inferred_dimension=*/0,
+                                        /*expressions=*/{});
   ASSERT_EQ(
       ShapeUtil::MakeShape(F32, std::vector<int64_t>{1, 10},
                            std::vector<bool>{true, false},
@@ -1680,7 +1682,8 @@ TEST_F(ShapeInferenceTest, InferReshapeCombine) {
                                              std::vector<DExpr>{});
   const auto status =
       ShapeInference::InferReshapeShape(operand, {60},
-                                        /*inferred_dimension=*/-11);
+                                        /*inferred_dimension=*/-11,
+                                        /*expressions=*/{});
   ASSERT_EQ(ShapeUtil::MakeShape(F32, std::vector<int64_t>{60},
                                  std::vector<bool>{true},
                                  std::vector<DExpr>{}),
@@ -1696,7 +1699,8 @@ TEST_F(ShapeInferenceTest, UnchangedDimension) {
                                              std::vector<DExpr>{});
   const auto status =
       ShapeInference::InferReshapeShape(operand, {2, 3, 10},
-                                        /*inferred_dimension=*/-11);
+                                        /*inferred_dimension=*/-11,
+                                        /*expressions=*/{});
   ASSERT_EQ(ShapeUtil::MakeShape(F32, std::vector<int64_t>{2, 3, 10},
                                  std::vector<bool>{false, false, true},
                                  std::vector<DExpr>{}),
@@ -5639,7 +5643,8 @@ TEST_F(ShapeInferenceTest, UnboundedReshapeUnsupportedOutputShape) {
   const absl::StatusOr<Shape> inferred_shape =
       ShapeInference::InferReshapeShape(
           operand,
-          /*dimensions=*/{Shape::kUnboundedSize, Shape::kUnboundedSize}, -1);
+          /*dimensions=*/{Shape::kUnboundedSize, Shape::kUnboundedSize}, -1,
+          /*expressions=*/{});
   EXPECT_THAT(
       inferred_shape.status().message(),
       HasSubstr("Reshaping with unbounded result shape is not supported."));
@@ -5649,7 +5654,8 @@ TEST_F(ShapeInferenceTest, UnboundedReshapeUnsupportedMixOfDynamism) {
   TF_ASSERT_OK_AND_ASSIGN(const Shape operand, ParseShape("f32[?, <=3]"));
   TF_ASSERT_OK_AND_ASSIGN(const Shape expected, ParseShape("f32[<=3]"));
   const absl::StatusOr<Shape> inferred_shape =
-      ShapeInference::InferReshapeShape(operand, /*dimensions=*/{3}, -1);
+      ShapeInference::InferReshapeShape(operand, /*dimensions=*/{3}, -1,
+                                        /*expressions=*/{});
   ASSERT_THAT(inferred_shape.status().message(),
               HasSubstr("Reshape operand with bounded and unbounded dynamism "
                         "not supported."));

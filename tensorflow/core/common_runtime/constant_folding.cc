@@ -966,6 +966,12 @@ bool ReplaceTensorWithConstant(
                                ? DeviceType{partition_device->device_type()}
                                : DEVICE_CPU;
   if (partition_device && device_type != DEVICE_CPU) {
+    // Constant folding replaces one output edge-set at a time. Be
+    // conservative for non-CPU multi-output ops, since partially replacing a
+    // node can violate per-output placement or memory-type assumptions.
+    if (tensor.first->num_outputs() > 1) {
+      return false;
+    }
     MemoryTypeVector input_mvec;
     MemoryTypeVector output_mvec;
     if (!MemoryTypesForNode(graph->op_registry(), device_type,

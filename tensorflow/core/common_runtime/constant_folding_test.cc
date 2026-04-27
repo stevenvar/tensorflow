@@ -680,7 +680,7 @@ TEST_F(ConstantFoldingTest, FoldShapeFromDynamicArgPreservesContents) {
   // Shape(arg), the replacement Const still carries symbolic contents.
   string serialized_contents_proto;
   TF_ASSERT_OK(GetNodeAttr(folded->attrs(),
-                           "_user_inferred_value_contents_serialized",
+                           "_user_inferred_value_contents",
                            &serialized_contents_proto));
   TensorShapeProto contents_proto;
   ASSERT_TRUE(contents_proto.ParseFromString(serialized_contents_proto));
@@ -729,7 +729,7 @@ TEST_F(ConstantFoldingTest, FoldSliceOfDynamicShapePreservesContents) {
   // content, not just the concrete value 977.
   string serialized_contents_proto;
   TF_ASSERT_OK(GetNodeAttr(folded->attrs(),
-                           "_user_inferred_value_contents_serialized",
+                           "_user_inferred_value_contents",
                            &serialized_contents_proto));
   TensorShapeProto contents_proto;
   ASSERT_TRUE(contents_proto.ParseFromString(serialized_contents_proto));
@@ -776,7 +776,7 @@ TEST_F(ConstantFoldingTest, FoldGatherOfDynamicShapePreservesContents) {
   // symbolic content, not just the concrete scalar value 977.
   string serialized_contents_proto;
   TF_ASSERT_OK(GetNodeAttr(folded->attrs(),
-                           "_user_inferred_value_contents_serialized",
+                           "_user_inferred_value_contents",
                            &serialized_contents_proto));
   TensorShapeProto contents_proto;
   ASSERT_TRUE(contents_proto.ParseFromString(serialized_contents_proto));
@@ -826,7 +826,7 @@ TEST_F(ConstantFoldingTest, FoldReshapeOfDynamicShapePreservesContents) {
   // selected symbolic content when the shape-vector result is scalarized.
   string serialized_contents_proto;
   TF_ASSERT_OK(GetNodeAttr(folded->attrs(),
-                           "_user_inferred_value_contents_serialized",
+                           "_user_inferred_value_contents",
                            &serialized_contents_proto));
   TensorShapeProto contents_proto;
   ASSERT_TRUE(contents_proto.ParseFromString(serialized_contents_proto));

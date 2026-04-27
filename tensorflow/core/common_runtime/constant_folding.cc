@@ -55,12 +55,6 @@ const char kScopedAllocatorAttrName[] = "_scoped_allocator";
 const char kXlaShapeDerivedAttrName[] = "_xla_shape_derived";
 const char kUserInferredValueContentsAttrName[] =
     "_user_inferred_value_contents";
-const char kUserInferredValueContentsSerializedAttrName[] =
-    "_user_inferred_value_contents_serialized";
-const char kLegacyUserInferredValueContentsAttrName[] =
-    "user_inferred_value_contents";
-const char kLegacyUserInferredValueContentsSerializedAttrName[] =
-    "user_inferred_value_contents_serialized";
 
 bool IsShapeOp(const Node* n);
 
@@ -91,10 +85,7 @@ bool GetShapeFromDirectDynamicSource(const Node* node,
 bool TryParseSerializedContentsAttr(const AttrSlice& attrs,
                                     TensorShapeProto* out_contents) {
   string serialized_contents;
-  if (!GetNodeAttr(attrs, kUserInferredValueContentsSerializedAttrName,
-                   &serialized_contents)
-           .ok() &&
-      !GetNodeAttr(attrs, kLegacyUserInferredValueContentsSerializedAttrName,
+  if (!GetNodeAttr(attrs, kUserInferredValueContentsAttrName,
                    &serialized_contents)
            .ok()) {
     return false;
@@ -105,15 +96,7 @@ bool TryParseSerializedContentsAttr(const AttrSlice& attrs,
 
 bool TryGetContentsProtoAttr(const AttrSlice& attrs,
                              TensorShapeProto* out_contents) {
-  if (TryParseSerializedContentsAttr(attrs, out_contents)) {
-    return true;
-  }
-  if (GetNodeAttr(attrs, kUserInferredValueContentsAttrName, out_contents).ok()) {
-    return true;
-  }
-  return GetNodeAttr(attrs, kLegacyUserInferredValueContentsAttrName,
-                     out_contents)
-      .ok();
+  return TryParseSerializedContentsAttr(attrs, out_contents);
 }
 
 bool HasTransitiveDynamicShapeContents(
@@ -942,7 +925,7 @@ void AddShapeNodeToConstantGraph(
           .Attr("user_inferred_shape", user_inferred_shape);
     }
     if (has_exact_contents && HasDynamicDimExprs(exact_contents)) {
-      builder.Attr(kUserInferredValueContentsSerializedAttrName,
+      builder.Attr(kUserInferredValueContentsAttrName,
                    exact_contents.SerializeAsString());
     }
     NodeDef def;
@@ -1100,7 +1083,7 @@ bool ReplaceTensorWithConstant(
   }
   if (has_exact_contents && HasDynamicDimExprs(exact_contents)) {
     builder.Attr("has_dynamic", true)
-        .Attr(kUserInferredValueContentsSerializedAttrName,
+        .Attr(kUserInferredValueContentsAttrName,
               exact_contents.SerializeAsString());
   }
   if (partition_device) {

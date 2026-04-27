@@ -37,12 +37,6 @@ namespace {
 
 constexpr char kUserInferredValueContentsAttrName[] =
     "_user_inferred_value_contents";
-constexpr char kUserInferredValueContentsSerializedAttrName[] =
-    "_user_inferred_value_contents_serialized";
-constexpr char kLegacyUserInferredValueContentsAttrName[] =
-    "user_inferred_value_contents";
-constexpr char kLegacyUserInferredValueContentsSerializedAttrName[] =
-    "user_inferred_value_contents_serialized";
 
 template <typename DstT, typename SrcT>
 DstT CastTo(SrcT src) {
@@ -269,27 +263,12 @@ class ConstOp : public XlaOpKernel {
                     &inferred_shape_proto)
             .ok()) {
     }
-    if (GetNodeAttr(ctx->op_kernel().def(),
-                    kUserInferredValueContentsSerializedAttrName,
-                    &inferred_value_contents_serialized)
-            .ok() ||
-        GetNodeAttr(ctx->op_kernel().def(),
-                    kLegacyUserInferredValueContentsSerializedAttrName,
+    if (GetNodeAttr(ctx->op_kernel().def(), kUserInferredValueContentsAttrName,
                     &inferred_value_contents_serialized)
             .ok()) {
       if (!inferred_value_contents_proto.ParseFromString(
               inferred_value_contents_serialized)) {
         inferred_value_contents_proto.Clear();
-      }
-    } else {
-      GetNodeAttr(ctx->op_kernel().def(), kUserInferredValueContentsAttrName,
-                  &inferred_value_contents_proto)
-          .IgnoreError();
-      if (inferred_value_contents_proto.dim_size() == 0) {
-        GetNodeAttr(ctx->op_kernel().def(),
-                    kLegacyUserInferredValueContentsAttrName,
-                    &inferred_value_contents_proto)
-            .IgnoreError();
       }
     }
     const bool has_contents_proto = inferred_value_contents_proto.dim_size() > 0;

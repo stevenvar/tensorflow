@@ -253,24 +253,19 @@ class ConstOp : public XlaOpKernel {
     bool has_dynamic = false;
     TensorShapeProto inferred_shape_proto;
     TensorShapeProto inferred_value_contents_proto;
-    string inferred_value_contents_serialized;
     if (GetNodeAttr(ctx->op_kernel().def(), "has_dynamic", &has_dynamic).ok() &&
         has_dynamic &&
         GetNodeAttr(ctx->op_kernel().def(), "user_inferred_shape",
                     &inferred_shape_proto)
             .ok()) {
+      VLOG(1) << "ConstOp recovered dynamic folded-const metadata with "
+                << "inferred_shape=" << inferred_shape_proto.DebugString()
+                << " dynamic_exprs="
+                << CountDynamicShapeContents(inferred_shape_proto);
     }
-    if (GetNodeAttr(ctx->op_kernel().def(),
-                    "user_inferred_value_contents_serialized",
-                    &inferred_value_contents_serialized)
-            .ok()) {
-      inferred_value_contents_proto.ParseFromString(
-          inferred_value_contents_serialized);
-    } else {
-      GetNodeAttr(ctx->op_kernel().def(), "user_inferred_value_contents",
-                  &inferred_value_contents_proto)
-          .IgnoreError();
-    }
+    GetNodeAttr(ctx->op_kernel().def(), "user_inferred_value_contents",
+                &inferred_value_contents_proto)
+        .IgnoreError();
     const bool has_contents_proto = inferred_value_contents_proto.dim_size() > 0;
     const TensorShapeProto& contents_proto =
         has_contents_proto ? inferred_value_contents_proto : inferred_shape_proto;
@@ -292,6 +287,10 @@ class ConstOp : public XlaOpKernel {
             XlaExpression::XlaOp(broadcast, ctx->expected_output_dtype(0));
         if ((has_contents_proto || has_dynamic) &&
             CanAttachContentsFromTensorShapeProto(shape, contents_proto)) {
+          VLOG(1) << "ConstOp attaching shape contents through broadcast fast "
+                    << "path with " << shape.num_elements()
+                    << " entries and dynamic_exprs="
+                    << CountDynamicShapeContents(contents_proto);
           output.set_contents(
               BuildShapeContentsFromTensorShapeProto(contents_proto));
         }
@@ -304,9 +303,17 @@ class ConstOp : public XlaOpKernel {
     OP_REQUIRES(ctx, tensor.FromProto(cpu_allocator(), proto_),
                 errors::InvalidArgument("Cannot parse tensor from proto: ",
                                         proto_.DebugString()));
+    if (has_contents_proto || has_dynamic) {
+      VLOG(1) << "ConstOp tensor path tensor_shape="
+                << tensor.shape().DebugString() << " inferred_rank="
+                << contents_proto.dim_size();
+    }
     XlaExpression output = XlaExpression::Constant(tensor);
     if ((has_contents_proto || has_dynamic) &&
         CanAttachContentsFromTensorShapeProto(tensor.shape(), contents_proto)) {
+      VLOG(1) << "ConstOp attaching shape contents to folded const with "
+                << tensor.NumElements() << " entries and dynamic_exprs="
+                << CountDynamicShapeContents(contents_proto);
       output.set_contents(
           BuildShapeContentsFromTensorShapeProto(contents_proto));
     }

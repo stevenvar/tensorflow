@@ -101,6 +101,14 @@ limitations under the License.
 namespace tensorflow {
 
 namespace {
+constexpr char kUserInferredValueContentsAttrName[] =
+    "_user_inferred_value_contents";
+constexpr char kUserInferredValueContentsSerializedAttrName[] =
+    "_user_inferred_value_contents_serialized";
+constexpr char kLegacyUserInferredValueContentsAttrName[] =
+    "user_inferred_value_contents";
+constexpr char kLegacyUserInferredValueContentsSerializedAttrName[] =
+    "user_inferred_value_contents_serialized";
 using XlaDeviceCompiler =
     DeviceCompiler<xla::LocalExecutable, xla::LocalClient>;
 using PjRtDeviceCompiler =
@@ -555,9 +563,17 @@ absl::Status CompileToLocalExecutable(
 
           auto inferred_shape_it = attr_map.find("user_inferred_shape");
           auto inferred_contents_it =
-              attr_map.find("user_inferred_value_contents");
+              attr_map.find(kUserInferredValueContentsAttrName);
+          if (inferred_contents_it == attr_map.end()) {
+            inferred_contents_it =
+                attr_map.find(kLegacyUserInferredValueContentsAttrName);
+          }
           auto inferred_contents_serialized_it =
-              attr_map.find("user_inferred_value_contents_serialized");
+              attr_map.find(kUserInferredValueContentsSerializedAttrName);
+          if (inferred_contents_serialized_it == attr_map.end()) {
+            inferred_contents_serialized_it =
+                attr_map.find(kLegacyUserInferredValueContentsSerializedAttrName);
+          }
           bool has_dynamic = false;
           auto has_dynamic_it = attr_map.find("has_dynamic");
           if (has_dynamic_it != attr_map.end()) {
@@ -572,8 +588,10 @@ absl::Status CompileToLocalExecutable(
 
           TensorShapeProto inferred_shape_proto;
           if (inferred_contents_serialized_it != attr_map.end()) {
-            inferred_shape_proto.ParseFromString(
-                inferred_contents_serialized_it->second.s());
+            if (!inferred_shape_proto.ParseFromString(
+                    inferred_contents_serialized_it->second.s())) {
+              return;
+            }
           } else if (inferred_contents_it != attr_map.end()) {
             inferred_shape_proto = inferred_contents_it->second.shape();
           } else {

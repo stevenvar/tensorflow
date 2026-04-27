@@ -53,8 +53,13 @@ namespace {
 
 const char kScopedAllocatorAttrName[] = "_scoped_allocator";
 const char kXlaShapeDerivedAttrName[] = "_xla_shape_derived";
-const char kUserInferredValueContentsAttrName[] = "user_inferred_value_contents";
+const char kUserInferredValueContentsAttrName[] =
+    "_user_inferred_value_contents";
 const char kUserInferredValueContentsSerializedAttrName[] =
+    "_user_inferred_value_contents_serialized";
+const char kLegacyUserInferredValueContentsAttrName[] =
+    "user_inferred_value_contents";
+const char kLegacyUserInferredValueContentsSerializedAttrName[] =
     "user_inferred_value_contents_serialized";
 
 bool IsShapeOp(const Node* n);
@@ -81,6 +86,72 @@ bool GetShapeFromDirectDynamicSource(const Node* node,
   return (IsShapeOp(node) ||
           node->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) &&
          GetShapeFromArgNode(node, out_shape);
+}
+
+bool TryParseSerializedContentsAttr(const AttrSlice& attrs,
+                                    TensorShapeProto* out_contents) {
+  string serialized_contents;
+  if (!GetNodeAttr(attrs, kUserInferredValueContentsSerializedAttrName,
+                   &serialized_contents)
+           .ok() &&
+      !GetNodeAttr(attrs, kLegacyUserInferredValueContentsSerializedAttrName,
+                   &serialized_contents)
+           .ok()) {
+    return false;
+  }
+  out_contents->Clear();
+  return out_contents->ParseFromString(serialized_contents);
+}
+
+bool TryGetContentsProtoAttr(const AttrSlice& attrs,
+                             TensorShapeProto* out_contents) {
+  if (TryParseSerializedContentsAttr(attrs, out_contents)) {
+    return true;
+  }
+  if (GetNodeAttr(attrs, kUserInferredValueContentsAttrName, out_contents).ok()) {
+    return true;
+  }
+  return GetNodeAttr(attrs, kLegacyUserInferredValueContentsAttrName,
+                     out_contents)
+      .ok();
+}
+
+bool HasTransitiveDynamicShapeContents(
+    const Node* node, std::unordered_map<const Node*, bool>* memo) {
+  auto it = memo->find(node);
+  if (it != memo->end()) {
+    return it->second;
+  }
+
+  TensorShapeProto contents_proto;
+  if (TryGetContentsProtoAttr(node->attrs(), &contents_proto) &&
+      HasDynamicDimExprs(contents_proto)) {
+    return (*memo)[node] = true;
+  }
+
+  bool has_dynamic = false;
+  TensorShapeProto inferred_shape_proto;
+  if (GetNodeAttr(node->attrs(), "has_dynamic", &has_dynamic).ok() &&
+      has_dynamic &&
+      GetNodeAttr(node->attrs(), "user_inferred_shape", &inferred_shape_proto)
+          .ok() &&
+      HasDynamicDimExprs(inferred_shape_proto)) {
+    return (*memo)[node] = true;
+  }
+
+  if (GetShapeFromDirectDynamicSource(node, &inferred_shape_proto) ||
+      node->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr) {
+    return (*memo)[node] = true;
+  }
+
+  for (const Edge* edge : node->in_edges()) {
+    if (edge->IsControlEdge()) continue;
+    if (HasTransitiveDynamicShapeContents(edge->src(), memo)) {
+      return (*memo)[node] = true;
+    }
+  }
+
+  return (*memo)[node] = false;
 }
 
 bool GetConstTensor(const Node* node, Tensor* tensor) {
@@ -192,18 +263,12 @@ bool TryGetFoldedValueContents(const Node* node, int output_index,
     return false;
   }
 
-  string serialized_contents;
-  if (GetNodeAttr(node->attrs(), kUserInferredValueContentsSerializedAttrName,
-                  &serialized_contents)
-          .ok() &&
-      out_contents->ParseFromString(serialized_contents)) {
+  if (TryParseSerializedContentsAttr(node->attrs(), out_contents)) {
     return true;
   }
 
   TensorShapeProto existing_contents;
-  if (GetNodeAttr(node->attrs(), kUserInferredValueContentsAttrName,
-                  &existing_contents)
-          .ok()) {
+  if (TryGetContentsProtoAttr(node->attrs(), &existing_contents)) {
     *out_contents = existing_contents;
     return true;
   }
@@ -643,11 +708,15 @@ bool IsConstantFoldable(
     std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map) {
   TensorShapeProto exact_contents;
   const bool has_exact_contents = TryGetFoldedValueContents(n, 0, &exact_contents);
-  const bool has_dynamic =
-      GetShapeFromDirectDynamicSource(n, &exact_contents);
+  TensorShapeProto dynamic_shape;
+  const bool has_dynamic = GetShapeFromDirectDynamicSource(n, &dynamic_shape);
   const bool is_shape_derived =
       n->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr;
-  if ((has_dynamic || is_shape_derived) && (!has_exact_contents || n->num_outputs() > 1)) {
+  std::unordered_map<const Node*, bool> dynamic_contents_memo;
+  const bool has_transitive_dynamic_contents =
+      HasTransitiveDynamicShapeContents(n, &dynamic_contents_memo);
+  if ((has_dynamic || is_shape_derived || has_transitive_dynamic_contents) &&
+      (!has_exact_contents || n->num_outputs() > 1)) {
     return false;
   }
   if (n->IsConstant()) {

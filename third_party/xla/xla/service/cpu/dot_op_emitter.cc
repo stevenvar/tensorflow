@@ -124,22 +124,19 @@ bool CanEmitTiledLlvmIrGemm(
     const TargetMachineFeatures& target_machine_features) {
   CHECK(IsAlignedGemm(dot_info, target_machine_features));
 
-  if (ShouldUseMultiThreadedEigen(config)) {
-    return false;
-  }
-
   int m = dot_info.result_shape.dimensions(0);
   int k = dot_info.lhs_shape.dimensions(
       dot_info.dim_nums.lhs_contracting_dimensions(0));
   int n = dot_info.result_shape.dimensions(1);
 
-  if (!options::ForceEnableExperimentalLlvmIrGemm(config)) {
-    // TODO(sanjoy):  We should make these numbers micro-arch specific.
-    bool small_gemm =
-        k <= 128 && ((m <= 32 && n <= 128) || (m <= 128 && n <= 32));
-    if (!small_gemm) {
-      return false;
-    }
+  bool force_tiled_llvm = options::ForceEnableExperimentalLlvmIrGemm(config);
+  // Keep the existing heuristic for which GEMMs are worth lowering to the
+  // tiled LLVM path, but allow those small GEMMs even when multi-threaded
+  // Eigen is enabled since the Eigen runtime overhead can dominate here.
+  bool small_gemm =
+      k <= 128 && ((m <= 32 && n <= 128) || (m <= 128 && n <= 32));
+  if (!force_tiled_llvm && !small_gemm) {
+    return false;
   }
 
   bool lhs_canonical = dot_info.dim_nums.lhs_contracting_dimensions(0) == 1;

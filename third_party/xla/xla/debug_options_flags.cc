@@ -101,6 +101,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_cpu_use_acl(true);
 #endif
   opts.set_xla_cpu_use_fusion_emitters(true);
+  opts.set_xla_cpu_disable_instruction_fusion(false);
   opts.set_xla_cpu_use_thunk_runtime(true);
   opts.set_xla_cpu_use_xnnpack(false);
   opts.set_xla_compile_batch_sizes("");
@@ -985,6 +986,11 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
                 debug_options->xla_cpu_use_fusion_emitters(),
                 "Use fusion emitters for code generation in the CPU backend. "
                 "Note: only works with --xla_cpu_use_thunk_runtime=true."));
+  flag_list->push_back(tsl::Flag(
+      "xla_cpu_disable_instruction_fusion",
+      bool_setter_for(&DebugOptions::set_xla_cpu_disable_instruction_fusion),
+      debug_options->xla_cpu_disable_instruction_fusion(),
+      "Skip the CpuInstructionFusion HLO pass in the CPU backend."));
   flag_list->push_back(
       tsl::Flag("xla_cpu_use_thunk_runtime",
                 bool_setter_for(&DebugOptions::set_xla_cpu_use_thunk_runtime),

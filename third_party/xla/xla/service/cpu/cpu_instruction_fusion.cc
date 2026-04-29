@@ -143,6 +143,13 @@ FusionDecision CpuInstructionFusion::ShouldFuse(HloInstruction* consumer,
         "Don't fuse instructions from custom fusions/calls");
   }
 
+  if (consumer->GetModule()
+          ->config()
+          .debug_options()
+          .xla_cpu_disable_instruction_fusion()) {
+    return FusionDecision::Forbid("CPU instruction fusion disabled by flag.");
+  }
+
   HloInstruction* producer = consumer->mutable_operand(operand_index);
   VLOG(2) << "Considering for fusion: operand " << operand_index << " of "
           << consumer->ToString();

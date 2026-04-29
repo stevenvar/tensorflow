@@ -883,9 +883,7 @@ absl::Status CpuCompiler::RunHloPassesAfterLayoutAssn(
   }
 
   // Add a fusion pass now that layout assignment is done.
-  if (!debug_options.xla_cpu_disable_instruction_fusion()) {
-    pipeline.AddPass<CpuInstructionFusion>();
-  }
+  pipeline.AddPass<CpuInstructionFusion>();
   if (is_fusion_emitters) {
     pipeline.AddPass<FusionWrapper>();
   }

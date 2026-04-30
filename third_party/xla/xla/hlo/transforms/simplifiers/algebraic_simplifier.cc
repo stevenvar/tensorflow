@@ -1969,7 +1969,8 @@ absl::Status AlgebraicSimplifierVisitor::HandleConcatenate(
     bool can_reassociate = true;
     for (HloInstruction* operand : operands) {
       if (operand->opcode() != HloOpcode::kBitcast ||
-          operand->operand(0)->shape().rank() != 2 || operand->shape().rank() != 2 ||
+          operand->operand(0)->shape().dimensions_size() != 2 ||
+          operand->shape().dimensions_size() != 2 ||
           !ShapeUtil::SameElementType(operand->operand(0)->shape(),
                                       operand->shape())) {
         can_reassociate = false;

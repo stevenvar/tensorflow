@@ -215,7 +215,7 @@ message DebugOptions {
 
   // If set, XLA:CPU uses "fusion emitters" for codegen.
   bool xla_cpu_use_fusion_emitters = 376;
-  bool xla_cpu_reassociate_concatenate_of_bitcasts = 377;
+  bool xla_cpu_reassociate_concatenate_of_bitcasts = 401;
 
   // If set, XLA:CPU skips the CpuInstructionFusion HLO pass entirely.
   bool xla_cpu_disable_instruction_fusion = 400;

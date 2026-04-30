@@ -80,6 +80,10 @@ struct MarkForCompilationPassFlags {
   // Enables global JIT compilation for CPU via SessionOptions.
   bool tf_xla_cpu_global_jit;
 
+  // If true, skip auto-clustering of bookkeeping-heavy CPU ops such as
+  // gather/pad/reshape/concat style feature-materialization nodes.
+  bool tf_xla_cpu_disable_bookkeeping_clustering;
+
   // "Compiler fuel" for clustering.  Only this many ops will be marked as
   // eligible for clustering.
   int64_t tf_xla_clustering_fuel;

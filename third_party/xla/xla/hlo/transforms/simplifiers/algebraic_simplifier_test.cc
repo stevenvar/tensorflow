@@ -4060,6 +4060,32 @@ TEST_F(AlgebraicSimplifierTest, SimplifyConcatenateOfSlices) {
                        ShapeUtil::MakeShape(F32, {50, 20})));
 }
 
+TEST_F(AlgebraicSimplifierTest, ReassociateConcatenateOfBitcasts) {
+  const char* hlo_string = R"(
+HloModule module
+
+ENTRY %entry {
+  %param0 = f32[92,840]{1,0} parameter(0)
+  %param1 = f32[92,1680]{1,0} parameter(1)
+  %bitcast0 = f32[6440,12]{1,0} bitcast(%param0)
+  %bitcast1 = f32[6440,24]{1,0} bitcast(%param1)
+  ROOT %concat = f32[6440,36]{1,0} concatenate(%bitcast0, %bitcast1),
+    dimensions={1}
+})";
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          ParseAndReturnVerifiedModule(hlo_string));
+
+  AlgebraicSimplifier simplifier(default_options_);
+  ASSERT_TRUE(simplifier.Run(module.get()).value());
+
+  Shape concat_shape = ShapeUtil::MakeShape(F32, {92, 2520});
+  EXPECT_THAT(
+      module->entry_computation()->root_instruction(),
+      GmockMatch(m::Bitcast(
+          m::Concatenate(m::Parameter(0), m::Parameter(1))
+              .WithShapeEqualTo(&concat_shape))));
+}
+
 // Test that a simplification which changes layouts is not performed if layout
 // sensitive is true.
 TEST_F(AlgebraicSimplifierTest, CopyWithDifferentLayout) {

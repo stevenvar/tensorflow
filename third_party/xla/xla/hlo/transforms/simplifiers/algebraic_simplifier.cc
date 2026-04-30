@@ -1953,6 +1953,70 @@ absl::Status AlgebraicSimplifierVisitor::HandleConcatenate(
     return absl::OkStatus();
   }
 
+  // Re-associate 2D feature packing patterns of the form
+  //   concatenate(bitcast(x), bitcast(y), ...)
+  // into
+  //   bitcast(concatenate(x, y, ...))
+  // when all operands use the same flattening factor. This keeps the
+  // concatenate in the higher-rank space where later simplifications have a
+  // better chance of combining adjacent slices/pads before backend lowering.
+  if (concatenate_dimension == 1 && operands.size() > 1) {
+    int64_t source_dim0 = -1;
+    int64_t result_dim0 = -1;
+    int64_t flattening_factor = -1;
+    int64_t concatenated_source_dim1 = 0;
+    std::vector<HloInstruction*> bitcast_sources;
+    bool can_reassociate = true;
+    for (HloInstruction* operand : operands) {
+      if (operand->opcode() != HloOpcode::kBitcast ||
+          operand->operand(0)->shape().rank() != 2 || operand->shape().rank() != 2 ||
+          !ShapeUtil::SameElementType(operand->operand(0)->shape(),
+                                      operand->shape())) {
+        can_reassociate = false;
+        break;
+      }
+      int64_t operand_source_dim0 = operand->operand(0)->shape().dimensions(0);
+      int64_t operand_source_dim1 = operand->operand(0)->shape().dimensions(1);
+      int64_t operand_result_dim0 = operand->shape().dimensions(0);
+      int64_t operand_result_dim1 = operand->shape().dimensions(1);
+      if (operand_result_dim1 == 0 || operand_source_dim1 % operand_result_dim1 != 0) {
+        can_reassociate = false;
+        break;
+      }
+      int64_t operand_flattening_factor = operand_source_dim1 / operand_result_dim1;
+      if (operand_source_dim0 * operand_flattening_factor != operand_result_dim0) {
+        can_reassociate = false;
+        break;
+      }
+      if (source_dim0 == -1) {
+        source_dim0 = operand_source_dim0;
+        result_dim0 = operand_result_dim0;
+        flattening_factor = operand_flattening_factor;
+      } else if (source_dim0 != operand_source_dim0 ||
+                 result_dim0 != operand_result_dim0 ||
+                 flattening_factor != operand_flattening_factor) {
+        can_reassociate = false;
+        break;
+      }
+      concatenated_source_dim1 += operand_source_dim1;
+      bitcast_sources.push_back(operand->mutable_operand(0));
+    }
+    if (can_reassociate) {
+      Shape concat_source_shape = operands[0]->operand(0)->shape();
+      concat_source_shape.set_dimensions(0, source_dim0);
+      concat_source_shape.set_dimensions(1, concatenated_source_dim1);
+      simplifier_->UpdateLayout(&concat_source_shape);
+      if (options_.ReshapeIsBitcast(concat_source_shape, concatenate->shape())) {
+        auto new_concat =
+            concatenate->AddInstruction(HloInstruction::CreateConcatenate(
+                concat_source_shape, bitcast_sources, /*dimension=*/1));
+        return ReplaceWithNewInstruction(
+            concatenate,
+            HloInstruction::CreateBitcast(concatenate->shape(), new_concat));
+      }
+    }
+  }
+
   if (operands.size() == 2) {
     // A binary concat with a broadcasted scalar as an operand can be converted
     // into a pad which is simpler to fold into other operations.

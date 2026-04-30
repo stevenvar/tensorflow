@@ -2008,13 +2008,22 @@ absl::Status AlgebraicSimplifierVisitor::HandleConcatenate(
       concat_source_shape.set_dimensions(0, source_dim0);
       concat_source_shape.set_dimensions(1, concatenated_source_dim1);
       simplifier_->UpdateLayout(&concat_source_shape);
-      if (options_.ReshapeIsBitcast(concat_source_shape, concatenate->shape())) {
+      bool can_reassociate_result =
+          !options_.is_layout_sensitive() ||
+          options_.ReshapeIsBitcast(concat_source_shape, concatenate->shape());
+      if (can_reassociate_result) {
+        LOG(INFO) << "Reassociating concatenate of bitcasts: "
+                  << concatenate->ToString();
         auto new_concat =
             concatenate->AddInstruction(HloInstruction::CreateConcatenate(
                 concat_source_shape, bitcast_sources, /*dimension=*/1));
         return ReplaceWithNewInstruction(
             concatenate,
-            HloInstruction::CreateBitcast(concatenate->shape(), new_concat));
+            options_.is_layout_sensitive()
+                ? HloInstruction::CreateBitcast(concatenate->shape(),
+                                                new_concat)
+                : HloInstruction::CreateReshape(concatenate->shape(),
+                                                new_concat));
       }
     }
   }

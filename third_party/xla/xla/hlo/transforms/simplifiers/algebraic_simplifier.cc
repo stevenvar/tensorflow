@@ -1954,22 +1954,22 @@ absl::Status AlgebraicSimplifierVisitor::HandleConcatenate(
   }
 
   // Re-associate 2D feature packing patterns of the form
-  //   concatenate(bitcast(x), bitcast(y), ...)
+  //   concatenate(reshape(x), reshape(y), ...)
   // into
-  //   bitcast(concatenate(x, y, ...))
+  //   reshape(concatenate(x, y, ...))
   // when all operands use the same flattening factor. This keeps the
   // concatenate in the higher-rank space where later simplifications have a
   // better chance of combining adjacent slices/pads before backend lowering.
-  if (options_.reassociate_concatenate_of_bitcasts() &&
+  if (options_.reassociate_concatenate_of_reshapes() &&
       concatenate_dimension == 1 && operands.size() > 1) {
     int64_t source_dim0 = -1;
     int64_t result_dim0 = -1;
     int64_t flattening_factor = -1;
     int64_t concatenated_source_dim1 = 0;
-    std::vector<HloInstruction*> bitcast_sources;
+    std::vector<HloInstruction*> reshape_sources;
     bool can_reassociate = true;
     for (HloInstruction* operand : operands) {
-      if (operand->opcode() != HloOpcode::kBitcast ||
+      if (operand->opcode() != HloOpcode::kReshape ||
           operand->operand(0)->shape().dimensions_size() != 2 ||
           operand->shape().dimensions_size() != 2 ||
           !ShapeUtil::SameElementType(operand->operand(0)->shape(),
@@ -2001,7 +2001,7 @@ absl::Status AlgebraicSimplifierVisitor::HandleConcatenate(
         break;
       }
       concatenated_source_dim1 += operand_source_dim1;
-      bitcast_sources.push_back(operand->mutable_operand(0));
+      reshape_sources.push_back(operand->mutable_operand(0));
     }
     if (can_reassociate) {
       Shape concat_source_shape = operands[0]->operand(0)->shape();
@@ -2012,11 +2012,11 @@ absl::Status AlgebraicSimplifierVisitor::HandleConcatenate(
           !options_.is_layout_sensitive() ||
           options_.ReshapeIsBitcast(concat_source_shape, concatenate->shape());
       if (can_reassociate_result) {
-        LOG(INFO) << "Reassociating concatenate of bitcasts: "
+        LOG(INFO) << "Reassociating concatenate of reshapes: "
                   << concatenate->ToString();
         auto new_concat =
             concatenate->AddInstruction(HloInstruction::CreateConcatenate(
-                concat_source_shape, bitcast_sources, /*dimension=*/1));
+                concat_source_shape, reshape_sources, /*dimension=*/1));
         return ReplaceWithNewInstruction(
             concatenate,
             options_.is_layout_sensitive()

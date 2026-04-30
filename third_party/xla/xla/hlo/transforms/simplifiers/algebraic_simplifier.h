@@ -347,12 +347,12 @@ class AlgebraicSimplifierOptions {
     rewrite_reshape_transpose_as_slice_concatenate_ = value;
   }
 
-  bool reassociate_concatenate_of_bitcasts() const {
-    return reassociate_concatenate_of_bitcasts_;
+  bool reassociate_concatenate_of_reshapes() const {
+    return reassociate_concatenate_of_reshapes_;
   }
 
-  void set_reassociate_concatenate_of_bitcasts(bool value) {
-    reassociate_concatenate_of_bitcasts_ = value;
+  void set_reassociate_concatenate_of_reshapes(bool value) {
+    reassociate_concatenate_of_reshapes_ = value;
   }
 
  private:
@@ -411,7 +411,7 @@ class AlgebraicSimplifierOptions {
 #endif  // INTEL_MKL
   };
   bool rewrite_reshape_transpose_as_slice_concatenate_{true};
-  bool reassociate_concatenate_of_bitcasts_{true};
+  bool reassociate_concatenate_of_reshapes_{true};
   Metadata metadata_;
 };
 

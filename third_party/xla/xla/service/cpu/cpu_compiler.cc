@@ -484,10 +484,10 @@ std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
       !module->config().debug_options().xla_cpu_enable_fast_min_max());
   options.set_supports_non_canonical_dots(false);
   options.set_executing_on_cpu(true);
-  options.set_reassociate_concatenate_of_bitcasts(
+  options.set_reassociate_concatenate_of_reshapes(
       module->config()
           .debug_options()
-          .xla_cpu_reassociate_concatenate_of_bitcasts());
+          .xla_cpu_reassociate_concatenate_of_reshapes());
   pipeline->AddPass<AlgebraicSimplifier>(options);
   pipeline->AddPass<SortSimplifier>();
   pipeline->AddPass<HloDCE>();

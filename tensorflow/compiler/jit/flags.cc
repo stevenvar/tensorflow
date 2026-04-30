@@ -146,6 +146,12 @@ void AppendMarkForCompilationPassFlagsInternal(std::vector<Flag>* flag_list) {
       Flag("tf_xla_cpu_global_jit",
            &mark_for_compilation_flags->tf_xla_cpu_global_jit,
            "Enables global JIT compilation for CPU via SessionOptions."),
+      Flag("tf_xla_cpu_disable_bookkeeping_clustering",
+           &mark_for_compilation_flags
+                ->tf_xla_cpu_disable_bookkeeping_clustering,
+           "If true, skip auto-clustering of bookkeeping-heavy CPU ops such "
+           "as GatherV2, Pad, Reshape, ConcatV2, Tile, StridedSlice, Pack, "
+           "and BroadcastTo."),
       Flag("tf_xla_clustering_fuel",
            &mark_for_compilation_flags->tf_xla_clustering_fuel,
            "Places an artificial limit on the number of ops marked as "
@@ -256,6 +262,8 @@ void AllocateAndParseFlags() {
   mark_for_compilation_flags->tf_xla_cluster_parallel = false;
   mark_for_compilation_flags->tf_xla_clustering_debug = false;
   mark_for_compilation_flags->tf_xla_cpu_global_jit = false;
+  mark_for_compilation_flags->tf_xla_cpu_disable_bookkeeping_clustering =
+      false;
   mark_for_compilation_flags->tf_xla_clustering_fuel =
       std::numeric_limits<int64_t>::max();
   mark_for_compilation_flags->tf_xla_threshold_for_megamorphic = 0;

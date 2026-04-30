@@ -98,6 +98,20 @@ using jit::DeviceSet;
 // cluster.
 const char* kXlaAlreadyClustered = "_XlaAlreadyClustered";
 
+bool IsCpuBookkeepingOpForClustering(const Node& node) {
+  static const auto* kOps = new absl::flat_hash_set<string>({
+      "BroadcastTo",
+      "ConcatV2",
+      "GatherV2",
+      "Pad",
+      "Pack",
+      "Reshape",
+      "StridedSlice",
+      "Tile",
+  });
+  return kOps->contains(node.type_string());
+}
+
 class MarkForCompilationPassImpl {
  public:
   struct DebugOptions {
@@ -1693,6 +1707,15 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
          GetNodeOrFuncAttr(node, flib_def_, kXlaMustCompileAttr));
     auto policy = registration->autoclustering_policy;
     if (!ShouldCompile(is_xla_compile_attr_true, device_type, policy)) {
+      continue;
+    }
+
+    if (device_type.type_string() == DEVICE_CPU &&
+        GetMarkForCompilationPassFlags()
+            ->tf_xla_cpu_disable_bookkeeping_clustering &&
+        IsCpuBookkeepingOpForClustering(*node)) {
+      VLOG(2) << "Rejecting " << node->name()
+              << ": skipped by tf_xla_cpu_disable_bookkeeping_clustering";
       continue;
     }
 

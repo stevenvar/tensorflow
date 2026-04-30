@@ -347,6 +347,14 @@ class AlgebraicSimplifierOptions {
     rewrite_reshape_transpose_as_slice_concatenate_ = value;
   }
 
+  bool reassociate_concatenate_of_bitcasts() const {
+    return reassociate_concatenate_of_bitcasts_;
+  }
+
+  void set_reassociate_concatenate_of_bitcasts(bool value) {
+    reassociate_concatenate_of_bitcasts_ = value;
+  }
+
  private:
   // Metadata struct can be used to store any metadata information encapsulated
   // with the AlgebraicSimplifierOptions that can be later used in an
@@ -403,6 +411,7 @@ class AlgebraicSimplifierOptions {
 #endif  // INTEL_MKL
   };
   bool rewrite_reshape_transpose_as_slice_concatenate_{true};
+  bool reassociate_concatenate_of_bitcasts_{true};
   Metadata metadata_;
 };
 

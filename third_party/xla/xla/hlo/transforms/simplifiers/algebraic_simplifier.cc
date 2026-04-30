@@ -1960,7 +1960,8 @@ absl::Status AlgebraicSimplifierVisitor::HandleConcatenate(
   // when all operands use the same flattening factor. This keeps the
   // concatenate in the higher-rank space where later simplifications have a
   // better chance of combining adjacent slices/pads before backend lowering.
-  if (concatenate_dimension == 1 && operands.size() > 1) {
+  if (options_.reassociate_concatenate_of_bitcasts() &&
+      concatenate_dimension == 1 && operands.size() > 1) {
     int64_t source_dim0 = -1;
     int64_t result_dim0 = -1;
     int64_t flattening_factor = -1;

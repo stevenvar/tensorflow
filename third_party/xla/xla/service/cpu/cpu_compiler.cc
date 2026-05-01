@@ -894,11 +894,11 @@ absl::Status CpuCompiler::RunHloPassesAfterLayoutAssn(
 
   // Add a fusion pass now that layout assignment is done.
   pipeline.AddPass<CpuInstructionFusion>();
-  if (debug_options.xla_cpu_fuse_concat_producers()) {
-    pipeline.AddPass<CpuConcatFusion>();
-  }
   if (is_fusion_emitters) {
     pipeline.AddPass<FusionWrapper>();
+  }
+  if (debug_options.xla_cpu_fuse_concat_producers()) {
+    pipeline.AddPass<CpuConcatFusion>();
   }
 
   // The LayoutAssignment pass may leave behind kCopy instructions which are

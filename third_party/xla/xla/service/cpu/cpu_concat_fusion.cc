@@ -53,6 +53,15 @@ absl::StatusOr<bool> TryFuseConcatProducers(HloInstruction* concat) {
   }
 
   if (producers_to_merge.empty()) {
+    std::string operand_summary;
+    for (HloInstruction* operand : concat->operands()) {
+      absl::StrAppend(&operand_summary, operand_summary.empty() ? "" : ", ",
+                      HloOpcodeString(operand->opcode()), "(users=",
+                      operand->user_count(), ")");
+    }
+    LOG(INFO) << "CpuConcatFusion saw concatenate but found no mergeable "
+                 "single-use loop-fusion producer: "
+              << concat->name() << " operands=[" << operand_summary << "]";
     return false;
   }
 

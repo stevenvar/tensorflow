@@ -63,7 +63,7 @@ absl::StatusOr<bool> TryRewriteDotOfConcat(HloInstruction* dot) {
       rhs->shape().dimensions().size() != 2) {
     return false;
   }
-  const std::string dot_name = dot->name();
+  const std::string dot_name(dot->name());
 
   DotDimensionNumbers new_dot_dnums;
   new_dot_dnums.add_lhs_contracting_dimensions(lhs_contracting_dim);

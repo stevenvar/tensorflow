@@ -220,6 +220,11 @@ message DebugOptions {
   // If set, XLA:CPU skips the CpuInstructionFusion HLO pass entirely.
   bool xla_cpu_disable_instruction_fusion = 400;
 
+  // If set, XLA:CPU rewrites dot(concatenate(lhs pieces), rhs) into a sum of
+  // smaller dots when concatenation happens along the lhs contracting
+  // dimension.
+  bool xla_cpu_rewrite_dot_of_lhs_concat = 402;
+
   // When true, XLA:CPU uses the thunk runtime to execute compiled program.
   bool xla_cpu_use_thunk_runtime = 298;
 

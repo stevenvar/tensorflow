@@ -170,6 +170,7 @@ limitations under the License.
 #include "xla/service/cpu/cpu_aot_compilation_result.h"
 #include "xla/service/cpu/cpu_executable.h"
 #include "xla/service/cpu/cpu_float_support.h"
+#include "xla/service/cpu/cpu_dot_of_concat_rewriter.h"
 #include "xla/service/cpu/cpu_instruction_fusion.h"
 #include "xla/service/cpu/cpu_layout_assignment.h"
 #include "xla/service/cpu/cpu_options.h"
@@ -884,6 +885,10 @@ absl::Status CpuCompiler::RunHloPassesAfterLayoutAssn(
           .xla_cpu_experimental_xnn_graph_fusion_mode() !=
       DebugOptions::XNN_GRAPH_FUSION_MODE_DISABLED) {
     pipeline.AddPass<XnnGraphFusion>();
+  }
+
+  if (debug_options.xla_cpu_rewrite_dot_of_lhs_concat()) {
+    pipeline.AddPass<CpuDotOfConcatRewriter>();
   }
 
   // Add a fusion pass now that layout assignment is done.

@@ -103,6 +103,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_cpu_use_fusion_emitters(true);
   opts.set_xla_cpu_reassociate_concatenate_of_reshapes(true);
   opts.set_xla_cpu_disable_instruction_fusion(false);
+  opts.set_xla_cpu_rewrite_dot_of_lhs_concat(false);
   opts.set_xla_cpu_use_thunk_runtime(true);
   opts.set_xla_cpu_use_xnnpack(false);
   opts.set_xla_compile_batch_sizes("");
@@ -999,6 +1000,13 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       bool_setter_for(&DebugOptions::set_xla_cpu_disable_instruction_fusion),
       debug_options->xla_cpu_disable_instruction_fusion(),
       "Skip the CpuInstructionFusion HLO pass in the CPU backend."));
+  flag_list->push_back(tsl::Flag(
+      "xla_cpu_rewrite_dot_of_lhs_concat",
+      bool_setter_for(&DebugOptions::set_xla_cpu_rewrite_dot_of_lhs_concat),
+      debug_options->xla_cpu_rewrite_dot_of_lhs_concat(),
+      "Rewrite dot(concatenate(lhs pieces), rhs) into a sum of smaller dots "
+      "in the CPU backend when the concatenate is on the lhs contracting "
+      "dimension."));
   flag_list->push_back(
       tsl::Flag("xla_cpu_use_thunk_runtime",
                 bool_setter_for(&DebugOptions::set_xla_cpu_use_thunk_runtime),

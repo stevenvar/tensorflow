@@ -190,6 +190,22 @@ cc_library(
 )
 
 cc_library(
+    name = "cpu_concat_fusion",
+    srcs = ["cpu_concat_fusion.cc"],
+    hdrs = ["cpu_concat_fusion.h"],
+    deps = [
+        "//xla/hlo/ir:hlo",
+        "//xla/hlo/pass:hlo_pass",
+        "//xla/tsl/platform:errors",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+    ],
+)
+
+cc_library(
     name = "cpu_dot_of_concat_rewriter",
     srcs = ["cpu_dot_of_concat_rewriter.cc"],
     hdrs = ["cpu_dot_of_concat_rewriter.h"],
@@ -213,6 +229,7 @@ cc_library(
         ":buffer_info_util",
         ":conv_canonicalization",
         ":cpu_aot_compilation_result",
+        ":cpu_concat_fusion",
         ":cpu_dot_of_concat_rewriter",
         ":cpu_executable",
         ":cpu_float_support",

@@ -168,6 +168,7 @@ limitations under the License.
 #include "xla/service/cpu/buffer_info_util.h"
 #include "xla/service/cpu/conv_canonicalization.h"
 #include "xla/service/cpu/cpu_aot_compilation_result.h"
+#include "xla/service/cpu/cpu_concat_fusion.h"
 #include "xla/service/cpu/cpu_executable.h"
 #include "xla/service/cpu/cpu_float_support.h"
 #include "xla/service/cpu/cpu_dot_of_concat_rewriter.h"
@@ -893,6 +894,9 @@ absl::Status CpuCompiler::RunHloPassesAfterLayoutAssn(
 
   // Add a fusion pass now that layout assignment is done.
   pipeline.AddPass<CpuInstructionFusion>();
+  if (debug_options.xla_cpu_fuse_concat_producers()) {
+    pipeline.AddPass<CpuConcatFusion>();
+  }
   if (is_fusion_emitters) {
     pipeline.AddPass<FusionWrapper>();
   }

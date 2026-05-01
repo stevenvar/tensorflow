@@ -28,6 +28,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/tsl/platform/errors.h"
+#include "xla/util.h"
 
 namespace xla::cpu {
 namespace {
@@ -55,9 +56,13 @@ absl::StatusOr<bool> TryFuseConcatProducers(HloInstruction* concat) {
   if (producers_to_merge.empty()) {
     std::string operand_summary;
     for (HloInstruction* operand : concat->operands()) {
+      std::string fusion_kind;
+      if (operand->opcode() == HloOpcode::kFusion) {
+        fusion_kind = absl::StrCat(", kind=", xla::ToString(operand->fusion_kind()));
+      }
       absl::StrAppend(&operand_summary, operand_summary.empty() ? "" : ", ",
-                      HloOpcodeString(operand->opcode()), "(users=",
-                      operand->user_count(), ")");
+                      operand->name(), ":", HloOpcodeString(operand->opcode()),
+                      fusion_kind, "(users=", operand->user_count(), ")");
     }
     LOG(INFO) << "CpuConcatFusion saw concatenate but found no mergeable "
                  "single-use loop-fusion producer: "

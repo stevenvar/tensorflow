@@ -200,10 +200,16 @@ FusionDecision CpuInstructionFusion::ShouldFuse(HloInstruction* consumer,
            hlo->shape().dimensions(concat_dim) >= 128;
   };
 
+  const bool allow_experimental_concat_producer_fusion =
+      consumer->GetModule()
+          ->config()
+          .debug_options()
+          .xla_cpu_fuse_concat_producers();
   if ((producer->opcode() == HloOpcode::kConcatenate &&
        (producer->operand_count() > kMaxConcatenateArguments ||
         is_minor_dim_concatenate(producer))) ||
       (consumer->opcode() == HloOpcode::kConcatenate &&
+       !allow_experimental_concat_producer_fusion &&
        (consumer->operand_count() > kMaxConcatenateArguments ||
         is_minor_dim_concatenate(consumer)))) {
     return FusionDecision::Forbid("Concatenate fusion is inefficient.");

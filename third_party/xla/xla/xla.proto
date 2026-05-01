@@ -225,6 +225,10 @@ message DebugOptions {
   // dimension.
   bool xla_cpu_rewrite_dot_of_lhs_concat = 402;
 
+  // If set, XLA:CPU allows instruction fusion to fuse producers into large or
+  // minor-dimension concatenates.
+  bool xla_cpu_fuse_concat_producers = 403;
+
   // When true, XLA:CPU uses the thunk runtime to execute compiled program.
   bool xla_cpu_use_thunk_runtime = 298;
 

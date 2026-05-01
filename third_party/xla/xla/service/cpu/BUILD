@@ -195,11 +195,12 @@ cc_library(
     hdrs = ["cpu_dot_of_concat_rewriter.h"],
     deps = [
         "//xla/hlo/ir:hlo",
+        "//xla/hlo/pass:hlo_pass",
         "//xla/tsl/platform:errors",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
     ],
 )
 

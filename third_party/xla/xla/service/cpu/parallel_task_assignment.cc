@@ -23,6 +23,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/log/log.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -46,6 +47,30 @@ limitations under the License.
 
 namespace xla {
 namespace cpu {
+namespace {
+
+bool CanOutlineWithConcatenateProducer(const HloInstruction* producer,
+                                       const HloInstruction* concatenate) {
+  return producer->parent() == concatenate->parent() &&
+         producer->opcode() != HloOpcode::kParameter &&
+         producer->opcode() != HloOpcode::kConstant &&
+         producer->IsFusible() && producer->user_count() == 1 &&
+         producer->users().front() == concatenate;
+}
+
+std::vector<HloInstruction*> GetConcatenateOutlineExpression(
+    HloInstruction* concatenate) {
+  std::vector<HloInstruction*> expression;
+  for (HloInstruction* operand : concatenate->operands()) {
+    if (CanOutlineWithConcatenateProducer(operand, concatenate)) {
+      expression.push_back(operand);
+    }
+  }
+  expression.push_back(concatenate);
+  return expression;
+}
+
+}  // namespace
 
 class SimpleCostModel : public ParallelCostModel {
  public:
@@ -226,10 +251,29 @@ bool ParallelTaskAssigner::AssignParallelTasksHelper(
     HloModule* module, HloComputation* computation,
     const HloToParallelTasks& hlo_to_parallel_tasks) {
   bool changed = false;
+  absl::flat_hash_set<HloInstruction*> skip_outlining;
   // Snapshot set of instructions because outlining modifies the set below.
   std::vector<HloInstruction*> instructions(computation->instructions().begin(),
                                             computation->instructions().end());
+  if (module->config().debug_options().xla_cpu_fuse_concat_producers()) {
+    for (HloInstruction* instruction : instructions) {
+      if (instruction->opcode() != HloOpcode::kConcatenate ||
+          !hlo_to_parallel_tasks.contains(instruction)) {
+        continue;
+      }
+      for (HloInstruction* producer :
+           GetConcatenateOutlineExpression(instruction)) {
+        if (producer != instruction) {
+          skip_outlining.insert(producer);
+        }
+      }
+    }
+  }
   for (auto* instruction : instructions) {
+    if (skip_outlining.contains(instruction)) {
+      continue;
+    }
+
     // Assign parallel tasks to sub-computations for While, Conditional and Call
     // HLOs.
     // TODO(b/27458679) Evaluate alternative intra-op parallelism placement,
@@ -276,9 +320,28 @@ bool ParallelTaskAssigner::AssignParallelTasksHelper(
       continue;
     }
 
+    std::vector<HloInstruction*> instructions_to_outline = {instruction};
+    if (instruction->opcode() == HloOpcode::kConcatenate &&
+        instruction->GetModule()
+            ->config()
+            .debug_options()
+            .xla_cpu_fuse_concat_producers()) {
+      instructions_to_outline = GetConcatenateOutlineExpression(instruction);
+      if (instructions_to_outline.size() > 1) {
+        for (HloInstruction* outlined_instruction : instructions_to_outline) {
+          if (outlined_instruction != instruction) {
+            skip_outlining.insert(outlined_instruction);
+          }
+        }
+        LOG(INFO) << "ParallelTaskAssigner outlining concatenate with "
+                  << instructions_to_outline.size() - 1
+                  << " producer instruction(s): " << instruction->name();
+      }
+    }
+
     // Outline 'instruction' in 'computation' for parallel task assignment.
     auto* call = module->OutlineExpressionFromComputation(
-        {instruction}, absl::StrCat("parallel_", instruction->name()),
+        instructions_to_outline, absl::StrCat("parallel_", instruction->name()),
         computation);
 
     // Set assigned dimension partitioning to 'instruction'.

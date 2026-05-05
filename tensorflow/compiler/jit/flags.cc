@@ -139,7 +139,7 @@ void AppendMarkForCompilationPassFlagsInternal(std::vector<Flag>* flag_list) {
            "(experimental) "
            "Exclude the operations from auto-clustering. "
            "If multiple, separate them with commas."
-           " Where, Some_other_ops"),
+           " Where, Softmax, Some_other_ops"),
       Flag("tf_xla_clustering_debug",
            &mark_for_compilation_flags->tf_xla_clustering_debug,
            "Dump graphs during XLA compilation."),

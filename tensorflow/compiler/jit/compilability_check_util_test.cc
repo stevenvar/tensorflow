@@ -178,6 +178,34 @@ TEST_F(CompilabilityCheckUtilTest, CheckOutsideCompiledNode) {
   ASSERT_EQ(0, uncompilable_nodes2.size());
 }
 
+TEST_F(CompilabilityCheckUtilTest, CheckSoftmaxDisallowedByFilter) {
+  GraphDefBuilder builder(GraphDefBuilder::kFailImmediately);
+  auto opts = builder.opts();
+  Node* input = ops::SourceOp("InputFloatOp", opts);
+  Node* softmax = ops::UnaryOp("Softmax", input, opts);
+  GraphDef graph_def;
+  TF_EXPECT_OK(builder.ToGraphDef(&graph_def));
+
+  auto* flib_runtime = GetFunctionLibraryRuntime();
+  EXPECT_TRUE(checker_->IsCompilableNode(*softmax, flib_runtime));
+
+  op_filter_.allow_softmax_op = false;
+  checker_ = CreateCompilabilityChecker();
+  EXPECT_FALSE(checker_->IsCompilableNode(*softmax, flib_runtime));
+
+  const auto uncompilable_nodes =
+      checker_->FindUncompilableNodes(*softmax, flib_runtime);
+  ASSERT_EQ(1, uncompilable_nodes.size());
+  auto node_info_it =
+      uncompilable_nodes.find(NameAttrList().ShortDebugString());
+  ASSERT_NE(uncompilable_nodes.end(), node_info_it);
+  const auto& uncompilable_nodes_inside_function = node_info_it->second.second;
+  ASSERT_EQ(1, uncompilable_nodes_inside_function.size());
+  EXPECT_TRUE(absl::StrContains(
+      uncompilable_nodes_inside_function.at(0).uncompilable_reason,
+      "Softmax op"));
+}
+
 TEST_F(CompilabilityCheckUtilTest, CheckSimpleFunctionNode) {
   FunctionDefLibrary flib;
   *flib.add_function() = FunctionDefHelper::Define(

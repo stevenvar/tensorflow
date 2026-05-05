@@ -1648,9 +1648,12 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
 
   auto cluster_exclude_op_list = CreateClusterExcludeList();
   bool allow_where_op = true;
+  bool allow_softmax_op = true;
   for (const auto& s : cluster_exclude_op_list) {
     if (s == "Where") {
       allow_where_op = false;
+    } else if (s == "Softmax") {
+      allow_softmax_op = false;
     } else {
       return errors::InvalidArgument(
           "The operation '", s,
@@ -1703,6 +1706,7 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
     filter.allow_collective_reduce_v2 = false;
     filter.allow_unique_op = false;
     filter.allow_where_op = allow_where_op;
+    filter.allow_softmax_op = allow_softmax_op;
 
     RecursiveCompilabilityChecker checker(
         filter, DeviceType{registration->compilation_device_name});

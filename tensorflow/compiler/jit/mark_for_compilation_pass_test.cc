@@ -39,6 +39,7 @@ limitations under the License.
 #include "tensorflow/cc/ops/sendrecv_ops.h"
 #include "tensorflow/cc/ops/standard_ops.h"
 #include "tensorflow/compiler/jit/defs.h"
+#include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/jit/mark_for_compilation_pass_test_helper.h"
 #include "tensorflow/compiler/jit/node_matchers.h"
 #include "tensorflow/compiler/jit/xla_cluster_util.h"
@@ -50,6 +51,7 @@ limitations under the License.
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/graph/algorithm.h"
 #include "tensorflow/core/graph/graph_def_builder.h"
+#include "tensorflow/core/lib/gtl/cleanup.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/test.h"
@@ -218,6 +220,32 @@ TEST(XlaCompilationTest, WhereUnsupported) {
   TF_ASSERT_OK(MarkForCompilationPassTestHelper::MarkForCompilation(&graph));
   auto clusters = GetClusters(*graph);
   EXPECT_TRUE(!clusters.empty());
+}
+
+TEST(XlaCompilationTest, SoftmaxCanBeExcludedFromAutoclustering) {
+  MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
+  string old_cluster_exclude_ops = flags->tf_xla_cluster_exclude_ops;
+  flags->tf_xla_cluster_exclude_ops = "Softmax";
+  auto cleanup = gtl::MakeCleanup([&] {
+    flags->tf_xla_cluster_exclude_ops = old_cluster_exclude_ops;
+  });
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  {
+    GraphDefBuilder builder(GraphDefBuilder::kFailImmediately);
+    Node* a = ops::SourceOp("Const", builder.opts()
+                                         .WithName("A")
+                                         .WithAttr("dtype", DT_FLOAT)
+                                         .WithAttr("value", Tensor()));
+    Node* b = ops::UnaryOp("Relu", a, builder.opts().WithName("B"));
+    ops::UnaryOp("Softmax", b, builder.opts().WithName("C"));
+    TF_EXPECT_OK(GraphDefBuilderToGraph(builder, graph.get()));
+  }
+
+  TF_ASSERT_OK(MarkForCompilationPassTestHelper::MarkForCompilation(&graph));
+  auto clusters = GetClusters(*graph);
+  EXPECT_TRUE(clusters.find("B") != clusters.cend());
+  EXPECT_TRUE(clusters.find("C") == clusters.cend());
 }
 
 TEST(XlaCompilationTest, HalfSupported) {

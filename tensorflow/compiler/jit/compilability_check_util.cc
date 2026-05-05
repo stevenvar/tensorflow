@@ -503,6 +503,14 @@ bool RecursiveCompilabilityChecker::IsCompilableNode(
     return false;
   }
 
+  if (!op_filter_.allow_softmax_op && node.type_string() == "Softmax") {
+    absl::string_view uncompilable_reason = "Softmax op";
+    MaybeMarkUncompilableNode(uncompilable_reason, *stack_trace,
+                              encapsulating_function, uncompilable_nodes);
+    LogNotCompilable(node, uncompilable_reason);
+    return false;
+  }
+
   if (!op_filter_.allow_unique_op && node.type_string() == "Unique") {
     absl::string_view uncompilable_reason = "Unique op";
     MaybeMarkUncompilableNode(uncompilable_reason, *stack_trace,

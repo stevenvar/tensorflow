@@ -1602,6 +1602,24 @@ absl::flat_hash_set<string> GetOrCreateAllowlist() {
   return allowlist;
 }
 
+absl::flat_hash_set<string> CreateElementwiseOnlyAllowlist() {
+  const auto* allowlist_table = tensorflow::GetAllowlistTable();
+  const auto& pointwise_ops = allowlist_table->at("PW");
+  absl::flat_hash_set<string> allowlist(pointwise_ops.begin(),
+                                        pointwise_ops.end());
+
+  // The historical "PW" bucket also contains a few no-op or data-movement
+  // operations. Keep this flag focused on elementwise compute.
+  for (const char* op :
+       {"Bitcast", "Const", "Empty", "Identity", "IdentityN", "Transpose",
+        "ConjugateTranspose", "CollectiveReduceV2", "CollectiveAssignGroupV2",
+        "PlaceholderWithDefault", "PreventGradient", "StopGradient", "Snapshot",
+        "_EagerConst"}) {
+    allowlist.erase(string(op));
+  }
+  return allowlist;
+}
+
 absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
   OptimizerOptions opts;
   std::unique_ptr<ProcessFunctionLibraryRuntime> pflr(
@@ -1634,6 +1652,13 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
   VLOG(2) << "sorted_nodes.size() = " << sorted_nodes.size();
 
   auto allowlist = GetOrCreateAllowlist();
+  MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
+  absl::flat_hash_set<string> elementwise_only_allowlist;
+  if (flags->tf_xla_elementwise_only_clusters) {
+    elementwise_only_allowlist = CreateElementwiseOnlyAllowlist();
+    VLOG(2) << "XLA clustering will only consider elementwise TensorFlow "
+               "operations.";
+  }
 
   std::vector<string> vall_ops = XlaOpRegistry::GetAllRegisteredOps();
   absl::flat_hash_set<string> all_ops(vall_ops.begin(), vall_ops.end());
@@ -1723,6 +1748,13 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
     if (!allowlist.empty() && !allowlist.contains(node->def().op())) {
       VLOG(1) << "Rejecting TF operation " << node->def().op()
               << " as it is not listed in --tf_xla_ops_to_cluster.";
+      continue;
+    }
+
+    if (!elementwise_only_allowlist.empty() &&
+        !elementwise_only_allowlist.contains(node->def().op())) {
+      VLOG(1) << "Rejecting TF operation " << node->def().op()
+              << " as --tf_xla_elementwise_only_clusters is enabled.";
       continue;
     }
 

@@ -74,6 +74,10 @@ struct MarkForCompilationPassFlags {
   // If non-empty, remove following operations from XLA clustering excludelist.
   string tf_xla_cluster_exclude_ops;
 
+  // If true, only pointwise TensorFlow operations are considered for XLA
+  // auto-clustering.
+  bool tf_xla_elementwise_only_clusters;
+
   // Dump graphs during XLA compilation.
   bool tf_xla_clustering_debug;
 

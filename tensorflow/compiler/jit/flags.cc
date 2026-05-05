@@ -140,6 +140,10 @@ void AppendMarkForCompilationPassFlagsInternal(std::vector<Flag>* flag_list) {
            "Exclude the operations from auto-clustering. "
            "If multiple, separate them with commas."
            " Where, Some_other_ops"),
+      Flag("tf_xla_elementwise_only_clusters",
+           &mark_for_compilation_flags->tf_xla_elementwise_only_clusters,
+           "(experimental) If true, only pointwise TensorFlow operations are "
+           "considered for XLA auto-clustering."),
       Flag("tf_xla_clustering_debug",
            &mark_for_compilation_flags->tf_xla_clustering_debug,
            "Dump graphs during XLA compilation."),
@@ -254,6 +258,7 @@ void AllocateAndParseFlags() {
       std::numeric_limits<int32>::max();
   mark_for_compilation_flags->tf_xla_annotate_cluster_id = false;
   mark_for_compilation_flags->tf_xla_cluster_parallel = false;
+  mark_for_compilation_flags->tf_xla_elementwise_only_clusters = false;
   mark_for_compilation_flags->tf_xla_clustering_debug = false;
   mark_for_compilation_flags->tf_xla_cpu_global_jit = false;
   mark_for_compilation_flags->tf_xla_clustering_fuel =

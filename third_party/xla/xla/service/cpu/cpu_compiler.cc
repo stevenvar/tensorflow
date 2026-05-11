@@ -566,8 +566,9 @@ class CpuSplitConcatDot : public HloModulePass {
     const int64_t rhs_contracting_dim =
         dim_numbers.rhs_contracting_dimensions(0);
     if (concat->concatenate_dimension() != lhs_contracting_dim ||
-        concat->operand_count() < 2 || concat->shape().rank() != 2 ||
-        rhs->shape().rank() != 2 || !dot->shape().IsArray()) {
+        concat->operand_count() < 2 ||
+        concat->shape().dimensions().size() != 2 ||
+        rhs->shape().dimensions().size() != 2 || !dot->shape().IsArray()) {
       return false;
     }
     if (concat->shape().dimensions(lhs_contracting_dim) !=
@@ -575,7 +576,8 @@ class CpuSplitConcatDot : public HloModulePass {
       return false;
     }
     for (HloInstruction* concat_operand : concat->operands()) {
-      if (concat_operand->shape().rank() != concat->shape().rank() ||
+      if (concat_operand->shape().dimensions().size() !=
+              concat->shape().dimensions().size() ||
           concat_operand->shape().element_type() !=
               concat->shape().element_type()) {
         return false;
@@ -588,10 +590,10 @@ class CpuSplitConcatDot : public HloModulePass {
     for (HloInstruction* concat_operand : concat->operands()) {
       const int64_t slice_size =
           concat_operand->shape().dimensions(lhs_contracting_dim);
-      std::vector<int64_t> starts(rhs->shape().rank(), 0);
+      std::vector<int64_t> starts(rhs->shape().dimensions().size(), 0);
       std::vector<int64_t> limits(rhs->shape().dimensions().begin(),
                                   rhs->shape().dimensions().end());
-      std::vector<int64_t> strides(rhs->shape().rank(), 1);
+      std::vector<int64_t> strides(rhs->shape().dimensions().size(), 1);
       std::vector<int64_t> slice_dims(rhs->shape().dimensions().begin(),
                                       rhs->shape().dimensions().end());
       starts[rhs_contracting_dim] = rhs_offset;

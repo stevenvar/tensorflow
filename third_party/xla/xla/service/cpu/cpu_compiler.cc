@@ -110,6 +110,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/hlo/ir/hlo_schedule.h"
 #include "xla/hlo/pass/hlo_pass_fix.h"
+#include "xla/hlo/pass/hlo_pass_interface.h"
 #include "xla/hlo/pass/hlo_pass_pipeline.h"
 #include "xla/hlo/transforms/expanders/bitcast_dtypes_expander.h"
 #include "xla/hlo/transforms/expanders/cholesky_expander.h"
@@ -522,6 +523,114 @@ std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
   return pipeline;
 }
 
+class CpuSplitConcatDot : public HloModulePass {
+ public:
+  absl::string_view name() const override { return "cpu-split-concat-dot"; }
+
+  absl::StatusOr<bool> Run(
+      HloModule* module,
+      const absl::flat_hash_set<absl::string_view>& execution_threads) override {
+    bool changed = false;
+    for (HloComputation* computation :
+         module->MakeNonfusionComputations(execution_threads)) {
+      for (HloInstruction* instruction :
+           computation->MakeInstructionPostOrder()) {
+        if (instruction->opcode() != HloOpcode::kDot) {
+          continue;
+        }
+        TF_ASSIGN_OR_RETURN(bool rewritten, TryRewriteDot(instruction));
+        changed |= rewritten;
+      }
+    }
+    return changed;
+  }
+
+ private:
+  absl::StatusOr<bool> TryRewriteDot(HloInstruction* dot) {
+    const DotDimensionNumbers& dim_numbers = dot->dot_dimension_numbers();
+    if (dim_numbers.lhs_contracting_dimensions_size() != 1 ||
+        dim_numbers.rhs_contracting_dimensions_size() != 1 ||
+        dim_numbers.lhs_batch_dimensions_size() != 0 ||
+        dim_numbers.rhs_batch_dimensions_size() != 0) {
+      return false;
+    }
+
+    HloInstruction* concat = dot->mutable_operand(0);
+    HloInstruction* rhs = dot->mutable_operand(1);
+    if (concat->opcode() != HloOpcode::kConcatenate) {
+      return false;
+    }
+
+    const int64_t lhs_contracting_dim =
+        dim_numbers.lhs_contracting_dimensions(0);
+    const int64_t rhs_contracting_dim =
+        dim_numbers.rhs_contracting_dimensions(0);
+    if (concat->concatenate_dimension() != lhs_contracting_dim ||
+        concat->operand_count() < 2 || concat->shape().rank() != 2 ||
+        rhs->shape().rank() != 2 || !dot->shape().IsArray()) {
+      return false;
+    }
+    if (concat->shape().dimensions(lhs_contracting_dim) !=
+        rhs->shape().dimensions(rhs_contracting_dim)) {
+      return false;
+    }
+    for (HloInstruction* concat_operand : concat->operands()) {
+      if (concat_operand->shape().rank() != concat->shape().rank() ||
+          concat_operand->shape().element_type() !=
+              concat->shape().element_type()) {
+        return false;
+      }
+    }
+
+    HloComputation* computation = dot->parent();
+    std::vector<HloInstruction*> partial_dots;
+    int64_t rhs_offset = 0;
+    for (HloInstruction* concat_operand : concat->operands()) {
+      const int64_t slice_size =
+          concat_operand->shape().dimensions(lhs_contracting_dim);
+      std::vector<int64_t> starts(rhs->shape().rank(), 0);
+      std::vector<int64_t> limits(rhs->shape().dimensions().begin(),
+                                  rhs->shape().dimensions().end());
+      std::vector<int64_t> strides(rhs->shape().rank(), 1);
+      std::vector<int64_t> slice_dims(rhs->shape().dimensions().begin(),
+                                      rhs->shape().dimensions().end());
+      starts[rhs_contracting_dim] = rhs_offset;
+      limits[rhs_contracting_dim] = rhs_offset + slice_size;
+      slice_dims[rhs_contracting_dim] = slice_size;
+      rhs_offset += slice_size;
+
+      Shape rhs_slice_shape =
+          ShapeUtil::MakeShape(rhs->shape().element_type(), slice_dims);
+      HloInstruction* rhs_slice = computation->AddInstruction(
+          HloInstruction::CreateSlice(rhs_slice_shape, rhs, starts, limits,
+                                      strides));
+      rhs_slice->set_metadata(dot->metadata());
+
+      HloInstruction* partial_dot = computation->AddInstruction(
+          HloInstruction::CreateDot(dot->shape(), concat_operand, rhs_slice,
+                                    dim_numbers, dot->precision_config()));
+      partial_dot->set_metadata(dot->metadata());
+      partial_dot->set_frontend_attributes(dot->frontend_attributes());
+      partial_dots.push_back(partial_dot);
+    }
+
+    if (rhs_offset != rhs->shape().dimensions(rhs_contracting_dim)) {
+      return false;
+    }
+
+    HloInstruction* replacement = partial_dots[0];
+    for (int64_t i = 1; i < partial_dots.size(); ++i) {
+      replacement = computation->AddInstruction(HloInstruction::CreateBinary(
+          dot->shape(), HloOpcode::kAdd, replacement, partial_dots[i]));
+      replacement->set_metadata(dot->metadata());
+      replacement->set_frontend_attributes(dot->frontend_attributes());
+    }
+
+    TF_RETURN_IF_ERROR(dot->parent()->ReplaceInstruction(dot, replacement));
+    return true;
+  }
+};
+
 }  // namespace
 
 absl::Status CpuCompiler::RunHloPassesThroughLayoutAssn(
@@ -642,6 +751,9 @@ absl::Status CpuCompiler::RunHloPassesThroughLayoutAssn(
   pipeline.AddPass<CallInliner>(/*single_call_site=*/true);
   pipeline.AddPass<BatchDotSimplification>();
   pipeline.AddPass<DotDecomposer>();
+  if (module->config().debug_options().xla_cpu_split_concat_dot()) {
+    pipeline.AddPass<CpuSplitConcatDot>();
+  }
 
   // Rewrite to custom calls with target as oneDNN library calls.
 #if defined(INTEL_MKL)

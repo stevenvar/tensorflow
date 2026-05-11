@@ -174,6 +174,11 @@ message DebugOptions {
   // below!
   bool xla_cpu_enable_fast_min_max = 140;
 
+  // Split dot(concat(lhs...), rhs) into a sum of dots over slices of rhs.
+  // This can avoid materializing expensive CPU concat buffers before skinny
+  // matrix multiplications.
+  bool xla_cpu_split_concat_dot = 405;
+
   // When xla_cpu_enable_fast_math is true then this controls whether we forbid
   // to use the reciprocal of an argument instead of division. Ignored when
   // xla_cpu_enable_fast_math is false.

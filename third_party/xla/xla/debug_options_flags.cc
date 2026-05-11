@@ -124,6 +124,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
 
   // By default, copy TF's Eigen style min_max behavior with nans.
   opts.set_xla_cpu_enable_fast_min_max(true);
+  opts.set_xla_cpu_split_concat_dot(false);
 
   opts.set_xla_gpu_enable_cublaslt(false);
 
@@ -1032,6 +1033,12 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       debug_options->xla_cpu_enable_concurrency_optimized_scheduler(),
       "Use HLO module scheduler that is optimized for extracting concurrency "
       "from an HLO module by trading off extra memory pressure."));
+  flag_list->push_back(tsl::Flag(
+      "xla_cpu_split_concat_dot",
+      bool_setter_for(&DebugOptions::set_xla_cpu_split_concat_dot),
+      debug_options->xla_cpu_split_concat_dot(),
+      "Split dot(concat(lhs...), rhs) into a sum of dots over slices of rhs "
+      "to avoid materializing concat inputs to CPU dots."));
   flag_list->push_back(tsl::Flag(
       "xla_cpu_prefer_vector_width",
       int32_setter_for(&DebugOptions::set_xla_cpu_prefer_vector_width),

@@ -203,6 +203,7 @@ cc_library(
         ":cpu_instruction_fusion",
         ":cpu_layout_assignment",
         ":cpu_options",
+        ":cpu_split_concat_dot",
         ":dot_op_emitter",
         ":executable_proto_cc",
         ":fusion_wrapper",
@@ -1528,6 +1529,22 @@ xla_cc_test(
         "@local_tsl//tsl/platform:env",
         "@local_tsl//tsl/platform:logging",
         "@local_tsl//tsl/platform:test",
+    ],
+)
+
+cc_library(
+    name = "cpu_split_concat_dot",
+    srcs = ["cpu_split_concat_dot.cc"],
+    hdrs = ["cpu_split_concat_dot.h"],
+    deps = [
+        "//xla:shape_util",
+        "//xla:xla_data_proto_cc",
+        "//xla/hlo/ir:hlo",
+        "//xla/hlo/pass:hlo_pass",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
     ],
 )
 

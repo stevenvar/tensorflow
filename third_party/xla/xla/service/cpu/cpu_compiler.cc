@@ -628,6 +628,9 @@ class CpuSplitConcatDot : public HloModulePass {
       replacement->set_frontend_attributes(dot->frontend_attributes());
     }
 
+    LOG(INFO) << "CpuSplitConcatDot rewrote " << dot->name() << " by splitting "
+              << concat->name() << " with " << concat->operand_count()
+              << " operands";
     TF_RETURN_IF_ERROR(dot->parent()->ReplaceInstruction(dot, replacement));
     return true;
   }

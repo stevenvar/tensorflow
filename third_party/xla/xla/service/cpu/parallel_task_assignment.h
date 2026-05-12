@@ -60,6 +60,7 @@ class ParallelTaskAssignment {
  private:
   std::unique_ptr<ParallelCostModel> cost_model_;
   const TargetMachineFeatures& target_machine_features_;
+  bool fast_minor_dim_concat_ = false;
 };
 
 // ParallelTaskAssigner computes target parallel task counts for all HLOs

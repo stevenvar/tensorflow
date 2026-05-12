@@ -34,6 +34,7 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/layout_util.h"
 #include "xla/service/cpu/backend_config.pb.h"
 #include "xla/service/cpu/ir_emission_utils.h"
 #include "xla/service/hlo_cost_analysis.h"
@@ -68,6 +69,15 @@ class SimpleCostModel : public ParallelCostModel {
   const int64_t max_parallelism_;
   const HloCostAnalysis::ShapeSizeFunction shape_size_;
 };
+
+bool IsMinorDimConcatenate(const HloInstruction* hlo) {
+  if (hlo->opcode() != HloOpcode::kConcatenate ||
+      hlo->shape().dimensions().size() <= 1) {
+    return false;
+  }
+  return hlo->concatenate_dimension() ==
+         LayoutUtil::Minor(hlo->shape().layout(), 0);
+}
 
 class DefaultCostModel : public ParallelCostModel {
  public:
@@ -130,7 +140,9 @@ ParallelTaskAssignment::ParallelTaskAssignment(
     const int64_t max_parallelism,
     const HloCostAnalysis::ShapeSizeFunction& shape_size, HloModule* module,
     const TargetMachineFeatures* target_machine_features)
-    : target_machine_features_(*target_machine_features) {
+    : target_machine_features_(*target_machine_features),
+      fast_minor_dim_concat_(
+          module->config().debug_options().xla_cpu_fast_minor_dim_concat()) {
   VLOG(1) << "ParallelTaskAssignment max_parallelism: " << max_parallelism;
   // Run cost analysis on 'module'.
   auto cost_analysis = std::make_unique<HloCostAnalysis>(shape_size);
@@ -175,6 +187,13 @@ int64_t ParallelTaskAssignment::GetTargetParallelTaskCount(
     const HloFusionInstruction* fusion =
         Cast<HloFusionInstruction>(instruction);
     if (fusion->fusion_kind() == HloInstruction::FusionKind::kCustom) return 1;
+  }
+
+  if (fast_minor_dim_concat_ && IsMinorDimConcatenate(instruction)) {
+    LOG(INFO) << "ParallelTaskAssignment leaving minor-dim concat "
+              << instruction->name()
+              << " unoutlined for fast concat lowering";
+    return 1;
   }
 
   // Only allow instructions that can be trivially parallelized (where all

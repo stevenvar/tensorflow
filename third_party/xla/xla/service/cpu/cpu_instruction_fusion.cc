@@ -76,6 +76,15 @@ bool IsDynamicDot(const HloInstruction* hlo) {
           HasDynamicDimensions(hlo->operand(1)->shape()));
 }
 
+bool IsMinorDimConcatenate(const HloInstruction* hlo) {
+  if (hlo->opcode() != HloOpcode::kConcatenate ||
+      hlo->shape().dimensions().size() <= 1) {
+    return false;
+  }
+  return hlo->concatenate_dimension() ==
+         LayoutUtil::Minor(hlo->shape().layout(), 0);
+}
+
 bool HasExactlyOneUse(const HloInstruction& hlo_instr) {
   return hlo_instr.user_count() == 1 &&
          absl::c_count(hlo_instr.users().front()->operands(), &hlo_instr) == 1;
@@ -181,24 +190,36 @@ FusionDecision CpuInstructionFusion::ShouldFuse(HloInstruction* consumer,
   // of branches in the innermost loop. We prefer to materialize concatenated
   // buffers and run concat as a separate operation, as LLVM tends to do a
   // better job with pure data movement loops.
-  auto is_minor_dim_concatenate = [](const HloInstruction* hlo) {
+  auto is_large_minor_dim_concatenate = [](const HloInstruction* hlo) {
     // For vectors it's always beneficial to fuse concatenations.
-    if (hlo->shape().dimensions().size() <= 1) return false;
+    if (!IsMinorDimConcatenate(hlo)) return false;
 
     // For small concatenated dimensions we don't loose any performance by
     // fusing the concatenation as we don't have opportunities for vectorization
     // anyway.
     int64_t concat_dim = hlo->concatenate_dimension();
-    return concat_dim == LayoutUtil::Minor(hlo->shape().layout(), 0) &&
-           hlo->shape().dimensions(concat_dim) >= 128;
+    return hlo->shape().dimensions(concat_dim) >= 128;
   };
 
+  const bool fast_minor_dim_concat =
+      consumer->GetModule()
+          ->config()
+          .debug_options()
+          .xla_cpu_fast_minor_dim_concat();
+  if (fast_minor_dim_concat &&
+      (IsMinorDimConcatenate(producer) || IsMinorDimConcatenate(consumer))) {
+    LOG(INFO) << "CpuInstructionFusion keeping minor-dim concat materialized: "
+              << (IsMinorDimConcatenate(producer) ? producer->name()
+                                                  : consumer->name());
+  }
   if ((producer->opcode() == HloOpcode::kConcatenate &&
        (producer->operand_count() > kMaxConcatenateArguments ||
-        is_minor_dim_concatenate(producer))) ||
+        is_large_minor_dim_concatenate(producer) ||
+        (fast_minor_dim_concat && IsMinorDimConcatenate(producer)))) ||
       (consumer->opcode() == HloOpcode::kConcatenate &&
        (consumer->operand_count() > kMaxConcatenateArguments ||
-        is_minor_dim_concatenate(consumer)))) {
+        is_large_minor_dim_concatenate(consumer) ||
+        (fast_minor_dim_concat && IsMinorDimConcatenate(consumer))))) {
     return FusionDecision::Forbid("Concatenate fusion is inefficient.");
   }
 

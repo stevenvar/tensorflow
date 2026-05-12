@@ -124,6 +124,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
 
   // By default, copy TF's Eigen style min_max behavior with nans.
   opts.set_xla_cpu_enable_fast_min_max(true);
+  opts.set_xla_cpu_fast_minor_dim_concat(false);
 
   opts.set_xla_gpu_enable_cublaslt(false);
 
@@ -1032,6 +1033,12 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       debug_options->xla_cpu_enable_concurrency_optimized_scheduler(),
       "Use HLO module scheduler that is optimized for extracting concurrency "
       "from an HLO module by trading off extra memory pressure."));
+  flag_list->push_back(tsl::Flag(
+      "xla_cpu_fast_minor_dim_concat",
+      bool_setter_for(&DebugOptions::set_xla_cpu_fast_minor_dim_concat),
+      debug_options->xla_cpu_fast_minor_dim_concat(),
+      "Keep minor-dimension CPU concatenations materialized so they can use "
+      "the memcpy-style concat emitter instead of branchy loop fusions."));
   flag_list->push_back(tsl::Flag(
       "xla_cpu_prefer_vector_width",
       int32_setter_for(&DebugOptions::set_xla_cpu_prefer_vector_width),

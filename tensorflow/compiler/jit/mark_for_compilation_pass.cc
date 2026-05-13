@@ -1647,6 +1647,8 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
   }
 
   auto cluster_exclude_op_list = CreateClusterExcludeList();
+  const bool cluster_matmul_only =
+      GetMarkForCompilationPassFlags()->tf_xla_cluster_matmul_only;
   bool allow_where_op = true;
   for (const auto& s : cluster_exclude_op_list) {
     if (s == "Where") {
@@ -1703,6 +1705,7 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
     filter.allow_collective_reduce_v2 = false;
     filter.allow_unique_op = false;
     filter.allow_where_op = allow_where_op;
+    filter.allow_matmul_only_ops = cluster_matmul_only;
 
     RecursiveCompilabilityChecker checker(
         filter, DeviceType{registration->compilation_device_name});
@@ -2578,7 +2581,8 @@ absl::Status MarkForCompilationPass::Run(
   debug_options.enable_dynamic_sizes =
       flags->tf_xla_enable_dynamic_sizes;
   debug_options.max_cluster_size = flags->tf_xla_max_cluster_size;
-  debug_options.min_cluster_size = flags->tf_xla_min_cluster_size;
+  debug_options.min_cluster_size =
+      flags->tf_xla_cluster_matmul_only ? 1 : flags->tf_xla_min_cluster_size;
   debug_options.fuel = GetPointerToFuel(flags->tf_xla_clustering_fuel);
   debug_options.dump_graphs = flags->tf_xla_clustering_debug;
   debug_options.annotate_cluster_id = flags->tf_xla_annotate_cluster_id;
@@ -2600,7 +2604,8 @@ absl::Status MarkForCompilationPass::RunForTest(
   debug_options.deterministic_cluster_names = deterministic_cluster_names;
   debug_options.enable_dynamic_sizes = false;
   debug_options.max_cluster_size = flags->tf_xla_max_cluster_size;
-  debug_options.min_cluster_size = flags->tf_xla_min_cluster_size;
+  debug_options.min_cluster_size =
+      flags->tf_xla_cluster_matmul_only ? 1 : flags->tf_xla_min_cluster_size;
   debug_options.fuel = GetPointerToFuel(flags->tf_xla_clustering_fuel);
   debug_options.dump_graphs = flags->tf_xla_clustering_debug;
   debug_options.annotate_cluster_id = flags->tf_xla_annotate_cluster_id;

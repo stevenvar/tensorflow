@@ -71,6 +71,9 @@ struct MarkForCompilationPassFlags {
   // If non-empty, limit XLA clustering to the following TF operations.
   string tf_xla_ops_to_cluster;
 
+  // If true, only MatMul/BatchMatMul ops are considered for XLA clustering.
+  bool tf_xla_cluster_matmul_only;
+
   // If non-empty, remove following operations from XLA clustering excludelist.
   string tf_xla_cluster_exclude_ops;
 

@@ -80,6 +80,11 @@ bool IsInOutsideCompilationCluster(const Node& n) {
   return n.attrs().Find(kXlaOutsideCompilationAttr) != nullptr;
 }
 
+bool IsAllowedInMatMulOnlyCluster(absl::string_view op) {
+  return op == "MatMul" || op == "BatchMatMul" || op == "BatchMatMulV2" ||
+         op == "BatchMatMulV3" || op == "_FusedMatMul";
+}
+
 absl::Status MakeCallNodeFromAttribute(const Node& node,
                                        const std::string& attr_name,
                                        NodeDef* node_def) {
@@ -505,6 +510,16 @@ bool RecursiveCompilabilityChecker::IsCompilableNode(
 
   if (!op_filter_.allow_unique_op && node.type_string() == "Unique") {
     absl::string_view uncompilable_reason = "Unique op";
+    MaybeMarkUncompilableNode(uncompilable_reason, *stack_trace,
+                              encapsulating_function, uncompilable_nodes);
+    LogNotCompilable(node, uncompilable_reason);
+    return false;
+  }
+
+  if (op_filter_.allow_matmul_only_ops &&
+      !IsAllowedInMatMulOnlyCluster(node.type_string())) {
+    absl::string_view uncompilable_reason =
+        "not allowed by MatMul-only XLA clustering";
     MaybeMarkUncompilableNode(uncompilable_reason, *stack_trace,
                               encapsulating_function, uncompilable_nodes);
     LogNotCompilable(node, uncompilable_reason);

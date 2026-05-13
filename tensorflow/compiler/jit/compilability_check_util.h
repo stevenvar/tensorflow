@@ -146,6 +146,9 @@ class RecursiveCompilabilityChecker {
     // autoclustering once all failures are rfixed.
     bool allow_unique_op = true;
 
+    // Whether to restrict auto-clustering to MatMul/BatchMatMul ops.
+    bool allow_matmul_only_ops = false;
+
     // Whether ops that are marked as outside compiled are always considered
     // compilable.
     // TODO(b/191502757):  Make this behavior true by default and remove this

@@ -112,6 +112,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_cpu_prefer_vector_width(256);
   opts.set_xla_cpu_max_isa(DefaultMaxIsa());
   opts.set_xla_cpu_generate_unique_c_style_kernel_entry_points(false);
+  opts.set_xla_cpu_disable_parallel_task_assignment(false);
 
   opts.set_xla_cpu_enable_fast_math(false);
   // Disable forms of fast math that have caused users problems in the past.
@@ -995,6 +996,12 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
                 bool_setter_for(&DebugOptions::set_xla_cpu_use_xnnpack),
                 debug_options->xla_cpu_use_xnnpack(),
                 "Use XNNPACK for supported operations."));
+  flag_list->push_back(tsl::Flag(
+      "xla_cpu_disable_parallel_task_assignment",
+      bool_setter_for(
+          &DebugOptions::set_xla_cpu_disable_parallel_task_assignment),
+      debug_options->xla_cpu_disable_parallel_task_assignment(),
+      "Disable outlining HLOs into parallel CPU compute functions."));
   flag_list->push_back(tsl::Flag(
       "xla_cpu_experimental_xnn_graph_fusion_mode",
       setter_for_xla_cpu_experimental_xnn_graph_fusion_mode,

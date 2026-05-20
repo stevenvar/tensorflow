@@ -500,6 +500,8 @@ absl::Status CompileToLocalExecutable(
 
   MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
   if (flags->tf_xla_enable_dynamic_sizes) {
+    const bool disable_dynamic_size_padding =
+        flags->tf_xla_disable_dynamic_size_padding;
     // Rewriting the argument with expressions if they have dynamic
     // dimension, detecting dynamic dimension via either _dynamic_dim or the
     // inferred-output-shapes attr attached during encapsulation.
@@ -611,8 +613,13 @@ absl::Status CompileToLocalExecutable(
                 std::get<TensorShape>(norm_args[arg_index].shape);
             const AttrValue& v = dyn_dim_attr->second;
             int64_t idx = v.i();
-            record_dynamic_dim_value(shp.dim_size(idx), xla::DExpr::Var(1));
-            if (!filled_batch && xla_batch_matcher) {
+            xla::DExpr dyn_dim_expr = normalize_dynamic_expr(
+                xla::DExpr::Var(1),
+                absl::StrCat("arg=", arg_index, " dim=", idx,
+                             " dynamic_dim_attr"));
+            record_dynamic_dim_value(shp.dim_size(idx), dyn_dim_expr);
+            if (!disable_dynamic_size_padding && !filled_batch &&
+                xla_batch_matcher) {
               filled_batch =
                   xla_batch_matcher->get_xla_compile_batch(shp.dim_size(idx));
             }
@@ -632,7 +639,8 @@ absl::Status CompileToLocalExecutable(
           const auto& exp = proto.expressions();
           TensorShape& shp = std::get<TensorShape>(norm_args[arg_index].shape);
 
-          if (!filled_batch && xla_batch_matcher) {
+          if (!disable_dynamic_size_padding && !filled_batch &&
+              xla_batch_matcher) {
             for (int idx = 0; idx < exp.size(); ++idx) {
               // Look for dynamic expression. If found then compute padding
               // value and exit loop.

@@ -106,38 +106,35 @@ def _logical_unary(op_fn, op_name):
 
 def _reduce(op_fn, op_name):
   x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  axis = tf.placeholder(dtype=tf.int32, shape=[], name="axis")
+  axis = tf.constant(1, dtype=tf.int32, name="axis")
   result = op_fn(x, axis=axis, name=op_name)
   feeds = {
       x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
                    [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
-      axis: np.array(1, dtype=np.int32),
   }
-  return {"x": x, "axis": axis}, result, feeds
+  return {"x": x}, result, feeds
 
 
 def _reduce_bool(op_fn, op_name):
   x = tf.placeholder(dtype=tf.bool, shape=[None, 5], name="X")
-  axis = tf.placeholder(dtype=tf.int32, shape=[], name="axis")
+  axis = tf.constant(1, dtype=tf.int32, name="axis")
   result = op_fn(x, axis=axis, name=op_name)
   feeds = {
       x: np.array([[True, True, False, False, True],
                    [True, True, True, True, True]], dtype=np.bool_),
-      axis: np.array(1, dtype=np.int32),
   }
-  return {"x": x, "axis": axis}, result, feeds
+  return {"x": x}, result, feeds
 
 
 def _arg_reduce(op_fn, op_name):
   x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  axis = tf.placeholder(dtype=tf.int32, shape=[], name="axis")
+  axis = tf.constant(1, dtype=tf.int32, name="axis")
   result = op_fn(x, axis=axis, output_type=tf.int32, name=op_name)
   feeds = {
       x: np.array([[1.0, 5.0, 3.0, 2.0, 4.0],
                    [8.0, 6.0, 7.0, 10.0, 9.0]], dtype=np.float32),
-      axis: np.array(1, dtype=np.int32),
   }
-  return {"x": x, "axis": axis}, result, feeds
+  return {"x": x}, result, feeds
 
 
 def _shape_op(op_fn, op_name):
@@ -161,37 +158,34 @@ def _cast():
 
 def _reshape():
   x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  shape = tf.placeholder(dtype=tf.int32, shape=[2], name="shape")
+  shape = tf.constant([5, 2], dtype=tf.int32, name="shape")
   result = tf.reshape(x, shape, name="reshape")
   feeds = {
       x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
                    [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
-      shape: np.array([5, 2], dtype=np.int32),
   }
-  return {"x": x, "shape": shape}, result, feeds
+  return {"x": x}, result, feeds
 
 
 def _transpose():
   x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  perm = tf.placeholder(dtype=tf.int32, shape=[2], name="perm")
+  perm = tf.constant([1, 0], dtype=tf.int32, name="perm")
   result = tf.transpose(x, perm=perm, name="transpose")
   feeds = {
       x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
                    [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
-      perm: np.array([1, 0], dtype=np.int32),
   }
-  return {"x": x, "perm": perm}, result, feeds
+  return {"x": x}, result, feeds
 
 
 def _expand_dims():
   x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  axis = tf.placeholder(dtype=tf.int32, shape=[], name="axis")
+  axis = tf.constant(1, dtype=tf.int32, name="axis")
   result = tf.expand_dims(x, axis=axis, name="expand_dims")
   feeds = {
       x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
-      axis: np.array(1, dtype=np.int32),
   }
-  return {"x": x, "axis": axis}, result, feeds
+  return {"x": x}, result, feeds
 
 
 def _squeeze():
@@ -206,55 +200,48 @@ def _squeeze():
 def _concat():
   x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
   y = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="Y")
-  axis = tf.placeholder(dtype=tf.int32, shape=[], name="axis")
+  axis = tf.constant(0, dtype=tf.int32, name="axis")
   result = tf.concat([x, y], axis=axis, name="concat")
   feeds = {
       x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
       y: np.array([[6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
-      axis: np.array(0, dtype=np.int32),
   }
-  return {"x": x, "y": y, "axis": axis}, result, feeds
+  return {"x": x, "y": y}, result, feeds
 
 
 def _split():
   x = tf.placeholder(dtype=tf.float32, shape=[None, 6], name="X")
-  axis = tf.placeholder(dtype=tf.int32, shape=[], name="axis")
+  axis = tf.constant(1, dtype=tf.int32, name="axis")
   result = tf.split(x, num_or_size_splits=2, axis=axis, name="split")[0]
   feeds = {
       x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]], dtype=np.float32),
-      axis: np.array(1, dtype=np.int32),
   }
-  return {"x": x, "axis": axis}, result, feeds
+  return {"x": x}, result, feeds
 
 
 def _slice():
   x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  begin = tf.placeholder(dtype=tf.int32, shape=[2], name="begin")
-  size = tf.placeholder(dtype=tf.int32, shape=[2], name="size")
+  begin = tf.constant([0, 1], dtype=tf.int32, name="begin")
+  size = tf.constant([2, 3], dtype=tf.int32, name="size")
   result = tf.slice(x, begin, size, name="slice")
   feeds = {
       x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
                    [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
-      begin: np.array([0, 1], dtype=np.int32),
-      size: np.array([2, 3], dtype=np.int32),
   }
-  return {"x": x, "begin": begin, "size": size}, result, feeds
+  return {"x": x}, result, feeds
 
 
 def _strided_slice():
   x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  begin = tf.placeholder(dtype=tf.int32, shape=[2], name="begin")
-  end = tf.placeholder(dtype=tf.int32, shape=[2], name="end")
-  strides = tf.placeholder(dtype=tf.int32, shape=[2], name="strides")
+  begin = tf.constant([0, 0], dtype=tf.int32, name="begin")
+  end = tf.constant([2, 5], dtype=tf.int32, name="end")
+  strides = tf.constant([1, 2], dtype=tf.int32, name="strides")
   result = tf.strided_slice(x, begin, end, strides, name="strided_slice")
   feeds = {
       x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
                    [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
-      begin: np.array([0, 0], dtype=np.int32),
-      end: np.array([2, 5], dtype=np.int32),
-      strides: np.array([1, 2], dtype=np.int32),
   }
-  return {"x": x, "begin": begin, "end": end, "strides": strides}, result, feeds
+  return {"x": x}, result, feeds
 
 
 def _gather():
@@ -281,13 +268,12 @@ def _gather_nd():
 
 def _one_hot():
   indices = tf.placeholder(dtype=tf.int32, shape=[None], name="indices")
-  depth = tf.placeholder(dtype=tf.int32, shape=[], name="depth")
+  depth = tf.constant(5, dtype=tf.int32, name="depth")
   result = tf.one_hot(indices, depth, name="one_hot")
   feeds = {
       indices: np.array([0, 2, 4], dtype=np.int32),
-      depth: np.array(5, dtype=np.int32),
   }
-  return {"indices": indices, "depth": depth}, result, feeds
+  return {"indices": indices}, result, feeds
 
 
 def _matmul():
@@ -388,36 +374,33 @@ def _complex_unary(op_fn, op_name):
 
 def _pad():
   x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  paddings = tf.placeholder(dtype=tf.int32, shape=[2, 2], name="paddings")
+  paddings = tf.constant([[0, 1], [1, 0]], dtype=tf.int32, name="paddings")
   result = tf.pad(x, paddings, name="pad")
   feeds = {
       x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
-      paddings: np.array([[0, 1], [1, 0]], dtype=np.int32),
   }
-  return {"x": x, "paddings": paddings}, result, feeds
+  return {"x": x}, result, feeds
 
 
 def _tile():
   x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  multiples = tf.placeholder(dtype=tf.int32, shape=[2], name="multiples")
+  multiples = tf.constant([2, 1], dtype=tf.int32, name="multiples")
   result = tf.tile(x, multiples, name="tile")
   feeds = {
       x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
-      multiples: np.array([2, 1], dtype=np.int32),
   }
-  return {"x": x, "multiples": multiples}, result, feeds
+  return {"x": x}, result, feeds
 
 
 def _reverse():
   x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  axis = tf.placeholder(dtype=tf.int32, shape=[1], name="axis")
+  axis = tf.constant([1], dtype=tf.int32, name="axis")
   result = tf.reverse(x, axis, name="reverse")
   feeds = {
       x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
                    [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
-      axis: np.array([1], dtype=np.int32),
   }
-  return {"x": x, "axis": axis}, result, feeds
+  return {"x": x}, result, feeds
 
 
 def _stack():
@@ -443,13 +426,12 @@ def _unstack():
 
 def _broadcast_to():
   x = tf.placeholder(dtype=tf.float32, shape=[None, 1], name="X")
-  shape = tf.placeholder(dtype=tf.int32, shape=[2], name="shape")
+  shape = tf.constant([1, 5], dtype=tf.int32, name="shape")
   result = tf.broadcast_to(x, shape, name="broadcast_to")
   feeds = {
       x: np.array([[1.0]], dtype=np.float32),
-      shape: np.array([1, 5], dtype=np.int32),
   }
-  return {"x": x, "shape": shape}, result, feeds
+  return {"x": x}, result, feeds
 
 
 def _where_indices():
@@ -487,13 +469,14 @@ def _add_n():
 
 def _bias_add():
   x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  bias = tf.placeholder(dtype=tf.float32, shape=[5], name="bias")
+  bias = tf.constant([1.0, 1.0, 1.0, 1.0, 1.0],
+                     dtype=tf.float32,
+                     name="bias")
   result = tf.nn.bias_add(x, bias, name="bias_add")
   feeds = {
       x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
-      bias: np.array([1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32),
   }
-  return {"x": x, "bias": bias}, result, feeds
+  return {"x": x}, result, feeds
 
 
 def _top_k():

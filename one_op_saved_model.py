@@ -802,8 +802,7 @@ def _qr():
 
 def _svd():
   x = tf.placeholder(dtype=tf.float32, shape=[None, 3, 3], name="X")
-  result, _, _ = tf.linalg.svd(x, compute_uv=True, full_matrices=False,
-                               name="svd")
+  result = tf.linalg.svd(x, compute_uv=False, name="svd")
   feeds = {
       x: np.arange(9, dtype=np.float32).reshape(1, 3, 3) + 1.0,
   }

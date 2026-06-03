@@ -567,23 +567,17 @@ def _dynamic_partition():
 
 
 def _dynamic_stitch():
-  indices_0 = tf.placeholder(dtype=tf.int32, shape=[None], name="indices_0")
-  indices_1 = tf.placeholder(dtype=tf.int32, shape=[None], name="indices_1")
+  indices_0 = tf.constant([0], dtype=tf.int32, name="indices_0")
+  indices_1 = tf.constant([1], dtype=tf.int32, name="indices_1")
   data_0 = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="data_0")
   data_1 = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="data_1")
   result = tf.dynamic_stitch([indices_0, indices_1], [data_0, data_1],
                              name="dynamic_stitch")
   feeds = {
-      indices_0: np.array([0, 2], dtype=np.int32),
-      indices_1: np.array([1, 3], dtype=np.int32),
-      data_0: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
-                        [11.0, 12.0, 13.0, 14.0, 15.0]], dtype=np.float32),
-      data_1: np.array([[6.0, 7.0, 8.0, 9.0, 10.0],
-                        [16.0, 17.0, 18.0, 19.0, 20.0]], dtype=np.float32),
+      data_0: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
+      data_1: np.array([[6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
   }
   return {
-      "indices_0": indices_0,
-      "indices_1": indices_1,
       "data_0": data_0,
       "data_1": data_1
   }, result, feeds

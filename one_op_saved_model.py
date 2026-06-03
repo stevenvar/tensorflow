@@ -324,8 +324,25 @@ def _build_raw_op(raw_op_name):
 def _manual_builder(raw_op_name):
   builders = {
       "DynamicStitch": _build_dynamic_stitch,
+      "Transpose": _build_transpose,
   }
   return builders.get(raw_op_name)
+
+
+def _build_transpose():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 4], name="x")
+  perm = tf.placeholder(dtype=tf.int32, shape=[2], name="perm")
+  output = tf.raw_ops.Transpose(x=x, perm=perm, name="transpose")
+  inputs = {
+      "x": x,
+      "perm": perm,
+  }
+  feeds = {
+      x: np.array([[1.0, 2.0, 3.0, 4.0],
+                   [5.0, 6.0, 7.0, 8.0]], dtype=np.float32),
+      perm: np.array([1, 0], dtype=np.int32),
+  }
+  return inputs, output, feeds
 
 
 def _build_dynamic_stitch():

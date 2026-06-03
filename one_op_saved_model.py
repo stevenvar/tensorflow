@@ -258,23 +258,23 @@ def _strided_slice():
 
 
 def _gather():
-  x = tf.placeholder(dtype=tf.float32, shape=[5, 5], name="X")
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
   indices = tf.placeholder(dtype=tf.int32, shape=[None], name="indices")
   result = tf.gather(x, indices, name="gather")
   feeds = {
-      x: np.arange(25, dtype=np.float32).reshape(5, 5),
-      indices: np.array([0, 2, 4], dtype=np.int32),
+      x: np.arange(10, dtype=np.float32).reshape(2, 5),
+      indices: np.array([0, 1], dtype=np.int32),
   }
   return {"x": x, "indices": indices}, result, feeds
 
 
 def _gather_nd():
-  x = tf.placeholder(dtype=tf.float32, shape=[5, 5], name="X")
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
   indices = tf.placeholder(dtype=tf.int32, shape=[None, 2], name="indices")
   result = tf.gather_nd(x, indices, name="gather_nd")
   feeds = {
-      x: np.arange(25, dtype=np.float32).reshape(5, 5),
-      indices: np.array([[0, 0], [2, 3], [4, 4]], dtype=np.int32),
+      x: np.arange(10, dtype=np.float32).reshape(2, 5),
+      indices: np.array([[0, 0], [1, 4]], dtype=np.int32),
   }
   return {"x": x, "indices": indices}, result, feeds
 
@@ -291,12 +291,12 @@ def _one_hot():
 
 
 def _matmul():
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  y = tf.placeholder(dtype=tf.float32, shape=[5, 5], name="Y")
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 1, 5], name="X")
+  y = tf.placeholder(dtype=tf.float32, shape=[None, 5, 5], name="Y")
   result = tf.matmul(x, y, name="matmul")
   feeds = {
-      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
-      y: np.eye(5, dtype=np.float32),
+      x: np.array([[[1.0, 2.0, 3.0, 4.0, 5.0]]], dtype=np.float32),
+      y: np.eye(5, dtype=np.float32).reshape(1, 5, 5),
   }
   return {"x": x, "y": y}, result, feeds
 
@@ -348,6 +348,200 @@ def _complex_abs():
   feeds = {
       x: np.array([[1 + 1j, 2 + 0j, 0 + 3j, 4 - 4j, 5 + 2j]],
                   dtype=np.complex64),
+  }
+  return {"x": x}, result, feeds
+
+
+def _complex_from_real_imag():
+  real = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="real")
+  imag = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="imag")
+  result = tf.complex(real, imag, name="complex")
+  feeds = {
+      real: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
+      imag: np.array([[5.0, 4.0, 3.0, 2.0, 1.0]], dtype=np.float32),
+  }
+  return {"real": real, "imag": imag}, result, feeds
+
+
+def _betainc():
+  a = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="a")
+  b = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="b")
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
+  result = tf.math.betainc(a, b, x, name="betainc")
+  feeds = {
+      a: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
+      b: np.array([[2.0, 3.0, 4.0, 5.0, 6.0]], dtype=np.float32),
+      x: np.array([[0.1, 0.2, 0.3, 0.4, 0.5]], dtype=np.float32),
+  }
+  return {"a": a, "b": b, "x": x}, result, feeds
+
+
+def _complex_unary(op_fn, op_name):
+  x = tf.placeholder(dtype=tf.complex64, shape=[None, 5], name="X")
+  result = op_fn(x, name=op_name)
+  feeds = {
+      x: np.array([[1 + 1j, 2 + 0j, 0 + 3j, 4 - 4j, 5 + 2j]],
+                  dtype=np.complex64),
+  }
+  return {"x": x}, result, feeds
+
+
+def _pad():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
+  paddings = tf.placeholder(dtype=tf.int32, shape=[2, 2], name="paddings")
+  result = tf.pad(x, paddings, name="pad")
+  feeds = {
+      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
+      paddings: np.array([[0, 1], [1, 0]], dtype=np.int32),
+  }
+  return {"x": x, "paddings": paddings}, result, feeds
+
+
+def _tile():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
+  multiples = tf.placeholder(dtype=tf.int32, shape=[2], name="multiples")
+  result = tf.tile(x, multiples, name="tile")
+  feeds = {
+      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
+      multiples: np.array([2, 1], dtype=np.int32),
+  }
+  return {"x": x, "multiples": multiples}, result, feeds
+
+
+def _reverse():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
+  axis = tf.placeholder(dtype=tf.int32, shape=[1], name="axis")
+  result = tf.reverse(x, axis, name="reverse")
+  feeds = {
+      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
+                   [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
+      axis: np.array([1], dtype=np.int32),
+  }
+  return {"x": x, "axis": axis}, result, feeds
+
+
+def _stack():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
+  y = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="Y")
+  result = tf.stack([x, y], axis=0, name="stack")
+  feeds = {
+      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
+      y: np.array([[6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
+  }
+  return {"x": x, "y": y}, result, feeds
+
+
+def _unstack():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 2, 5], name="X")
+  result = tf.unstack(x, axis=1, name="unstack")[0]
+  feeds = {
+      x: np.array([[[1.0, 2.0, 3.0, 4.0, 5.0],
+                    [6.0, 7.0, 8.0, 9.0, 10.0]]], dtype=np.float32),
+  }
+  return {"x": x}, result, feeds
+
+
+def _broadcast_to():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 1], name="X")
+  shape = tf.placeholder(dtype=tf.int32, shape=[2], name="shape")
+  result = tf.broadcast_to(x, shape, name="broadcast_to")
+  feeds = {
+      x: np.array([[1.0]], dtype=np.float32),
+      shape: np.array([1, 5], dtype=np.int32),
+  }
+  return {"x": x, "shape": shape}, result, feeds
+
+
+def _where_indices():
+  condition = tf.placeholder(dtype=tf.bool, shape=[None, 5], name="condition")
+  result = tf.where(condition, name="where")
+  feeds = {
+      condition: np.array([[True, False, True, False, True]], dtype=np.bool_),
+  }
+  return {"condition": condition}, result, feeds
+
+
+def _where_select():
+  condition = tf.placeholder(dtype=tf.bool, shape=[None, 5], name="condition")
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
+  y = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="Y")
+  result = tf.where(condition, x, y, name="where_select")
+  feeds = {
+      condition: np.array([[True, False, True, False, True]], dtype=np.bool_),
+      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
+      y: np.array([[6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
+  }
+  return {"condition": condition, "x": x, "y": y}, result, feeds
+
+
+def _add_n():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
+  y = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="Y")
+  result = tf.add_n([x, y], name="add_n")
+  feeds = {
+      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
+      y: np.array([[6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
+  }
+  return {"x": x, "y": y}, result, feeds
+
+
+def _bias_add():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
+  bias = tf.placeholder(dtype=tf.float32, shape=[5], name="bias")
+  result = tf.nn.bias_add(x, bias, name="bias_add")
+  feeds = {
+      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
+      bias: np.array([1.0, 1.0, 1.0, 1.0, 1.0], dtype=np.float32),
+  }
+  return {"x": x, "bias": bias}, result, feeds
+
+
+def _top_k():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
+  result = tf.nn.top_k(x, k=2, name="top_k").values
+  feeds = {
+      x: np.array([[1.0, 5.0, 3.0, 2.0, 4.0]], dtype=np.float32),
+  }
+  return {"x": x}, result, feeds
+
+
+def _pool(op_fn, op_name):
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 8, 8, 1], name="X")
+  result = op_fn(
+      x,
+      ksize=[1, 2, 2, 1],
+      strides=[1, 2, 2, 1],
+      padding="VALID",
+      name=op_name)
+  feeds = {
+      x: np.arange(64, dtype=np.float32).reshape(1, 8, 8, 1),
+  }
+  return {"x": x}, result, feeds
+
+
+def _lrn():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 4, 4, 3], name="X")
+  result = tf.nn.local_response_normalization(x, name="lrn")
+  feeds = {
+      x: np.arange(48, dtype=np.float32).reshape(1, 4, 4, 3),
+  }
+  return {"x": x}, result, feeds
+
+
+def _depth_to_space():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 4, 4, 4], name="X")
+  result = tf.nn.depth_to_space(x, block_size=2, name="depth_to_space")
+  feeds = {
+      x: np.arange(64, dtype=np.float32).reshape(1, 4, 4, 4),
+  }
+  return {"x": x}, result, feeds
+
+
+def _space_to_depth():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 4, 4, 1], name="X")
+  result = tf.nn.space_to_depth(x, block_size=2, name="space_to_depth")
+  feeds = {
+      x: np.arange(16, dtype=np.float32).reshape(1, 4, 4, 1),
   }
   return {"x": x}, result, feeds
 
@@ -479,6 +673,51 @@ OPS = {
     97: ("complex_abs", _complex_abs),
     98: ("is_finite", lambda: _unary_elementwise(tf.is_finite, "is_finite")),
     99: ("is_nan", lambda: _unary_elementwise(tf.is_nan, "is_nan")),
+    100: ("reciprocal",
+          lambda: _unary_elementwise(tf.reciprocal, "reciprocal",
+                                     [[1.0, 2.0, 3.0, 4.0, 5.0]])),
+    101: ("lgamma",
+          lambda: _unary_elementwise(tf.lgamma, "lgamma",
+                                     [[1.0, 2.0, 3.0, 4.0, 5.0]])),
+    102: ("digamma",
+          lambda: _unary_elementwise(tf.digamma, "digamma",
+                                     [[1.0, 2.0, 3.0, 4.0, 5.0]])),
+    103: ("polygamma",
+          lambda: _binary_positive(tf.polygamma, "polygamma")),
+    104: ("atan2", lambda: _binary_elementwise(tf.atan2, "atan2")),
+    105: ("xdivy", lambda: _binary_positive(tf.math.xdivy, "xdivy")),
+    106: ("xlogy", lambda: _binary_positive(tf.math.xlogy, "xlogy")),
+    107: ("xlog1py", lambda: _binary_positive(tf.math.xlog1py, "xlog1py")),
+    108: ("betainc", _betainc),
+    109: ("igamma", lambda: _binary_positive(tf.igamma, "igamma")),
+    110: ("igammac", lambda: _binary_positive(tf.igammac, "igammac")),
+    111: ("nextafter", lambda: _binary_positive(tf.math.nextafter,
+                                                "nextafter")),
+    112: ("complex", _complex_from_real_imag),
+    113: ("real", lambda: _complex_unary(tf.math.real, "real")),
+    114: ("imag", lambda: _complex_unary(tf.math.imag, "imag")),
+    115: ("angle", lambda: _complex_unary(tf.math.angle, "angle")),
+    116: ("conj", lambda: _complex_unary(tf.math.conj, "conj")),
+    117: ("pad", _pad),
+    118: ("tile", _tile),
+    119: ("reverse", _reverse),
+    120: ("stack", _stack),
+    121: ("unstack", _unstack),
+    122: ("broadcast_to", _broadcast_to),
+    123: ("where", _where_indices),
+    124: ("where_select", _where_select),
+    125: ("add_n", _add_n),
+    126: ("bias_add", _bias_add),
+    127: ("leaky_relu", lambda: _unary_elementwise(tf.nn.leaky_relu,
+                                                  "leaky_relu")),
+    128: ("log_softmax", lambda: _unary_elementwise(tf.nn.log_softmax,
+                                                    "log_softmax")),
+    129: ("top_k", _top_k),
+    130: ("avg_pool", lambda: _pool(tf.nn.avg_pool, "avg_pool")),
+    131: ("max_pool", lambda: _pool(tf.nn.max_pool, "max_pool")),
+    132: ("lrn", _lrn),
+    133: ("depth_to_space", _depth_to_space),
+    134: ("space_to_depth", _space_to_depth),
 }
 
 

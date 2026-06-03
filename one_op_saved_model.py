@@ -19,6 +19,11 @@ DEFAULT_REPORT_NAME = "generation_report.json"
 LIST_LENGTH = 2
 
 
+def _is_excluded_op(op_name):
+  lower_name = op_name.lower()
+  return "sparse" in lower_name and "dense" in lower_name
+
+
 def _to_snake_case(name):
   name = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
   return re.sub("([a-z0-9])([A-Z])", r"\1_\2", name).lower()
@@ -354,6 +359,8 @@ def _raw_op_names():
   for name in dir(tf.raw_ops):
     if name.startswith("_"):
       continue
+    if _is_excluded_op(name):
+      continue
     raw_op = getattr(tf.raw_ops, name)
     if callable(raw_op) and op_def_registry.get(name) is not None:
       names.append(name)
@@ -476,6 +483,8 @@ def main():
   if args.all_ops:
     op_names = [ops_by_id[i] for i in sorted(ops_by_id)]
   elif args.op_name:
+    if _is_excluded_op(args.op_name):
+      raise ValueError("{} is excluded from generation".format(args.op_name))
     op_names = [args.op_name]
   else:
     if args.op_id not in ops_by_id:

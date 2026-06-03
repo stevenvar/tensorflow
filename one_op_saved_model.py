@@ -1291,8 +1291,37 @@ OPS = {
 }
 
 
-def _model_dir(export_base_dir, op_name):
-  return os.path.join(export_base_dir, "model_{}".format(op_name.upper()))
+OP_CATEGORY_RANGES = (
+    (0, 12, "binary_math"),
+    (13, 39, "unary_math"),
+    (40, 52, "nn_activations"),
+    (53, 68, "comparison_logical_bitwise"),
+    (69, 77, "reductions"),
+    (78, 95, "array_shape_indexing"),
+    (96, 116, "complex_special_math"),
+    (117, 126, "array_manipulation"),
+    (127, 134, "nn_image_layout"),
+    (135, 144, "segments_masks"),
+    (145, 154, "convolution_image"),
+    (155, 158, "sets_losses"),
+    (159, 169, "linear_algebra"),
+    (170, 172, "scatter_search"),
+    (173, 178, "image_color"),
+    (179, 182, "quantization_cast"),
+    (183, 187, "strings"),
+)
+
+
+def _op_category(op_id):
+  for start, end, category in OP_CATEGORY_RANGES:
+    if start <= op_id <= end:
+      return category
+  return "misc"
+
+
+def _model_dir(export_base_dir, op_id, op_name):
+  return os.path.join(export_base_dir, _op_category(op_id),
+                      "model_{}".format(op_name.upper()))
 
 
 def _build_signature(inputs, result):
@@ -1357,7 +1386,8 @@ def _parse_args():
 
 def _run_op(op_id, args):
   op_name, op_builder = OPS[op_id]
-  export_dir = os.path.join(_model_dir(args.export_base_dir, op_name), "1")
+  export_dir = os.path.join(
+      _model_dir(args.export_base_dir, op_id, op_name), "1")
 
   with tf.Graph().as_default():
     inputs, result, feeds = op_builder()
@@ -1377,7 +1407,7 @@ def main():
 
   if args.list_ops:
     for op_id, (op_name, _) in sorted(OPS.items()):
-      print("{}: {}".format(op_id, op_name))
+      print("{}: {} ({})".format(op_id, op_name, _op_category(op_id)))
     return
 
   op_ids = sorted(OPS.keys()) if args.all_ops else [args.op_id]

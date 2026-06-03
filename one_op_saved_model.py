@@ -1,495 +1,339 @@
 import argparse
+import inspect
+import json
 import os
+import re
 import shutil
 
 import numpy as np
 import tensorflow.compat.v1 as tf
 
+from tensorflow.python.framework import op_def_registry
+
 
 tf.disable_eager_execution()
 
 
-def _binary_elementwise(op_fn, op_name):
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  y = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="Y")
-  result = op_fn(x, y, name=op_name)
-  feeds = {
-      x: np.array([[11.0, 12.0, 13.0, 14.0, 15.0]], dtype=np.float32),
-      y: np.array([[2.0, 3.0, 4.0, 5.0, 6.0]], dtype=np.float32),
-  }
-  return {"x": x, "y": y}, result, feeds
+DEFAULT_EXPORT_BASE_DIR = "unit_tests"
+DEFAULT_REPORT_NAME = "generation_report.json"
+LIST_LENGTH = 2
 
 
-def _binary_positive(op_fn, op_name):
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  y = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="Y")
-  result = op_fn(x, y, name=op_name)
-  feeds = {
-      x: np.array([[2.0, 3.0, 4.0, 5.0, 6.0]], dtype=np.float32),
-      y: np.array([[1.5, 2.0, 2.5, 3.0, 3.5]], dtype=np.float32),
-  }
-  return {"x": x, "y": y}, result, feeds
-
-
-def _binary_int(op_fn, op_name):
-  x = tf.placeholder(dtype=tf.int32, shape=[None, 5], name="X")
-  y = tf.placeholder(dtype=tf.int32, shape=[None, 5], name="Y")
-  result = op_fn(x, y, name=op_name)
-  feeds = {
-      x: np.array([[11, 12, 13, 14, 15]], dtype=np.int32),
-      y: np.array([[2, 3, 4, 5, 6]], dtype=np.int32),
-  }
-  return {"x": x, "y": y}, result, feeds
-
-
-def _bitwise_binary(op_fn, op_name):
-  x = tf.placeholder(dtype=tf.int32, shape=[None, 5], name="X")
-  y = tf.placeholder(dtype=tf.int32, shape=[None, 5], name="Y")
-  result = op_fn(x, y, name=op_name)
-  feeds = {
-      x: np.array([[1, 3, 5, 7, 9]], dtype=np.int32),
-      y: np.array([[2, 3, 4, 5, 6]], dtype=np.int32),
-  }
-  return {"x": x, "y": y}, result, feeds
-
-
-def _compare_elementwise(op_fn, op_name):
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  y = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="Y")
-  result = op_fn(x, y, name=op_name)
-  feeds = {
-      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
-      y: np.array([[3.0, 2.0, 1.0, 4.0, 6.0]], dtype=np.float32),
-  }
-  return {"x": x, "y": y}, result, feeds
-
-
-def _logical_binary(op_fn, op_name):
-  x = tf.placeholder(dtype=tf.bool, shape=[None, 5], name="X")
-  y = tf.placeholder(dtype=tf.bool, shape=[None, 5], name="Y")
-  result = op_fn(x, y, name=op_name)
-  feeds = {
-      x: np.array([[True, True, False, False, True]], dtype=np.bool_),
-      y: np.array([[True, False, True, False, False]], dtype=np.bool_),
-  }
-  return {"x": x, "y": y}, result, feeds
-
-
-def _unary_elementwise(op_fn, op_name, values=None):
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  result = op_fn(x, name=op_name)
-  if values is None:
-    values = [[-2.0, -1.0, 0.0, 1.0, 2.0]]
-  feeds = {
-      x: np.array(values, dtype=np.float32),
-  }
-  return {"x": x}, result, feeds
-
-
-def _unary_int(op_fn, op_name):
-  x = tf.placeholder(dtype=tf.int32, shape=[None, 5], name="X")
-  result = op_fn(x, name=op_name)
-  feeds = {
-      x: np.array([[-2, -1, 0, 1, 2]], dtype=np.int32),
-  }
-  return {"x": x}, result, feeds
-
-
-def _logical_unary(op_fn, op_name):
-  x = tf.placeholder(dtype=tf.bool, shape=[None, 5], name="X")
-  result = op_fn(x, name=op_name)
-  feeds = {
-      x: np.array([[True, True, False, False, True]], dtype=np.bool_),
-  }
-  return {"x": x}, result, feeds
-
-
-def _reduce(op_fn, op_name):
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  axis = tf.placeholder(dtype=tf.int32, shape=[], name="axis")
-  result = op_fn(x, axis=axis, name=op_name)
-  feeds = {
-      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
-                   [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
-      axis: np.array(1, dtype=np.int32),
-  }
-  return {"x": x, "axis": axis}, result, feeds
-
-
-def _reduce_bool(op_fn, op_name):
-  x = tf.placeholder(dtype=tf.bool, shape=[None, 5], name="X")
-  axis = tf.placeholder(dtype=tf.int32, shape=[], name="axis")
-  result = op_fn(x, axis=axis, name=op_name)
-  feeds = {
-      x: np.array([[True, True, False, False, True],
-                   [True, True, True, True, True]], dtype=np.bool_),
-      axis: np.array(1, dtype=np.int32),
-  }
-  return {"x": x, "axis": axis}, result, feeds
-
-
-def _arg_reduce(op_fn, op_name):
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  axis = tf.placeholder(dtype=tf.int32, shape=[], name="axis")
-  result = op_fn(x, axis=axis, output_type=tf.int32, name=op_name)
-  feeds = {
-      x: np.array([[1.0, 5.0, 3.0, 2.0, 4.0],
-                   [8.0, 6.0, 7.0, 10.0, 9.0]], dtype=np.float32),
-      axis: np.array(1, dtype=np.int32),
-  }
-  return {"x": x, "axis": axis}, result, feeds
-
-
-def _shape_op(op_fn, op_name):
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  result = op_fn(x, name=op_name)
-  feeds = {
-      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
-                   [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
-  }
-  return {"x": x}, result, feeds
-
-
-def _cast():
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  result = tf.cast(x, tf.int32, name="cast")
-  feeds = {
-      x: np.array([[1.2, 2.3, 3.4, 4.5, 5.6]], dtype=np.float32),
-  }
-  return {"x": x}, result, feeds
-
-
-def _reshape():
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  shape = tf.placeholder(dtype=tf.int32, shape=[2], name="shape")
-  result = tf.reshape(x, shape, name="reshape")
-  feeds = {
-      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
-                   [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
-      shape: np.array([5, 2], dtype=np.int32),
-  }
-  return {"x": x, "shape": shape}, result, feeds
-
-
-def _transpose():
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  perm = tf.placeholder(dtype=tf.int32, shape=[2], name="perm")
-  result = tf.transpose(x, perm=perm, name="transpose")
-  feeds = {
-      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
-                   [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
-      perm: np.array([1, 0], dtype=np.int32),
-  }
-  return {"x": x, "perm": perm}, result, feeds
-
-
-def _expand_dims():
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  axis = tf.placeholder(dtype=tf.int32, shape=[], name="axis")
-  result = tf.expand_dims(x, axis=axis, name="expand_dims")
-  feeds = {
-      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
-      axis: np.array(1, dtype=np.int32),
-  }
-  return {"x": x, "axis": axis}, result, feeds
-
-
-def _squeeze():
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 1, 5], name="X")
-  result = tf.squeeze(x, axis=[1], name="squeeze")
-  feeds = {
-      x: np.array([[[1.0, 2.0, 3.0, 4.0, 5.0]]], dtype=np.float32),
-  }
-  return {"x": x}, result, feeds
-
-
-def _concat():
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  y = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="Y")
-  axis = tf.placeholder(dtype=tf.int32, shape=[], name="axis")
-  result = tf.concat([x, y], axis=axis, name="concat")
-  feeds = {
-      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
-      y: np.array([[6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
-      axis: np.array(0, dtype=np.int32),
-  }
-  return {"x": x, "y": y, "axis": axis}, result, feeds
-
-
-def _split():
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 6], name="X")
-  axis = tf.placeholder(dtype=tf.int32, shape=[], name="axis")
-  result = tf.split(x, num_or_size_splits=2, axis=axis, name="split")[0]
-  feeds = {
-      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]], dtype=np.float32),
-      axis: np.array(1, dtype=np.int32),
-  }
-  return {"x": x, "axis": axis}, result, feeds
-
-
-def _slice():
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  begin = tf.placeholder(dtype=tf.int32, shape=[2], name="begin")
-  size = tf.placeholder(dtype=tf.int32, shape=[2], name="size")
-  result = tf.slice(x, begin, size, name="slice")
-  feeds = {
-      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
-                   [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
-      begin: np.array([0, 1], dtype=np.int32),
-      size: np.array([2, 3], dtype=np.int32),
-  }
-  return {"x": x, "begin": begin, "size": size}, result, feeds
-
-
-def _strided_slice():
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  begin = tf.placeholder(dtype=tf.int32, shape=[2], name="begin")
-  end = tf.placeholder(dtype=tf.int32, shape=[2], name="end")
-  strides = tf.placeholder(dtype=tf.int32, shape=[2], name="strides")
-  result = tf.strided_slice(x, begin, end, strides, name="strided_slice")
-  feeds = {
-      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
-                   [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
-      begin: np.array([0, 0], dtype=np.int32),
-      end: np.array([2, 5], dtype=np.int32),
-      strides: np.array([1, 2], dtype=np.int32),
-  }
-  return {"x": x, "begin": begin, "end": end, "strides": strides}, result, feeds
-
-
-def _gather():
-  x = tf.placeholder(dtype=tf.float32, shape=[5, 5], name="X")
-  indices = tf.placeholder(dtype=tf.int32, shape=[None], name="indices")
-  result = tf.gather(x, indices, name="gather")
-  feeds = {
-      x: np.arange(25, dtype=np.float32).reshape(5, 5),
-      indices: np.array([0, 2, 4], dtype=np.int32),
-  }
-  return {"x": x, "indices": indices}, result, feeds
-
-
-def _gather_nd():
-  x = tf.placeholder(dtype=tf.float32, shape=[5, 5], name="X")
-  indices = tf.placeholder(dtype=tf.int32, shape=[None, 2], name="indices")
-  result = tf.gather_nd(x, indices, name="gather_nd")
-  feeds = {
-      x: np.arange(25, dtype=np.float32).reshape(5, 5),
-      indices: np.array([[0, 0], [2, 3], [4, 4]], dtype=np.int32),
-  }
-  return {"x": x, "indices": indices}, result, feeds
-
-
-def _one_hot():
-  indices = tf.placeholder(dtype=tf.int32, shape=[None], name="indices")
-  depth = tf.placeholder(dtype=tf.int32, shape=[], name="depth")
-  result = tf.one_hot(indices, depth, name="one_hot")
-  feeds = {
-      indices: np.array([0, 2, 4], dtype=np.int32),
-      depth: np.array(5, dtype=np.int32),
-  }
-  return {"indices": indices, "depth": depth}, result, feeds
-
-
-def _matmul():
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
-  y = tf.placeholder(dtype=tf.float32, shape=[5, 5], name="Y")
-  result = tf.matmul(x, y, name="matmul")
-  feeds = {
-      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
-      y: np.eye(5, dtype=np.float32),
-  }
-  return {"x": x, "y": y}, result, feeds
-
-
-def _batch_matmul():
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 2, 3], name="X")
-  y = tf.placeholder(dtype=tf.float32, shape=[None, 3, 2], name="Y")
-  result = tf.matmul(x, y, name="batch_matmul")
-  feeds = {
-      x: np.array([[[1.0, 2.0, 3.0],
-                    [4.0, 5.0, 6.0]]], dtype=np.float32),
-      y: np.array([[[1.0, 0.0],
-                    [0.0, 1.0],
-                    [1.0, 1.0]]], dtype=np.float32),
-  }
-  return {"x": x, "y": y}, result, feeds
-
-
-def _matrix_diag():
-  diagonal = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="diagonal")
-  result = tf.linalg.diag(diagonal, name="matrix_diag")
-  feeds = {
-      diagonal: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
-  }
-  return {"diagonal": diagonal}, result, feeds
-
-
-def _matrix_diag_part():
-  x = tf.placeholder(dtype=tf.float32, shape=[None, 5, 5], name="X")
-  result = tf.linalg.diag_part(x, name="matrix_diag_part")
-  feeds = {
-      x: np.arange(25, dtype=np.float32).reshape(1, 5, 5),
-  }
-  return {"x": x}, result, feeds
-
-
-def _fft():
-  x = tf.placeholder(dtype=tf.complex64, shape=[None, 8], name="X")
-  result = tf.signal.fft(x, name="fft")
-  feeds = {
-      x: np.array([[complex(i, 0.0) for i in range(8)]], dtype=np.complex64),
-  }
-  return {"x": x}, result, feeds
-
-
-def _complex_abs():
-  x = tf.placeholder(dtype=tf.complex64, shape=[None, 5], name="X")
-  result = tf.abs(x, name="complex_abs")
-  feeds = {
-      x: np.array([[1 + 1j, 2 + 0j, 0 + 3j, 4 - 4j, 5 + 2j]],
-                  dtype=np.complex64),
-  }
-  return {"x": x}, result, feeds
-
-
-OPS = {
-    0: ("add", lambda: _binary_elementwise(tf.add, "add")),
-    1: ("sub", lambda: _binary_elementwise(tf.subtract, "sub")),
-    2: ("mul", lambda: _binary_elementwise(tf.multiply, "mul")),
-    3: ("div", lambda: _binary_elementwise(tf.divide, "div")),
-    4: ("maximum", lambda: _binary_elementwise(tf.maximum, "maximum")),
-    5: ("minimum", lambda: _binary_elementwise(tf.minimum, "minimum")),
-    6: ("squared_difference",
-        lambda: _binary_elementwise(tf.squared_difference,
-                                    "squared_difference")),
-    7: ("pow", lambda: _binary_elementwise(tf.pow, "pow")),
-    8: ("neg", lambda: _unary_elementwise(tf.negative, "neg")),
-    9: ("matmul", _matmul),
-    10: ("real_div", lambda: _binary_positive(tf.realdiv, "real_div")),
-    11: ("floor_div", lambda: _binary_int(tf.floor_div, "floor_div")),
-    12: ("floor_mod", lambda: _binary_int(tf.floormod, "floor_mod")),
-    13: ("abs", lambda: _unary_elementwise(tf.abs, "abs")),
-    14: ("sign", lambda: _unary_elementwise(tf.sign, "sign")),
-    15: ("square", lambda: _unary_elementwise(tf.square, "square")),
-    16: ("sqrt",
-         lambda: _unary_elementwise(tf.sqrt, "sqrt",
-                                    [[1.0, 4.0, 9.0, 16.0, 25.0]])),
-    17: ("rsqrt",
-         lambda: _unary_elementwise(tf.rsqrt, "rsqrt",
-                                    [[1.0, 4.0, 9.0, 16.0, 25.0]])),
-    18: ("exp", lambda: _unary_elementwise(tf.exp, "exp")),
-    19: ("expm1", lambda: _unary_elementwise(tf.expm1, "expm1")),
-    20: ("log",
-         lambda: _unary_elementwise(tf.log, "log",
-                                    [[1.0, 2.0, 3.0, 4.0, 5.0]])),
-    21: ("log1p",
-         lambda: _unary_elementwise(tf.log1p, "log1p",
-                                    [[0.0, 1.0, 2.0, 3.0, 4.0]])),
-    22: ("sin", lambda: _unary_elementwise(tf.sin, "sin")),
-    23: ("cos", lambda: _unary_elementwise(tf.cos, "cos")),
-    24: ("tan", lambda: _unary_elementwise(tf.tan, "tan")),
-    25: ("asin",
-         lambda: _unary_elementwise(tf.asin, "asin",
-                                    [[-0.5, -0.25, 0.0, 0.25, 0.5]])),
-    26: ("acos",
-         lambda: _unary_elementwise(tf.acos, "acos",
-                                    [[-0.5, -0.25, 0.0, 0.25, 0.5]])),
-    27: ("atan", lambda: _unary_elementwise(tf.atan, "atan")),
-    28: ("sinh", lambda: _unary_elementwise(tf.sinh, "sinh")),
-    29: ("cosh", lambda: _unary_elementwise(tf.cosh, "cosh")),
-    30: ("tanh", lambda: _unary_elementwise(tf.tanh, "tanh")),
-    31: ("asinh", lambda: _unary_elementwise(tf.asinh, "asinh")),
-    32: ("acosh",
-         lambda: _unary_elementwise(tf.acosh, "acosh",
-                                    [[1.0, 1.25, 1.5, 2.0, 3.0]])),
-    33: ("atanh",
-         lambda: _unary_elementwise(tf.atanh, "atanh",
-                                    [[-0.5, -0.25, 0.0, 0.25, 0.5]])),
-    34: ("erf", lambda: _unary_elementwise(tf.erf, "erf")),
-    35: ("erfc", lambda: _unary_elementwise(tf.erfc, "erfc")),
-    36: ("ceil", lambda: _unary_elementwise(tf.ceil, "ceil")),
-    37: ("floor", lambda: _unary_elementwise(tf.floor, "floor")),
-    38: ("round", lambda: _unary_elementwise(tf.round, "round")),
-    39: ("rint", lambda: _unary_elementwise(tf.rint, "rint")),
-    40: ("relu", lambda: _unary_elementwise(tf.nn.relu, "relu")),
-    41: ("relu6", lambda: _unary_elementwise(tf.nn.relu6, "relu6")),
-    42: ("elu", lambda: _unary_elementwise(tf.nn.elu, "elu")),
-    43: ("selu", lambda: _unary_elementwise(tf.nn.selu, "selu")),
-    44: ("softplus", lambda: _unary_elementwise(tf.nn.softplus, "softplus")),
-    45: ("softsign", lambda: _unary_elementwise(tf.nn.softsign, "softsign")),
-    46: ("sigmoid", lambda: _unary_elementwise(tf.sigmoid, "sigmoid")),
-    47: ("softmax", lambda: _unary_elementwise(tf.nn.softmax, "softmax")),
-    48: ("l2_loss", lambda: _unary_elementwise(tf.nn.l2_loss, "l2_loss")),
-    49: ("zeros_like", lambda: _unary_elementwise(tf.zeros_like, "zeros_like")),
-    50: ("ones_like", lambda: _unary_elementwise(tf.ones_like, "ones_like")),
-    51: ("identity", lambda: _unary_elementwise(tf.identity, "identity")),
-    52: ("stop_gradient",
-         lambda: _unary_elementwise(tf.stop_gradient, "stop_gradient")),
-    53: ("equal", lambda: _compare_elementwise(tf.equal, "equal")),
-    54: ("not_equal", lambda: _compare_elementwise(tf.not_equal, "not_equal")),
-    55: ("less", lambda: _compare_elementwise(tf.less, "less")),
-    56: ("less_equal",
-         lambda: _compare_elementwise(tf.less_equal, "less_equal")),
-    57: ("greater", lambda: _compare_elementwise(tf.greater, "greater")),
-    58: ("greater_equal",
-         lambda: _compare_elementwise(tf.greater_equal, "greater_equal")),
-    59: ("logical_and", lambda: _logical_binary(tf.logical_and, "logical_and")),
-    60: ("logical_or", lambda: _logical_binary(tf.logical_or, "logical_or")),
-    61: ("logical_xor", lambda: _logical_binary(tf.logical_xor, "logical_xor")),
-    62: ("logical_not", lambda: _logical_unary(tf.logical_not, "logical_not")),
-    63: ("bitwise_and",
-         lambda: _bitwise_binary(tf.bitwise.bitwise_and, "bitwise_and")),
-    64: ("bitwise_or",
-         lambda: _bitwise_binary(tf.bitwise.bitwise_or, "bitwise_or")),
-    65: ("bitwise_xor",
-         lambda: _bitwise_binary(tf.bitwise.bitwise_xor, "bitwise_xor")),
-    66: ("invert", lambda: _unary_int(tf.bitwise.invert, "invert")),
-    67: ("left_shift",
-         lambda: _bitwise_binary(tf.bitwise.left_shift, "left_shift")),
-    68: ("right_shift",
-         lambda: _bitwise_binary(tf.bitwise.right_shift, "right_shift")),
-    69: ("reduce_sum", lambda: _reduce(tf.reduce_sum, "reduce_sum")),
-    70: ("reduce_prod", lambda: _reduce(tf.reduce_prod, "reduce_prod")),
-    71: ("reduce_mean", lambda: _reduce(tf.reduce_mean, "reduce_mean")),
-    72: ("reduce_min", lambda: _reduce(tf.reduce_min, "reduce_min")),
-    73: ("reduce_max", lambda: _reduce(tf.reduce_max, "reduce_max")),
-    74: ("reduce_any", lambda: _reduce_bool(tf.reduce_any, "reduce_any")),
-    75: ("reduce_all", lambda: _reduce_bool(tf.reduce_all, "reduce_all")),
-    76: ("argmax", lambda: _arg_reduce(tf.argmax, "argmax")),
-    77: ("argmin", lambda: _arg_reduce(tf.argmin, "argmin")),
-    78: ("shape", lambda: _shape_op(tf.shape, "shape")),
-    79: ("rank", lambda: _shape_op(tf.rank, "rank")),
-    80: ("size", lambda: _shape_op(tf.size, "size")),
-    81: ("cast", _cast),
-    82: ("reshape", _reshape),
-    83: ("transpose", _transpose),
-    84: ("expand_dims", _expand_dims),
-    85: ("squeeze", _squeeze),
-    86: ("concat", _concat),
-    87: ("split", _split),
-    88: ("slice", _slice),
-    89: ("strided_slice", _strided_slice),
-    90: ("gather", _gather),
-    91: ("gather_nd", _gather_nd),
-    92: ("one_hot", _one_hot),
-    93: ("batch_matmul", _batch_matmul),
-    94: ("matrix_diag", _matrix_diag),
-    95: ("matrix_diag_part", _matrix_diag_part),
-    96: ("fft", _fft),
-    97: ("complex_abs", _complex_abs),
-    98: ("is_finite", lambda: _unary_elementwise(tf.is_finite, "is_finite")),
-    99: ("is_nan", lambda: _unary_elementwise(tf.is_nan, "is_nan")),
-}
+def _to_snake_case(name):
+  name = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
+  return re.sub("([a-z0-9])([A-Z])", r"\1_\2", name).lower()
 
 
 def _model_dir(export_base_dir, op_name):
   return os.path.join(export_base_dir, "model_{}".format(op_name.upper()))
 
 
+def _placeholder_name(name):
+  return re.sub("[^A-Za-z0-9_]", "_", name)
+
+
+def _safe_np_dtype(dtype):
+  if dtype == tf.string:
+    return np.object_
+  if dtype == tf.bool:
+    return np.bool_
+  return dtype.as_numpy_dtype
+
+
+def _dynamic_shape_for_input(input_name, dtype):
+  lower_name = input_name.lower()
+  if any(token in lower_name for token in ("axis", "dim", "depth",
+                                           "num_split", "num_segments")):
+    return []
+  if any(token in lower_name for token in ("shape", "begin", "end", "size",
+                                           "stride", "perm", "multiples")):
+    return [None]
+  if dtype == tf.resource:
+    return []
+  if dtype == tf.string:
+    return [None]
+  return [None, 4]
+
+
+def _feed_value_for_input(input_name, dtype, shape):
+  lower_name = input_name.lower()
+  if shape == []:
+    if dtype == tf.bool:
+      return np.array(True, dtype=_safe_np_dtype(dtype))
+    if dtype == tf.string:
+      return np.array(b"value", dtype=np.object_)
+    return np.array(1, dtype=_safe_np_dtype(dtype))
+
+  if any(token in lower_name for token in ("shape", "size")):
+    return np.array([1, 4], dtype=_safe_np_dtype(dtype))
+  if "begin" in lower_name:
+    return np.array([0, 0], dtype=_safe_np_dtype(dtype))
+  if "end" in lower_name:
+    return np.array([1, 4], dtype=_safe_np_dtype(dtype))
+  if "stride" in lower_name:
+    return np.array([1, 1], dtype=_safe_np_dtype(dtype))
+  if "perm" in lower_name:
+    return np.array([1, 0], dtype=_safe_np_dtype(dtype))
+  if "multiple" in lower_name:
+    return np.array([1, 1], dtype=_safe_np_dtype(dtype))
+  if "indices" in lower_name or "ids" in lower_name:
+    return np.array([0, 0], dtype=_safe_np_dtype(dtype))
+
+  if dtype == tf.bool:
+    return np.array([[True, False, True, False]], dtype=np.bool_)
+  if dtype == tf.string:
+    return np.array([b"alpha", b"beta"], dtype=np.object_)
+  if dtype.is_integer:
+    return np.array([[1, 2, 3, 4]], dtype=_safe_np_dtype(dtype))
+  if dtype.is_complex:
+    return np.array([[1 + 1j, 2 + 0j, 3 - 1j, 4 + 2j]],
+                    dtype=_safe_np_dtype(dtype))
+  return np.array([[1.0, 2.0, 3.0, 4.0]], dtype=_safe_np_dtype(dtype))
+
+
+def _is_supported_dtype(dtype):
+  return dtype not in (tf.resource, tf.variant)
+
+
+def _allowed_type_values(attr_def):
+  values = attr_def.allowed_values.list.type
+  if values:
+    return [tf.dtypes.as_dtype(value) for value in values]
+  return []
+
+
+def _choose_dtype(attr_def=None):
+  preferred = [
+      tf.float32, tf.int32, tf.int64, tf.bool, tf.string, tf.complex64,
+      tf.float64
+  ]
+  allowed = _allowed_type_values(attr_def) if attr_def is not None else []
+  if allowed:
+    for dtype in preferred:
+      if dtype in allowed and _is_supported_dtype(dtype):
+        return dtype
+    raise ValueError("no supported dtype in allowed type list")
+  return tf.float32
+
+
+def _attr_default(attr_def):
+  if not attr_def.HasField("default_value"):
+    return None
+
+  value = attr_def.default_value
+  if attr_def.type == "string":
+    return value.s
+  if attr_def.type == "int":
+    return value.i
+  if attr_def.type == "float":
+    return value.f
+  if attr_def.type == "bool":
+    return value.b
+  if attr_def.type == "type":
+    return tf.dtypes.as_dtype(value.type)
+  if attr_def.type == "shape":
+    return _tensor_shape_from_proto(value.shape)
+  if attr_def.type == "list(string)":
+    return list(value.list.s)
+  if attr_def.type == "list(int)":
+    return list(value.list.i)
+  if attr_def.type == "list(float)":
+    return list(value.list.f)
+  if attr_def.type == "list(bool)":
+    return list(value.list.b)
+  if attr_def.type == "list(type)":
+    return [tf.dtypes.as_dtype(dtype) for dtype in value.list.type]
+  if attr_def.type == "list(shape)":
+    return [_tensor_shape_from_proto(shape) for shape in value.list.shape]
+  return None
+
+
+def _tensor_shape_from_proto(shape):
+  if shape.unknown_rank:
+    return tf.TensorShape(None)
+  return tf.TensorShape([
+      None if dim.size == -1 else dim.size
+      for dim in shape.dim
+  ])
+
+
+def _synthesized_attr(attr_def):
+  default_value = _attr_default(attr_def)
+  if default_value is not None:
+    return default_value
+
+  if attr_def.type == "string":
+    return b""
+  if attr_def.type == "int":
+    minimum = attr_def.minimum if attr_def.HasField("minimum") else 0
+    return max(minimum, 1)
+  if attr_def.type == "float":
+    return 1.0
+  if attr_def.type == "bool":
+    return False
+  if attr_def.type == "type":
+    return _choose_dtype(attr_def)
+  if attr_def.type == "shape":
+    return tf.TensorShape([None, 4])
+  if attr_def.type == "list(string)":
+    return [b"", b""]
+  if attr_def.type == "list(int)":
+    minimum = attr_def.minimum if attr_def.HasField("minimum") else 0
+    return [max(minimum, 1)] * LIST_LENGTH
+  if attr_def.type == "list(float)":
+    return [1.0] * LIST_LENGTH
+  if attr_def.type == "list(bool)":
+    return [False] * LIST_LENGTH
+  if attr_def.type == "list(type)":
+    return [_choose_dtype(attr_def)] * LIST_LENGTH
+  if attr_def.type == "list(shape)":
+    return [tf.TensorShape([None, 4])] * LIST_LENGTH
+  if attr_def.type.startswith("func"):
+    raise ValueError("function attrs are not synthesized")
+
+  raise ValueError("unsupported attr type {}".format(attr_def.type))
+
+
+def _attr_defs_by_name(op_def):
+  return {attr.name: attr for attr in op_def.attr}
+
+
+def _required_attrs_used_by_inputs(op_def):
+  used = set()
+  for arg in op_def.input_arg:
+    if arg.type_attr:
+      used.add(arg.type_attr)
+    if arg.number_attr:
+      used.add(arg.number_attr)
+    if arg.type_list_attr:
+      used.add(arg.type_list_attr)
+  return used
+
+
+def _placeholder_for_arg(arg, dtype, suffix=""):
+  placeholder_name = _placeholder_name(arg.name + suffix)
+  shape = _dynamic_shape_for_input(arg.name, dtype)
+  tensor = tf.placeholder(dtype=dtype, shape=shape, name=placeholder_name)
+  feed = _feed_value_for_input(arg.name, dtype, shape)
+  return tensor, feed
+
+
+def _dtype_for_arg(arg, attr_defs, attr_values):
+  if arg.type:
+    dtype = tf.dtypes.as_dtype(arg.type)
+  elif arg.type_attr:
+    if arg.type_attr not in attr_values:
+      attr_values[arg.type_attr] = _choose_dtype(attr_defs[arg.type_attr])
+    dtype = attr_values[arg.type_attr]
+  else:
+    dtype = tf.float32
+
+  if not _is_supported_dtype(dtype):
+    raise ValueError("unsupported input dtype {}".format(dtype.name))
+  return dtype
+
+
+def _build_raw_op(raw_op_name):
+  raw_op = getattr(tf.raw_ops, raw_op_name)
+  op_def = op_def_registry.get(raw_op_name)
+  if op_def is None:
+    raise ValueError("missing OpDef")
+
+  attr_defs = _attr_defs_by_name(op_def)
+  attr_values = {}
+  kwargs = {}
+  inputs = {}
+  feeds = {}
+
+  for attr_name in _required_attrs_used_by_inputs(op_def):
+    attr_def = attr_defs[attr_name]
+    if attr_def.type == "type":
+      attr_values[attr_name] = _choose_dtype(attr_def)
+    elif attr_def.type == "list(type)":
+      attr_values[attr_name] = [_choose_dtype(attr_def)] * LIST_LENGTH
+    elif attr_def.type == "int":
+      attr_values[attr_name] = max(attr_def.minimum, LIST_LENGTH)
+
+  for arg in op_def.input_arg:
+    if arg.number_attr:
+      count = attr_values.get(arg.number_attr, LIST_LENGTH)
+      dtype = _dtype_for_arg(arg, attr_defs, attr_values)
+      tensors = []
+      for i in range(count):
+        tensor, feed = _placeholder_for_arg(arg, dtype, "_{}".format(i))
+        tensors.append(tensor)
+        inputs["{}_{}".format(arg.name, i)] = tensor
+        feeds[tensor] = feed
+      kwargs[arg.name] = tensors
+    elif arg.type_list_attr:
+      dtypes = attr_values.get(arg.type_list_attr,
+                               [tf.float32] * LIST_LENGTH)
+      tensors = []
+      for i, dtype in enumerate(dtypes):
+        tensor, feed = _placeholder_for_arg(arg, dtype, "_{}".format(i))
+        tensors.append(tensor)
+        inputs["{}_{}".format(arg.name, i)] = tensor
+        feeds[tensor] = feed
+      kwargs[arg.name] = tensors
+    else:
+      dtype = _dtype_for_arg(arg, attr_defs, attr_values)
+      tensor, feed = _placeholder_for_arg(arg, dtype)
+      inputs[arg.name] = tensor
+      feeds[tensor] = feed
+      kwargs[arg.name] = tensor
+
+  for attr in op_def.attr:
+    if attr.name in attr_values:
+      continue
+    if attr.name in kwargs:
+      continue
+    attr_values[attr.name] = _synthesized_attr(attr)
+
+  signature = inspect.signature(raw_op)
+  for name in signature.parameters:
+    if name in kwargs or name == "name":
+      continue
+    if name in attr_values:
+      kwargs[name] = attr_values[name]
+
+  outputs = raw_op(name=_to_snake_case(raw_op_name), **kwargs)
+  if isinstance(outputs, (list, tuple)):
+    if not outputs:
+      raise ValueError("op produced no outputs")
+    output = outputs[0]
+  else:
+    output = outputs
+
+  if not hasattr(output, "dtype"):
+    raise ValueError("first output is not a tensor")
+  if output.dtype == tf.resource:
+    raise ValueError("resource outputs are not exported as tensor results")
+
+  return inputs, output, feeds
+
+
+def _raw_op_names():
+  names = []
+  for name in dir(tf.raw_ops):
+    if name.startswith("_"):
+      continue
+    raw_op = getattr(tf.raw_ops, name)
+    if callable(raw_op) and op_def_registry.get(name) is not None:
+      names.append(name)
+  return sorted(set(names))
+
+
+def _manual_ops():
+  return {
+      i: name
+      for i, name in enumerate(_raw_op_names())
+  }
+
+
 def _build_signature(inputs, result):
   tensor_inputs = {
       key: tf.saved_model.utils.build_tensor_info(tensor)
-      for key, tensor in inputs.items()
+      for key, tensor in sorted(inputs.items())
   }
   tensor_outputs = {
       "outputs": tf.saved_model.utils.build_tensor_info(result),
@@ -518,63 +362,104 @@ def _save_model(sess, export_dir, signature):
   builder.save()
 
 
+def _run_op(op_name, args):
+  export_dir = os.path.join(_model_dir(args.export_base_dir, op_name), "1")
+
+  with tf.Graph().as_default():
+    inputs, result, feeds = _build_raw_op(op_name)
+    signature = _build_signature(inputs, result)
+
+    with tf.Session() as sess:
+      if args.save_model:
+        _save_model(sess, export_dir, signature)
+        return {"op": op_name, "status": "saved", "path": export_dir}
+
+      output = sess.run(result, feed_dict=feeds)
+      return {
+          "op": op_name,
+          "status": "ran",
+          "shape": list(np.shape(output)),
+          "dtype": str(getattr(output, "dtype", type(output))),
+      }
+
+
+def _write_report(args, results):
+  report_path = os.path.join(args.export_base_dir, args.report_name)
+  if not os.path.isdir(args.export_base_dir):
+    os.makedirs(args.export_base_dir)
+  with open(report_path, "w") as report_file:
+    json.dump(results, report_file, indent=2, sort_keys=True)
+  return report_path
+
+
 def _parse_args():
   parser = argparse.ArgumentParser(
-      description="Generate or run a one-operation TensorFlow v1 SavedModel.")
+      description=("Generate dynamic-input, one-operation TensorFlow v1 "
+                   "SavedModels from the TensorFlow raw op registry."))
   parser.add_argument(
       "--op_id",
       type=int,
       default=0,
-      choices=sorted(OPS.keys()),
-      help="Operation id to generate. Ignored when --all_ops is set.")
+      help="Raw-op id to generate. Use --list_ops to see available ids.")
+  parser.add_argument(
+      "--op_name",
+      help="Raw TensorFlow op name to generate, e.g. Add or MatMul.")
   parser.add_argument(
       "--all_ops",
       action="store_true",
-      help="Generate or run every available operation.")
+      help="Attempt to generate every registered TensorFlow raw op.")
   parser.add_argument(
       "--save_model",
       action="store_true",
       help="Save the selected one-operation model instead of executing it.")
   parser.add_argument(
       "--export_base_dir",
-      default="unit_tests",
+      default=DEFAULT_EXPORT_BASE_DIR,
       help="Base directory for SavedModel exports.")
+  parser.add_argument(
+      "--report_name",
+      default=DEFAULT_REPORT_NAME,
+      help="JSON report filename written under --export_base_dir.")
   parser.add_argument(
       "--list_ops",
       action="store_true",
-      help="List available operation ids and exit.")
+      help="List available raw-op ids and exit.")
   return parser.parse_args()
-
-
-def _run_op(op_id, args):
-  op_name, op_builder = OPS[op_id]
-  export_dir = os.path.join(_model_dir(args.export_base_dir, op_name), "1")
-
-  with tf.Graph().as_default():
-    inputs, result, feeds = op_builder()
-    signature = _build_signature(inputs, result)
-
-    with tf.Session() as sess:
-      if args.save_model:
-        _save_model(sess, export_dir, signature)
-        print("Saved {} model to {}".format(op_name, export_dir))
-      else:
-        output = sess.run(result, feed_dict=feeds)
-        print("{} output: {}".format(op_name, output))
 
 
 def main():
   args = _parse_args()
+  ops_by_id = _manual_ops()
 
   if args.list_ops:
-    for op_id, (op_name, _) in sorted(OPS.items()):
+    for op_id, op_name in sorted(ops_by_id.items()):
       print("{}: {}".format(op_id, op_name))
     return
 
-  op_ids = sorted(OPS.keys()) if args.all_ops else [args.op_id]
-  for op_id in op_ids:
-    _run_op(op_id, args)
+  if args.all_ops:
+    op_names = [ops_by_id[i] for i in sorted(ops_by_id)]
+  elif args.op_name:
+    op_names = [args.op_name]
+  else:
+    if args.op_id not in ops_by_id:
+      raise ValueError("unknown op id {}".format(args.op_id))
+    op_names = [ops_by_id[args.op_id]]
 
+  results = {"generated": [], "skipped": []}
+  for op_name in op_names:
+    try:
+      result = _run_op(op_name, args)
+      results["generated"].append(result)
+      print("{} {}".format(result["status"], op_name))
+    except Exception as exc:  # pylint: disable=broad-except
+      skip = {"op": op_name, "reason": str(exc)}
+      results["skipped"].append(skip)
+      print("skipped {}: {}".format(op_name, exc))
+
+  report_path = _write_report(args, results)
+  print("Generated: {}".format(len(results["generated"])))
+  print("Skipped: {}".format(len(results["skipped"])))
+  print("Report: {}".format(report_path))
   print("Done")
 
 

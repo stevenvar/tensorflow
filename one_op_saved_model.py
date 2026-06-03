@@ -921,8 +921,7 @@ def _image_unary(op_fn, op_name):
 def _adjust_contrast():
   images = tf.placeholder(dtype=tf.float32, shape=[None, 4, 4, 3],
                           name="images")
-  result = tf.image.adjust_contrast(images, contrast_factor=1.5,
-                                    name="adjust_contrast")
+  result = tf.image.adjust_contrast(images, contrast_factor=1.5)
   feeds = {
       images: np.linspace(0.0, 1.0, 48, dtype=np.float32).reshape(1, 4, 4, 3),
   }

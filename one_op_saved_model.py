@@ -234,6 +234,10 @@ def _dtype_for_arg(arg, attr_defs, attr_values):
 
 
 def _build_raw_op(raw_op_name):
+  manual_builder = _manual_builder(raw_op_name)
+  if manual_builder is not None:
+    return manual_builder()
+
   raw_op = getattr(tf.raw_ops, raw_op_name)
   op_def = op_def_registry.get(raw_op_name)
   if op_def is None:
@@ -309,6 +313,39 @@ def _build_raw_op(raw_op_name):
   if output.dtype == tf.resource:
     raise ValueError("resource outputs are not exported as tensor results")
 
+  return inputs, output, feeds
+
+
+def _manual_builder(raw_op_name):
+  builders = {
+      "DynamicStitch": _build_dynamic_stitch,
+  }
+  return builders.get(raw_op_name)
+
+
+def _build_dynamic_stitch():
+  indices_0 = tf.placeholder(dtype=tf.int32, shape=[None], name="indices_0")
+  indices_1 = tf.placeholder(dtype=tf.int32, shape=[None], name="indices_1")
+  data_0 = tf.placeholder(dtype=tf.float32, shape=[None, 4], name="data_0")
+  data_1 = tf.placeholder(dtype=tf.float32, shape=[None, 4], name="data_1")
+  output = tf.raw_ops.DynamicStitch(
+      indices=[indices_0, indices_1],
+      data=[data_0, data_1],
+      name="dynamic_stitch")
+  inputs = {
+      "indices_0": indices_0,
+      "indices_1": indices_1,
+      "data_0": data_0,
+      "data_1": data_1,
+  }
+  feeds = {
+      indices_0: np.array([0, 2], dtype=np.int32),
+      indices_1: np.array([1, 3], dtype=np.int32),
+      data_0: np.array([[1.0, 2.0, 3.0, 4.0],
+                        [9.0, 10.0, 11.0, 12.0]], dtype=np.float32),
+      data_1: np.array([[5.0, 6.0, 7.0, 8.0],
+                        [13.0, 14.0, 15.0, 16.0]], dtype=np.float32),
+  }
   return inputs, output, feeds
 
 

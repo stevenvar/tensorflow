@@ -238,11 +238,7 @@ def _dtype_for_arg(arg, attr_defs, attr_values):
   return dtype
 
 
-def _build_raw_op(raw_op_name):
-  manual_builder = _manual_builder(raw_op_name)
-  if manual_builder is not None:
-    return manual_builder()
-
+def _build_generic_raw_op(raw_op_name):
   raw_op = getattr(tf.raw_ops, raw_op_name)
   op_def = op_def_registry.get(raw_op_name)
   if op_def is None:
@@ -321,6 +317,14 @@ def _build_raw_op(raw_op_name):
   return inputs, output, feeds
 
 
+def _generic_raw_op_generator(raw_op_name):
+  def _build():
+    return _build_generic_raw_op(raw_op_name)
+
+  _build.__name__ = "generic_raw_op"
+  return _build
+
+
 def _manual_builder(raw_op_name):
   builders = {
       "DynamicStitch": _build_dynamic_stitch,
@@ -386,7 +390,7 @@ def _raw_op_names():
 
 def _build_ops_table():
   return {
-      i: name
+      i: (name, _manual_builder(name) or _generic_raw_op_generator(name))
       for i, name in enumerate(_raw_op_names())
   }
 
@@ -396,10 +400,13 @@ OPS = _build_ops_table()
 
 def _print_ops_table():
   width = len(str(max(OPS))) if OPS else 1
-  print("{:>{width}}  {}".format("ID", "OP_NAME", width=width))
-  print("{}  {}".format("-" * width, "-" * 32))
-  for op_id, op_name in sorted(OPS.items()):
-    print("{:>{width}}  {}".format(op_id, op_name, width=width))
+  print("{:>{width}}  {:<40}  {}".format(
+      "ID", "OP_NAME", "GENERATOR", width=width))
+  print("{}  {}  {}".format("-" * width, "-" * 40, "-" * 32))
+  for op_id, (op_name, op_builder) in sorted(OPS.items()):
+    generator_name = getattr(op_builder, "__name__", "generic_raw_op")
+    print("{:>{width}}  {:<40}  {}".format(
+        op_id, op_name, generator_name, width=width))
 
 
 def _build_signature(inputs, result):
@@ -434,11 +441,11 @@ def _save_model(sess, export_dir, signature):
   builder.save()
 
 
-def _run_op(op_name, args):
+def _run_op(op_name, op_builder, args):
   export_dir = os.path.join(_model_dir(args.export_base_dir, op_name), "1")
 
   with tf.Graph().as_default():
-    inputs, result, feeds = _build_raw_op(op_name)
+    inputs, result, feeds = op_builder()
     signature = _build_signature(inputs, result)
 
     with tf.Session() as sess:
@@ -508,18 +515,20 @@ def main():
     return
 
   if args.all_ops:
-    op_names = [OPS[i] for i in sorted(OPS)]
+    op_specs = [OPS[i] for i in sorted(OPS)]
   elif args.op_name:
     if _is_excluded_op(args.op_name):
       raise ValueError("{} is excluded from generation".format(args.op_name))
-    op_names = [args.op_name]
+    op_specs = [(args.op_name,
+                 _manual_builder(args.op_name) or
+                 _generic_raw_op_generator(args.op_name))]
   else:
-    op_names = [OPS[args.op_id]]
+    op_specs = [OPS[args.op_id]]
 
   results = {"generated": [], "skipped": []}
-  for op_name in op_names:
+  for op_name, op_builder in op_specs:
     try:
-      result = _run_op(op_name, args)
+      result = _run_op(op_name, op_builder, args)
       results["generated"].append(result)
       print("{} {}".format(result["status"], op_name))
     except Exception as exc:  # pylint: disable=broad-except

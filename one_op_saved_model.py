@@ -384,11 +384,22 @@ def _raw_op_names():
   return sorted(set(names))
 
 
-def _manual_ops():
+def _build_ops_table():
   return {
       i: name
       for i, name in enumerate(_raw_op_names())
   }
+
+
+OPS = _build_ops_table()
+
+
+def _print_ops_table():
+  width = len(str(max(OPS))) if OPS else 1
+  print("{:>{width}}  {}".format("ID", "OP_NAME", width=width))
+  print("{}  {}".format("-" * width, "-" * 32))
+  for op_id, op_name in sorted(OPS.items()):
+    print("{:>{width}}  {}".format(op_id, op_name, width=width))
 
 
 def _build_signature(inputs, result):
@@ -461,6 +472,7 @@ def _parse_args():
       "--op_id",
       type=int,
       default=0,
+      choices=sorted(OPS.keys()),
       help="Raw-op id to generate. Use --list_ops to see available ids.")
   parser.add_argument(
       "--op_name",
@@ -490,23 +502,19 @@ def _parse_args():
 
 def main():
   args = _parse_args()
-  ops_by_id = _manual_ops()
 
   if args.list_ops:
-    for op_id, op_name in sorted(ops_by_id.items()):
-      print("{}: {}".format(op_id, op_name))
+    _print_ops_table()
     return
 
   if args.all_ops:
-    op_names = [ops_by_id[i] for i in sorted(ops_by_id)]
+    op_names = [OPS[i] for i in sorted(OPS)]
   elif args.op_name:
     if _is_excluded_op(args.op_name):
       raise ValueError("{} is excluded from generation".format(args.op_name))
     op_names = [args.op_name]
   else:
-    if args.op_id not in ops_by_id:
-      raise ValueError("unknown op id {}".format(args.op_id))
-    op_names = [ops_by_id[args.op_id]]
+    op_names = [OPS[args.op_id]]
 
   results = {"generated": [], "skipped": []}
   for op_name in op_names:

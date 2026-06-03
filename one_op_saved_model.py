@@ -165,7 +165,7 @@ def _synthesized_attr(attr_def):
   if attr_def.type == "string":
     return b""
   if attr_def.type == "int":
-    minimum = attr_def.minimum if attr_def.HasField("minimum") else 0
+    minimum = attr_def.minimum
     return max(minimum, 1)
   if attr_def.type == "float":
     return 1.0
@@ -178,7 +178,7 @@ def _synthesized_attr(attr_def):
   if attr_def.type == "list(string)":
     return [b"", b""]
   if attr_def.type == "list(int)":
-    minimum = attr_def.minimum if attr_def.HasField("minimum") else 0
+    minimum = attr_def.minimum
     return [max(minimum, 1)] * LIST_LENGTH
   if attr_def.type == "list(float)":
     return [1.0] * LIST_LENGTH

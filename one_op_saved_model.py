@@ -529,6 +529,239 @@ def _space_to_depth():
   return {"x": x}, result, feeds
 
 
+def _cumulative(op_fn, op_name):
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
+  result = op_fn(x, axis=1, name=op_name)
+  feeds = {
+      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
+                   [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
+  }
+  return {"x": x}, result, feeds
+
+
+def _unsorted_segment(op_fn, op_name):
+  data = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="data")
+  segment_ids = tf.placeholder(dtype=tf.int32, shape=[None], name="segment_ids")
+  result = op_fn(data, segment_ids, num_segments=2, name=op_name)
+  feeds = {
+      data: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
+                      [6.0, 7.0, 8.0, 9.0, 10.0],
+                      [11.0, 12.0, 13.0, 14.0, 15.0]], dtype=np.float32),
+      segment_ids: np.array([0, 1, 0], dtype=np.int32),
+  }
+  return {"data": data, "segment_ids": segment_ids}, result, feeds
+
+
+def _dynamic_partition():
+  data = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="data")
+  partitions = tf.placeholder(dtype=tf.int32, shape=[None], name="partitions")
+  result = tf.dynamic_partition(data, partitions, num_partitions=2,
+                                name="dynamic_partition")[0]
+  feeds = {
+      data: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
+                      [6.0, 7.0, 8.0, 9.0, 10.0],
+                      [11.0, 12.0, 13.0, 14.0, 15.0]], dtype=np.float32),
+      partitions: np.array([0, 1, 0], dtype=np.int32),
+  }
+  return {"data": data, "partitions": partitions}, result, feeds
+
+
+def _dynamic_stitch():
+  indices_0 = tf.placeholder(dtype=tf.int32, shape=[None], name="indices_0")
+  indices_1 = tf.placeholder(dtype=tf.int32, shape=[None], name="indices_1")
+  data_0 = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="data_0")
+  data_1 = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="data_1")
+  result = tf.dynamic_stitch([indices_0, indices_1], [data_0, data_1],
+                             name="dynamic_stitch")
+  feeds = {
+      indices_0: np.array([0, 2], dtype=np.int32),
+      indices_1: np.array([1, 3], dtype=np.int32),
+      data_0: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
+                        [11.0, 12.0, 13.0, 14.0, 15.0]], dtype=np.float32),
+      data_1: np.array([[6.0, 7.0, 8.0, 9.0, 10.0],
+                        [16.0, 17.0, 18.0, 19.0, 20.0]], dtype=np.float32),
+  }
+  return {
+      "indices_0": indices_0,
+      "indices_1": indices_1,
+      "data_0": data_0,
+      "data_1": data_1
+  }, result, feeds
+
+
+def _boolean_mask():
+  tensor = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="tensor")
+  mask = tf.placeholder(dtype=tf.bool, shape=[None], name="mask")
+  result = tf.boolean_mask(tensor, mask, name="boolean_mask")
+  feeds = {
+      tensor: np.array([[1.0, 2.0, 3.0, 4.0, 5.0],
+                        [6.0, 7.0, 8.0, 9.0, 10.0]], dtype=np.float32),
+      mask: np.array([True, False], dtype=np.bool_),
+  }
+  return {"tensor": tensor, "mask": mask}, result, feeds
+
+
+def _sequence_mask():
+  lengths = tf.placeholder(dtype=tf.int32, shape=[None], name="lengths")
+  result = tf.sequence_mask(lengths, maxlen=5, name="sequence_mask")
+  feeds = {
+      lengths: np.array([1, 3, 5], dtype=np.int32),
+  }
+  return {"lengths": lengths}, result, feeds
+
+
+def _conv2d():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 8, 8, 1], name="X")
+  filters = tf.constant(np.ones((3, 3, 1, 2), dtype=np.float32),
+                        dtype=tf.float32,
+                        name="filters")
+  result = tf.nn.conv2d(x, filters, strides=[1, 1, 1, 1], padding="VALID",
+                        name="conv2d")
+  feeds = {
+      x: np.arange(64, dtype=np.float32).reshape(1, 8, 8, 1),
+  }
+  return {"x": x}, result, feeds
+
+
+def _depthwise_conv2d():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 8, 8, 1], name="X")
+  filters = tf.constant(np.ones((3, 3, 1, 2), dtype=np.float32),
+                        dtype=tf.float32,
+                        name="filters")
+  result = tf.nn.depthwise_conv2d(
+      x, filters, strides=[1, 1, 1, 1], padding="VALID",
+      name="depthwise_conv2d")
+  feeds = {
+      x: np.arange(64, dtype=np.float32).reshape(1, 8, 8, 1),
+  }
+  return {"x": x}, result, feeds
+
+
+def _conv3d():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 4, 4, 4, 1], name="X")
+  filters = tf.constant(np.ones((2, 2, 2, 1, 2), dtype=np.float32),
+                        dtype=tf.float32,
+                        name="filters")
+  result = tf.nn.conv3d(x, filters, strides=[1, 1, 1, 1, 1],
+                        padding="VALID", name="conv3d")
+  feeds = {
+      x: np.arange(64, dtype=np.float32).reshape(1, 4, 4, 4, 1),
+  }
+  return {"x": x}, result, feeds
+
+
+def _batch_to_space():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 2, 2, 1], name="X")
+  result = tf.batch_to_space_nd(
+      x, block_shape=[2, 2], crops=[[0, 0], [0, 0]],
+      name="batch_to_space")
+  feeds = {
+      x: np.arange(16, dtype=np.float32).reshape(4, 2, 2, 1),
+  }
+  return {"x": x}, result, feeds
+
+
+def _space_to_batch():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 4, 4, 1], name="X")
+  result = tf.space_to_batch_nd(
+      x, block_shape=[2, 2], paddings=[[0, 0], [0, 0]],
+      name="space_to_batch")
+  feeds = {
+      x: np.arange(16, dtype=np.float32).reshape(1, 4, 4, 1),
+  }
+  return {"x": x}, result, feeds
+
+
+def _resize(op_fn, op_name):
+  images = tf.placeholder(dtype=tf.float32, shape=[None, 8, 8, 1],
+                          name="images")
+  result = op_fn(images, size=[4, 4], name=op_name)
+  feeds = {
+      images: np.arange(64, dtype=np.float32).reshape(1, 8, 8, 1),
+  }
+  return {"images": images}, result, feeds
+
+
+def _extract_image_patches():
+  images = tf.placeholder(dtype=tf.float32, shape=[None, 8, 8, 1],
+                          name="images")
+  result = tf.image.extract_image_patches(
+      images, ksizes=[1, 2, 2, 1], strides=[1, 2, 2, 1],
+      rates=[1, 1, 1, 1], padding="VALID", name="extract_image_patches")
+  feeds = {
+      images: np.arange(64, dtype=np.float32).reshape(1, 8, 8, 1),
+  }
+  return {"images": images}, result, feeds
+
+
+def _extract_volume_patches():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 4, 4, 4, 1], name="X")
+  result = tf.extract_volume_patches(
+      x, ksizes=[1, 2, 2, 2, 1], strides=[1, 2, 2, 2, 1],
+      padding="VALID", name="extract_volume_patches")
+  feeds = {
+      x: np.arange(64, dtype=np.float32).reshape(1, 4, 4, 4, 1),
+  }
+  return {"x": x}, result, feeds
+
+
+def _crop_and_resize():
+  image = tf.placeholder(dtype=tf.float32, shape=[None, 8, 8, 1], name="image")
+  boxes = tf.placeholder(dtype=tf.float32, shape=[None, 4], name="boxes")
+  box_ind = tf.placeholder(dtype=tf.int32, shape=[None], name="box_ind")
+  result = tf.image.crop_and_resize(image, boxes, box_ind, crop_size=[4, 4],
+                                    name="crop_and_resize")
+  feeds = {
+      image: np.arange(64, dtype=np.float32).reshape(1, 8, 8, 1),
+      boxes: np.array([[0.0, 0.0, 1.0, 1.0]], dtype=np.float32),
+      box_ind: np.array([0], dtype=np.int32),
+  }
+  return {"image": image, "boxes": boxes, "box_ind": box_ind}, result, feeds
+
+
+def _unique():
+  x = tf.placeholder(dtype=tf.int32, shape=[None], name="X")
+  result = tf.unique(x, name="unique").y
+  feeds = {
+      x: np.array([1, 2, 1, 3, 2], dtype=np.int32),
+  }
+  return {"x": x}, result, feeds
+
+
+def _unique_with_counts():
+  x = tf.placeholder(dtype=tf.int32, shape=[None], name="X")
+  result = tf.unique_with_counts(x, name="unique_with_counts").y
+  feeds = {
+      x: np.array([1, 2, 1, 3, 2], dtype=np.int32),
+  }
+  return {"x": x}, result, feeds
+
+
+def _in_top_k():
+  predictions = tf.placeholder(dtype=tf.float32, shape=[None, 5],
+                               name="predictions")
+  targets = tf.placeholder(dtype=tf.int32, shape=[None], name="targets")
+  result = tf.nn.in_top_k(predictions, targets, k=2, name="in_top_k")
+  feeds = {
+      predictions: np.array([[0.1, 0.2, 0.9, 0.3, 0.4],
+                             [0.8, 0.1, 0.2, 0.3, 0.4]], dtype=np.float32),
+      targets: np.array([2, 0], dtype=np.int32),
+  }
+  return {"predictions": predictions, "targets": targets}, result, feeds
+
+
+def _softmax_cross_entropy():
+  labels = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="labels")
+  logits = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="logits")
+  result = tf.nn.softmax_cross_entropy_with_logits_v2(
+      labels=labels, logits=logits, name="softmax_cross_entropy")
+  feeds = {
+      labels: np.array([[0.0, 0.0, 1.0, 0.0, 0.0]], dtype=np.float32),
+      logits: np.array([[0.1, 0.2, 0.9, 0.3, 0.4]], dtype=np.float32),
+  }
+  return {"labels": labels, "logits": logits}, result, feeds
+
+
 OPS = {
     0: ("add", lambda: _binary_elementwise(tf.add, "add")),
     1: ("sub", lambda: _binary_elementwise(tf.subtract, "sub")),
@@ -701,6 +934,40 @@ OPS = {
     132: ("lrn", _lrn),
     133: ("depth_to_space", _depth_to_space),
     134: ("space_to_depth", _space_to_depth),
+    135: ("cumsum", lambda: _cumulative(tf.cumsum, "cumsum")),
+    136: ("cumprod", lambda: _cumulative(tf.cumprod, "cumprod")),
+    137: ("reduce_logsumexp",
+          lambda: _reduce(tf.reduce_logsumexp, "reduce_logsumexp")),
+    138: ("unsorted_segment_sum",
+          lambda: _unsorted_segment(tf.unsorted_segment_sum,
+                                    "unsorted_segment_sum")),
+    139: ("unsorted_segment_max",
+          lambda: _unsorted_segment(tf.unsorted_segment_max,
+                                    "unsorted_segment_max")),
+    140: ("unsorted_segment_min",
+          lambda: _unsorted_segment(tf.unsorted_segment_min,
+                                    "unsorted_segment_min")),
+    141: ("dynamic_partition", _dynamic_partition),
+    142: ("dynamic_stitch", _dynamic_stitch),
+    143: ("boolean_mask", _boolean_mask),
+    144: ("sequence_mask", _sequence_mask),
+    145: ("conv2d", _conv2d),
+    146: ("depthwise_conv2d", _depthwise_conv2d),
+    147: ("conv3d", _conv3d),
+    148: ("batch_to_space", _batch_to_space),
+    149: ("space_to_batch", _space_to_batch),
+    150: ("resize_bilinear",
+          lambda: _resize(tf.image.resize_bilinear, "resize_bilinear")),
+    151: ("resize_nearest_neighbor",
+          lambda: _resize(tf.image.resize_nearest_neighbor,
+                          "resize_nearest_neighbor")),
+    152: ("extract_image_patches", _extract_image_patches),
+    153: ("extract_volume_patches", _extract_volume_patches),
+    154: ("crop_and_resize", _crop_and_resize),
+    155: ("unique", _unique),
+    156: ("unique_with_counts", _unique_with_counts),
+    157: ("in_top_k", _in_top_k),
+    158: ("softmax_cross_entropy", _softmax_cross_entropy),
 }
 
 

@@ -762,6 +762,303 @@ def _softmax_cross_entropy():
   return {"labels": labels, "logits": logits}, result, feeds
 
 
+def _spd_batch():
+  return np.array([[[4.0, 1.0, 1.0],
+                    [1.0, 4.0, 1.0],
+                    [1.0, 1.0, 4.0]]], dtype=np.float32)
+
+
+def _matrix_inverse():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 3, 3], name="X")
+  result = tf.linalg.inv(x, name="matrix_inverse")
+  feeds = {
+      x: _spd_batch(),
+  }
+  return {"x": x}, result, feeds
+
+
+def _matrix_solve():
+  matrix = tf.placeholder(dtype=tf.float32, shape=[None, 3, 3], name="matrix")
+  rhs = tf.placeholder(dtype=tf.float32, shape=[None, 3, 1], name="rhs")
+  result = tf.linalg.solve(matrix, rhs, name="matrix_solve")
+  feeds = {
+      matrix: _spd_batch(),
+      rhs: np.array([[[1.0], [2.0], [3.0]]], dtype=np.float32),
+  }
+  return {"matrix": matrix, "rhs": rhs}, result, feeds
+
+
+def _cholesky():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 3, 3], name="X")
+  result = tf.linalg.cholesky(x, name="cholesky")
+  feeds = {
+      x: _spd_batch(),
+  }
+  return {"x": x}, result, feeds
+
+
+def _qr():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 3, 3], name="X")
+  result = tf.linalg.qr(x, full_matrices=False, name="qr").q
+  feeds = {
+      x: np.arange(9, dtype=np.float32).reshape(1, 3, 3) + 1.0,
+  }
+  return {"x": x}, result, feeds
+
+
+def _svd():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 3, 3], name="X")
+  result = tf.linalg.svd(x, compute_uv=True, full_matrices=False,
+                         name="svd").s
+  feeds = {
+      x: np.arange(9, dtype=np.float32).reshape(1, 3, 3) + 1.0,
+  }
+  return {"x": x}, result, feeds
+
+
+def _triangular_solve():
+  matrix = tf.placeholder(dtype=tf.float32, shape=[None, 3, 3], name="matrix")
+  rhs = tf.placeholder(dtype=tf.float32, shape=[None, 3, 1], name="rhs")
+  result = tf.linalg.triangular_solve(matrix, rhs, lower=True,
+                                      name="triangular_solve")
+  feeds = {
+      matrix: np.array([[[2.0, 0.0, 0.0],
+                         [1.0, 3.0, 0.0],
+                         [1.0, 1.0, 4.0]]], dtype=np.float32),
+      rhs: np.array([[[1.0], [2.0], [3.0]]], dtype=np.float32),
+  }
+  return {"matrix": matrix, "rhs": rhs}, result, feeds
+
+
+def _matrix_band_part():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 4, 4], name="X")
+  result = tf.linalg.band_part(x, num_lower=1, num_upper=1,
+                               name="matrix_band_part")
+  feeds = {
+      x: np.arange(16, dtype=np.float32).reshape(1, 4, 4),
+  }
+  return {"x": x}, result, feeds
+
+
+def _matrix_set_diag():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 4, 4], name="X")
+  diagonal = tf.placeholder(dtype=tf.float32, shape=[None, 4], name="diagonal")
+  result = tf.linalg.set_diag(x, diagonal, name="matrix_set_diag")
+  feeds = {
+      x: np.zeros((1, 4, 4), dtype=np.float32),
+      diagonal: np.array([[1.0, 2.0, 3.0, 4.0]], dtype=np.float32),
+  }
+  return {"x": x, "diagonal": diagonal}, result, feeds
+
+
+def _einsum():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 2, 3], name="X")
+  y = tf.placeholder(dtype=tf.float32, shape=[None, 3, 2], name="Y")
+  result = tf.einsum("bij,bjk->bik", x, y, name="einsum")
+  feeds = {
+      x: np.arange(6, dtype=np.float32).reshape(1, 2, 3),
+      y: np.arange(6, dtype=np.float32).reshape(1, 3, 2),
+  }
+  return {"x": x, "y": y}, result, feeds
+
+
+def _matrix_determinant():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 3, 3], name="X")
+  result = tf.linalg.det(x, name="matrix_determinant")
+  feeds = {
+      x: _spd_batch(),
+  }
+  return {"x": x}, result, feeds
+
+
+def _matrix_trace():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 3, 3], name="X")
+  result = tf.linalg.trace(x, name="matrix_trace")
+  feeds = {
+      x: _spd_batch(),
+  }
+  return {"x": x}, result, feeds
+
+
+def _scatter_nd():
+  indices = tf.placeholder(dtype=tf.int32, shape=[None, 2], name="indices")
+  updates = tf.placeholder(dtype=tf.float32, shape=[None], name="updates")
+  result = tf.scatter_nd(indices, updates, shape=[2, 5], name="scatter_nd")
+  feeds = {
+      indices: np.array([[0, 0], [0, 3], [1, 4]], dtype=np.int32),
+      updates: np.array([1.0, 2.0, 3.0], dtype=np.float32),
+  }
+  return {"indices": indices, "updates": updates}, result, feeds
+
+
+def _searchsorted():
+  sorted_sequence = tf.placeholder(dtype=tf.float32, shape=[None, 5],
+                                   name="sorted_sequence")
+  values = tf.placeholder(dtype=tf.float32, shape=[None, 3], name="values")
+  result = tf.searchsorted(sorted_sequence, values, name="searchsorted")
+  feeds = {
+      sorted_sequence: np.array([[1.0, 3.0, 5.0, 7.0, 9.0]],
+                                dtype=np.float32),
+      values: np.array([[0.0, 4.0, 10.0]], dtype=np.float32),
+  }
+  return {"sorted_sequence": sorted_sequence, "values": values}, result, feeds
+
+
+def _listdiff():
+  x = tf.placeholder(dtype=tf.int32, shape=[None], name="X")
+  y = tf.placeholder(dtype=tf.int32, shape=[None], name="Y")
+  result = tf.setdiff1d(x, y, name="listdiff").out
+  feeds = {
+      x: np.array([1, 2, 3, 4, 5], dtype=np.int32),
+      y: np.array([2, 4], dtype=np.int32),
+  }
+  return {"x": x, "y": y}, result, feeds
+
+
+def _image_unary(op_fn, op_name):
+  images = tf.placeholder(dtype=tf.float32, shape=[None, 4, 4, 3],
+                          name="images")
+  result = op_fn(images, name=op_name)
+  feeds = {
+      images: np.linspace(0.0, 1.0, 48, dtype=np.float32).reshape(1, 4, 4, 3),
+  }
+  return {"images": images}, result, feeds
+
+
+def _adjust_contrast():
+  images = tf.placeholder(dtype=tf.float32, shape=[None, 4, 4, 3],
+                          name="images")
+  result = tf.image.adjust_contrast(images, contrast_factor=1.5,
+                                    name="adjust_contrast")
+  feeds = {
+      images: np.linspace(0.0, 1.0, 48, dtype=np.float32).reshape(1, 4, 4, 3),
+  }
+  return {"images": images}, result, feeds
+
+
+def _adjust_hue():
+  images = tf.placeholder(dtype=tf.float32, shape=[None, 4, 4, 3],
+                          name="images")
+  result = tf.image.adjust_hue(images, delta=0.1, name="adjust_hue")
+  feeds = {
+      images: np.linspace(0.0, 1.0, 48, dtype=np.float32).reshape(1, 4, 4, 3),
+  }
+  return {"images": images}, result, feeds
+
+
+def _adjust_saturation():
+  images = tf.placeholder(dtype=tf.float32, shape=[None, 4, 4, 3],
+                          name="images")
+  result = tf.image.adjust_saturation(images, saturation_factor=1.5,
+                                      name="adjust_saturation")
+  feeds = {
+      images: np.linspace(0.0, 1.0, 48, dtype=np.float32).reshape(1, 4, 4, 3),
+  }
+  return {"images": images}, result, feeds
+
+
+def _non_max_suppression():
+  boxes = tf.placeholder(dtype=tf.float32, shape=[None, 4], name="boxes")
+  scores = tf.placeholder(dtype=tf.float32, shape=[None], name="scores")
+  result = tf.image.non_max_suppression(boxes, scores, max_output_size=2,
+                                        name="non_max_suppression")
+  feeds = {
+      boxes: np.array([[0.0, 0.0, 1.0, 1.0],
+                       [0.1, 0.1, 1.1, 1.1],
+                       [2.0, 2.0, 3.0, 3.0]], dtype=np.float32),
+      scores: np.array([0.9, 0.8, 0.7], dtype=np.float32),
+  }
+  return {"boxes": boxes, "scores": scores}, result, feeds
+
+
+def _fake_quant_args():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
+  result = tf.quantization.fake_quant_with_min_max_args(
+      x, min=-6.0, max=6.0, name="fake_quant_with_min_max_args")
+  feeds = {
+      x: np.array([[-2.0, -1.0, 0.0, 1.0, 2.0]], dtype=np.float32),
+  }
+  return {"x": x}, result, feeds
+
+
+def _fake_quant_vars():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
+  min_value = tf.constant(-6.0, dtype=tf.float32, name="min")
+  max_value = tf.constant(6.0, dtype=tf.float32, name="max")
+  result = tf.quantization.fake_quant_with_min_max_vars(
+      x, min_value, max_value, name="fake_quant_with_min_max_vars")
+  feeds = {
+      x: np.array([[-2.0, -1.0, 0.0, 1.0, 2.0]], dtype=np.float32),
+  }
+  return {"x": x}, result, feeds
+
+
+def _bitcast():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
+  result = tf.bitcast(x, tf.int32, name="bitcast")
+  feeds = {
+      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
+  }
+  return {"x": x}, result, feeds
+
+
+def _saturate_cast():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
+  result = tf.saturate_cast(x, tf.int8, name="saturate_cast")
+  feeds = {
+      x: np.array([[-200.0, -2.0, 0.0, 2.0, 200.0]], dtype=np.float32),
+  }
+  return {"x": x}, result, feeds
+
+
+def _string_length():
+  x = tf.placeholder(dtype=tf.string, shape=[None], name="X")
+  result = tf.strings.length(x, name="string_length")
+  feeds = {
+      x: np.array([b"alpha", b"beta"], dtype=np.object_),
+  }
+  return {"x": x}, result, feeds
+
+
+def _string_join():
+  x = tf.placeholder(dtype=tf.string, shape=[None], name="X")
+  y = tf.placeholder(dtype=tf.string, shape=[None], name="Y")
+  result = tf.strings.join([x, y], separator=b"_", name="string_join")
+  feeds = {
+      x: np.array([b"alpha", b"beta"], dtype=np.object_),
+      y: np.array([b"one", b"two"], dtype=np.object_),
+  }
+  return {"x": x, "y": y}, result, feeds
+
+
+def _regex_replace():
+  x = tf.placeholder(dtype=tf.string, shape=[None], name="X")
+  result = tf.strings.regex_replace(x, pattern="a", rewrite="A",
+                                    name="regex_replace")
+  feeds = {
+      x: np.array([b"alpha", b"beta"], dtype=np.object_),
+  }
+  return {"x": x}, result, feeds
+
+
+def _substr():
+  x = tf.placeholder(dtype=tf.string, shape=[None], name="X")
+  result = tf.strings.substr(x, pos=1, len=2, name="substr")
+  feeds = {
+      x: np.array([b"alpha", b"beta"], dtype=np.object_),
+  }
+  return {"x": x}, result, feeds
+
+
+def _as_string():
+  x = tf.placeholder(dtype=tf.float32, shape=[None, 5], name="X")
+  result = tf.as_string(x, name="as_string")
+  feeds = {
+      x: np.array([[1.0, 2.0, 3.0, 4.0, 5.0]], dtype=np.float32),
+  }
+  return {"x": x}, result, feeds
+
+
 OPS = {
     0: ("add", lambda: _binary_elementwise(tf.add, "add")),
     1: ("sub", lambda: _binary_elementwise(tf.subtract, "sub")),
@@ -968,6 +1265,37 @@ OPS = {
     156: ("unique_with_counts", _unique_with_counts),
     157: ("in_top_k", _in_top_k),
     158: ("softmax_cross_entropy", _softmax_cross_entropy),
+    159: ("matrix_inverse", _matrix_inverse),
+    160: ("matrix_solve", _matrix_solve),
+    161: ("cholesky", _cholesky),
+    162: ("qr", _qr),
+    163: ("svd", _svd),
+    164: ("triangular_solve", _triangular_solve),
+    165: ("matrix_band_part", _matrix_band_part),
+    166: ("matrix_set_diag", _matrix_set_diag),
+    167: ("einsum", _einsum),
+    168: ("matrix_determinant", _matrix_determinant),
+    169: ("matrix_trace", _matrix_trace),
+    170: ("scatter_nd", _scatter_nd),
+    171: ("searchsorted", _searchsorted),
+    172: ("listdiff", _listdiff),
+    173: ("rgb_to_hsv", lambda: _image_unary(tf.image.rgb_to_hsv,
+                                            "rgb_to_hsv")),
+    174: ("hsv_to_rgb", lambda: _image_unary(tf.image.hsv_to_rgb,
+                                            "hsv_to_rgb")),
+    175: ("adjust_contrast", _adjust_contrast),
+    176: ("adjust_hue", _adjust_hue),
+    177: ("adjust_saturation", _adjust_saturation),
+    178: ("non_max_suppression", _non_max_suppression),
+    179: ("fake_quant_with_min_max_args", _fake_quant_args),
+    180: ("fake_quant_with_min_max_vars", _fake_quant_vars),
+    181: ("bitcast", _bitcast),
+    182: ("saturate_cast", _saturate_cast),
+    183: ("string_length", _string_length),
+    184: ("string_join", _string_join),
+    185: ("regex_replace", _regex_replace),
+    186: ("substr", _substr),
+    187: ("as_string", _as_string),
 }
 
 

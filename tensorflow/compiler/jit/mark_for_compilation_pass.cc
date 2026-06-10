@@ -797,6 +797,9 @@ bool DynamicInputExpressionsAreCompatible(const Node& node,
   const DimExpr* expected_expr = nullptr;
   std::string expected_input;
 
+  LOG(INFO) << "Checking dynamic input expressions for node " << node.name()
+            << " op=" << node.type_string();
+
   for (const Edge* edge : node.in_edges()) {
     if (edge->IsControlEdge()) {
       continue;
@@ -828,6 +831,9 @@ bool DynamicInputExpressionsAreCompatible(const Node& node,
       if (expected_expr == nullptr) {
         expected_expr = expr_ptr.get();
         expected_input = input_name;
+        LOG(INFO) << "Node " << node.name()
+                  << " dynamic expression baseline from " << expected_input
+                  << " is " << DimExprToString(expected_expr);
         continue;
       }
 
@@ -836,8 +842,14 @@ bool DynamicInputExpressionsAreCompatible(const Node& node,
             "dynamic input expressions differ: ", expected_input, " has ",
             DimExprToString(expected_expr), " but ", input_name, " has ",
             DimExprToString(expr_ptr.get()));
+        LOG(INFO) << "Rejecting node " << node.name()
+                  << " from XLA clustering: " << *reason;
         return false;
       }
+
+      LOG(INFO) << "Node " << node.name()
+                << " dynamic expression from " << input_name
+                << " matches baseline " << DimExprToString(expected_expr);
     }
   }
 

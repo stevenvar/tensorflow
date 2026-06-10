@@ -1423,6 +1423,9 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
           ctx->resource_manager(), BatchSizeResourceName, &bsr);
 
       if (st.ok()) {
+        OP_REQUIRES(ctx, bsr != nullptr,
+                    errors::Internal("BatchSizeResource lookup succeeded but "
+                                     "returned null"));
         LOG(INFO) << "Setting run_options.batch_size from BatchSizeResource: "
                   << bsr->GetBatchSize();
         run_options.set_batch_size(bsr->GetBatchSize());

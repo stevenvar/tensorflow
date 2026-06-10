@@ -467,7 +467,8 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
             xla::DExpr batch_size = xla::DExpr::Const(run_options_batch_size);
             LOG(INFO) << "Calling output shape substitute with run_options for "
                       << "output " << i << " dimension " << dim
-                      << " expr=" << expr << " substitute Var(1)="
+                      << " expr=" << DExprToString(expr)
+                      << " substitute Var(1)="
                       << DExprToString(batch_size);
             xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
             LOG(INFO) << "Output shape substitute with run_options for output "
@@ -488,11 +489,16 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
             ScopedStepContainer* step_container = ctx->step_container();
             TF_RETURN_IF_ERROR(step_container->Lookup<BatchSizeResource>(
                           ctx->resource_manager(), BatchSizeResourceName, &bsr));
+            if (bsr == nullptr) {
+              return errors::Internal(
+                  "BatchSizeResource lookup succeeded but returned null");
+            }
             xla::DExpr batch_size = xla::DExpr::Const(bsr->GetBatchSize());
             // Just substitute Var(1) for now.
             LOG(INFO) << "Calling output shape substitute with "
                       << "BatchSizeResource for output " << i
-                      << " dimension " << dim << " expr=" << expr
+                      << " dimension " << dim
+                      << " expr=" << DExprToString(expr)
                       << " substitute Var(1)=" << DExprToString(batch_size);
             xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
             LOG(INFO) << "Output shape substitute with BatchSizeResource for "

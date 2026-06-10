@@ -428,7 +428,8 @@ static xla::DExpr DimExprToDExpr(const DimExpr* e) {
       return xla::DExpr::Const(ac->value());
     }
     case DimExpr::Kind::kVariable: {
-      return xla::DExpr::Var(1);
+      auto* av = static_cast<const Variable*>(e);
+      return xla::DExpr::Var(av->id());
     }
     case DimExpr::Kind::kAdd: {
       auto* ee = static_cast<const ExprAdd*>(e);
@@ -513,6 +514,36 @@ absl::Status CompileToLocalExecutable(
     XlaBatchMatcher* xla_batch_matcher =
         xla_device_compiler->xla_batch_matcher();
     std::optional<xla::DExpr> dynamic_dim_expr;
+    absl::flat_hash_map<std::string, int> fresh_var_by_composite_expr;
+    int next_fresh_dynamic_var_id = 1000000;
+    auto normalize_composite_dynamic_expr =
+        [&](xla::DExpr expr, absl::string_view context) {
+          if (!expr || !expr->is_dynamic()) {
+            return expr;
+          }
+          const std::set<int> ids = expr->get_all_ids();
+          if (ids.size() <= 1) {
+            return expr;
+          }
+
+          const std::string expr_string = DExprToString(expr);
+          auto [it, inserted] = fresh_var_by_composite_expr.emplace(
+              expr_string, next_fresh_dynamic_var_id);
+          if (inserted) {
+            ++next_fresh_dynamic_var_id;
+            LOG(INFO) << "Rewriting composite dynamic input expression "
+                      << expr_string << " to fresh variable Var(" << it->second
+                      << ") before XLA compilation. context=" << context
+                      << " source_var_ids={" << absl::StrJoin(ids, ", ")
+                      << "}";
+          } else {
+            LOG(INFO) << "Reusing fresh variable Var(" << it->second
+                      << ") for composite dynamic input expression "
+                      << expr_string << " before XLA compilation. context="
+                      << context;
+          }
+          return xla::DExpr::Var(it->second);
+        };
     auto maybe_attach_shape_contents_from_attrs =
         [&](int arg_index, const auto& attr_map,
             const std::string& node_name) {
@@ -559,7 +590,11 @@ absl::Status CompileToLocalExecutable(
             xla::ExpressionProto expr;
             const xla::DExpr& dim_expr = inferred_shape.get_expression(i);
             if (dim_expr && dim_expr->is_dynamic()) {
-              dim_expr->to_proto(&expr);
+              xla::DExpr normalized_expr = normalize_composite_dynamic_expr(
+                  dim_expr,
+                  absl::StrCat("const_arg=", arg_index, " node=", node_name,
+                               " dim=", i));
+              normalized_expr->to_proto(&expr);
             } else if (arg.constant_value.dtype() == DT_INT32) {
               expr.set_constant_value(arg.constant_value.flat<int32>()(i));
             } else if (arg.constant_value.dtype() == DT_INT64) {
@@ -638,6 +673,10 @@ absl::Status CompileToLocalExecutable(
               // Look for dynamic expression. If found then compute padding
               // value and exit loop.
               auto e = DimExprToDExpr(ExprFromProto(exp[idx]).get()).simplify();
+              e = normalize_composite_dynamic_expr(
+                      e, absl::StrCat("arg=", arg_index, " dim=", idx,
+                                      " before_fill_batch"))
+                      .simplify();
               if (e->is_dynamic()) {
                 LOG(INFO) << "Calling dynamic expression solve for compile "
                           << "argument " << arg_index << " dimension " << idx
@@ -678,6 +717,9 @@ absl::Status CompileToLocalExecutable(
           for (int j = 0; j < exp.size(); ++j) {
             auto e = DimExprToDExpr(ExprFromProto(exp[j]).get());
             if (e->is_dynamic()) {
+              e = normalize_composite_dynamic_expr(
+                  e, absl::StrCat("arg=", arg_index, " dim=", j,
+                                  " input_shape"));
               dyn_exprs[j] = e;
             }
           }
@@ -781,11 +823,22 @@ absl::Status CompileToLocalExecutable(
             int64_t old = shp.dim_size(j);
             old_vars.push_back({i, j, old});
             xla::DExpr padded_expr = xla::DExpr::Const(filled_batch);
+            const std::set<int> ids = e->get_all_ids();
+            if (ids.size() != 1) {
+              return errors::InvalidArgument(
+                  "Dynamic shape padding expected exactly one dynamic "
+                  "variable for argument ",
+                  i, ", dimension ", j, ", but found ", ids.size(),
+                  " variables in expression ", DExprToString(e));
+            }
+            const int substitute_var_id = *ids.begin();
             LOG(INFO) << "Calling dynamic expression substitute for compile "
                       << "argument " << i << " dimension " << j
                       << " expr=" << DExprToString(e)
-                      << " substitute Var(1)=" << filled_batch;
-            xla::DExpr subst_expr = e.substitute(1, padded_expr).simplify();
+                      << " substitute Var(" << substitute_var_id
+                      << ")=" << filled_batch;
+            xla::DExpr subst_expr =
+                e.substitute(substitute_var_id, padded_expr).simplify();
             LOG(INFO) << "Dynamic expression substitute for compile argument "
                       << i << " dimension " << j
                       << " returned " << DExprToString(subst_expr);

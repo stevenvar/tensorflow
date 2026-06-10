@@ -783,6 +783,67 @@ static xla::DExpr DimExprToDExpr(const DimExpr* e) {
   return xla::DExpr();
 }
 
+std::string DimExprToString(const DimExpr* expr) {
+  if (expr == nullptr) {
+    return "<null>";
+  }
+  ExpressionProto proto;
+  expr->ToProto(&proto);
+  return ExprProtoToString(proto);
+}
+
+bool DynamicInputExpressionsAreCompatible(const Node& node,
+                                          std::string* reason) {
+  const DimExpr* expected_expr = nullptr;
+  std::string expected_input;
+
+  for (const Edge* edge : node.in_edges()) {
+    if (edge->IsControlEdge()) {
+      continue;
+    }
+
+    const Node* src = edge->src();
+    auto it = expr_map.find(src->name());
+    if (it == expr_map.end()) {
+      continue;
+    }
+
+    const int output_index = edge->src_output();
+    if (output_index < 0 ||
+        output_index >= static_cast<int>(it->second.size())) {
+      continue;
+    }
+
+    for (const auto& expr_ptr : it->second[output_index]) {
+      if (expr_ptr == nullptr) {
+        continue;
+      }
+      xla::DExpr dyn = DimExprToDExpr(expr_ptr.get());
+      if (!dyn || !dyn->is_dynamic()) {
+        continue;
+      }
+
+      const std::string input_name =
+          absl::StrCat(src->name(), ":", output_index);
+      if (expected_expr == nullptr) {
+        expected_expr = expr_ptr.get();
+        expected_input = input_name;
+        continue;
+      }
+
+      if (!DimExpr::Equals(expected_expr, expr_ptr.get())) {
+        *reason = absl::StrCat(
+            "dynamic input expressions differ: ", expected_input, " has ",
+            DimExprToString(expected_expr), " but ", input_name, " has ",
+            DimExprToString(expr_ptr.get()));
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
 // Runs Grappler static inference and logs any ExpressionProto found in output
 // tensor shapes (from GraphProperties, not from _output_shapes attrs).
 void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
@@ -792,6 +853,8 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
   using tensorflow::TensorShapeProto;
   using tensorflow::grappler::GraphProperties;
   using tensorflow::grappler::GrapplerItem;
+
+  expr_map.clear();
 
   GraphDef graph_def;
   graph.ToGraphDef(&graph_def);
@@ -884,6 +947,10 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
   TF_RET_CHECK(!initialized_ && !edges_contracted_ && !clusters_created_);
   initialized_ = true;
 
+  if (debug_options_.enable_dynamic_sizes) {
+    LogExpressionsViaGraphProperties(*graph_);
+  }
+
   TF_RETURN_IF_ERROR(FindCompilationCandidates());
 
   if (compilation_candidates_.empty()) {
@@ -921,7 +988,6 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
     TF_RETURN_IF_ERROR(AssignAnnotatedClusterIDs());
   }
   if (debug_options_.enable_dynamic_sizes) {
-    LogExpressionsViaGraphProperties(*graph_);
     TF_RETURN_IF_ERROR(AssignDimVars());
     auto has_dynamic_input_expression = [&](const Node* n) {
       for (const Edge* edge : n->in_edges()) {
@@ -1722,6 +1788,15 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
       continue;
     }
 
+    if (debug_options_.enable_dynamic_sizes) {
+      std::string reason;
+      if (!DynamicInputExpressionsAreCompatible(*node, &reason)) {
+        VLOG(1) << "Rejecting " << node->name()
+                << " from XLA clustering: " << reason;
+        continue;
+      }
+    }
+
     if (compile_time_const_nodes[node->id()]) {
       const OpDef* op_def;
       TF_RETURN_IF_ERROR(
@@ -2157,19 +2232,6 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
   }
 
   if (debug_options_.enable_dynamic_sizes) {
-    if (from->dim_vars().size() > 1 || to->dim_vars().size() > 1) {
-      std::string from_str = "from_vars: ";
-      for (auto id : from->dim_vars()) {
-        from_str += std::to_string(id) + ", ";
-      }
-      std::string to_str = "to_vars: ";
-      for (auto id : to->dim_vars()) {
-        to_str += std::to_string(id) + ", ";
-      }
-      return LogNotContractableAndReturnFalse(
-        from, to, absl::StrCat("the two nodes have multiple dynamic dimensions: ",
-        from_str, " and ", to_str));
-    }
     if (from->dim_vars().size() == 1 && to->dim_vars().size() == 1 &&
         from->dim_vars() != to->dim_vars()) {
       return LogNotContractableAndReturnFalse(

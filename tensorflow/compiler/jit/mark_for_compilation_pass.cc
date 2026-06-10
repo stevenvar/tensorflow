@@ -267,10 +267,19 @@ class MarkForCompilationPassImpl {
       dim_vars_.insert(dim_vars.begin(), dim_vars.end());
     }
     const std::set<int>& dim_vars() const { return dim_vars_; }
+    void set_dynamic_expr_signature(const string& signature) {
+      if (!dynamic_expr_signature_.has_value()) {
+        dynamic_expr_signature_ = signature;
+      }
+    }
+    const std::optional<string>& dynamic_expr_signature() const {
+      return dynamic_expr_signature_;
+    }
 
    private:
     int annotated_id_ = -1;
     std::set<int> dim_vars_;
+    std::optional<string> dynamic_expr_signature_;
     int chain_id_ = -1;
     int cluster_size_ = 1;
     int cycles_graph_node_id_;
@@ -645,6 +654,10 @@ void MarkForCompilationPassImpl::Cluster::Merge(Cluster* other) {
 
   merge_dim_vars(other->dim_vars_);
   other->dim_vars_.clear();
+  if (!dynamic_expr_signature_.has_value()) {
+    dynamic_expr_signature_ = std::move(other->dynamic_expr_signature_);
+  }
+  other->dynamic_expr_signature_.reset();
 
   resource_var_operation_node_ids_.reserve(
       resource_var_operation_node_ids_.size() +
@@ -1997,6 +2010,10 @@ absl::Status MarkForCompilationPassImpl::AssignDimVars(void) {
       for (auto& pDim: (it->second)[output_index]) {
         DimExpr * d= pDim.get();
         xla::DExpr dyn = DimExprToDExpr(d);
+        if (!dyn || !dyn->is_dynamic()) {
+          continue;
+        }
+        cluster->set_dynamic_expr_signature(DimExprToString(d));
         auto new_ids = dyn->get_all_ids();
         for (auto id : new_ids) {
           cluster->add_dim_var(id);
@@ -2248,16 +2265,14 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
   }
 
   if (debug_options_.enable_dynamic_sizes) {
-    if (from->dim_vars().size() == 1 && to->dim_vars().size() == 1 &&
-        from->dim_vars() != to->dim_vars()) {
+    if (from->dynamic_expr_signature().has_value() &&
+        to->dynamic_expr_signature().has_value() &&
+        *from->dynamic_expr_signature() != *to->dynamic_expr_signature()) {
       return LogNotContractableAndReturnFalse(
         from, to,
-        absl::StrCat("the two nodes have different dynamic dimensions: ",
-                     from->dim_vars().size() == 1
-                       ? std::to_string(*from->dim_vars().begin()) : "none",
-                     " and ",
-                     to->dim_vars().size() == 1
-                       ? std::to_string(*to->dim_vars().begin()) : "none"));
+        absl::StrCat("the two clusters have different dynamic expressions: ",
+                     *from->dynamic_expr_signature(), " and ",
+                     *to->dynamic_expr_signature()));
     }
   }
 

@@ -26,6 +26,7 @@ limitations under the License.
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/logging.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/lib/core/errors.h"
@@ -2208,6 +2209,11 @@ absl::Status ReductionShape(InferenceContext* c) {
 
 absl::Status ConcatShapeHelper(InferenceContext* c, int start_value_index,
                                int end_value_index, int dim_index) {
+  auto dim_expr_string = [&](DimensionHandle dim) -> string {
+    DimExpr* expr = c->GetDimExpr(dim);
+    return expr == nullptr ? "<none>" : expr->DebugString();
+  };
+
   ShapeHandle unused;
   TF_RETURN_IF_ERROR(c->WithRank(c->input(dim_index), 0, &unused));
   const Tensor* concat_dim_t = c->input_tensor(dim_index);
@@ -2252,6 +2258,11 @@ absl::Status ConcatShapeHelper(InferenceContext* c, int start_value_index,
     concat_dim = concat_dim_t->flat<int64_t>()(0);
   }
 
+  LOG(INFO) << "ConcatShapeHelper begin: " << c->DebugString()
+            << " start_value_index=" << start_value_index
+            << " end_value_index=" << end_value_index
+            << " dim_index=" << dim_index << " concat_dim=" << concat_dim;
+
   // Minimum required number of dimensions.
   const int64 min_rank = concat_dim < 0 ? -concat_dim : concat_dim + 1;
 
@@ -2262,6 +2273,11 @@ absl::Status ConcatShapeHelper(InferenceContext* c, int start_value_index,
   TF_RETURN_IF_ERROR(c->WithRankAtLeast(input, min_rank, &input));
   TF_RETURN_IF_ERROR(c->Subshape(input, 0, concat_dim, &output_before));
   DimensionHandle output_middle = c->Dim(input, concat_dim);
+  LOG(INFO) << "ConcatShapeHelper initial accumulator from input "
+            << (end_value_index - 1) << ": input_shape="
+            << c->DebugString(input) << " concat_dim_value="
+            << c->DebugString(output_middle) << " concat_dim_expr="
+            << dim_expr_string(output_middle);
   if (concat_dim == -1) {
     output_after = c->Scalar();  // no dimensions.
   } else {
@@ -2275,6 +2291,12 @@ absl::Status ConcatShapeHelper(InferenceContext* c, int start_value_index,
     TF_RETURN_IF_ERROR(c->WithRankAtLeast(input, min_rank, &input));
     TF_RETURN_IF_ERROR(c->Subshape(input, 0, concat_dim, &before));
     DimensionHandle middle = c->Dim(input, concat_dim);
+    LOG(INFO) << "ConcatShapeHelper input " << i << ": input_shape="
+              << c->DebugString(input) << " concat_dim_value="
+              << c->DebugString(middle) << " concat_dim_expr="
+              << dim_expr_string(middle)
+              << " accumulator_before_value=" << c->DebugString(output_middle)
+              << " accumulator_before_expr=" << dim_expr_string(output_middle);
     if (concat_dim == -1) {
       after = c->Scalar();
     } else {
@@ -2283,6 +2305,9 @@ absl::Status ConcatShapeHelper(InferenceContext* c, int start_value_index,
 
     TF_RETURN_IF_ERROR(c->Merge(before, output_before, &output_before));
     TF_RETURN_IF_ERROR(c->Add(output_middle, middle, &output_middle));
+    LOG(INFO) << "ConcatShapeHelper after Add for input " << i
+              << ": accumulator_value=" << c->DebugString(output_middle)
+              << " accumulator_expr=" << dim_expr_string(output_middle);
     TF_RETURN_IF_ERROR(c->Merge(after, output_after, &output_after));
   }
 
@@ -2290,6 +2315,9 @@ absl::Status ConcatShapeHelper(InferenceContext* c, int start_value_index,
   TF_RETURN_IF_ERROR(
       c->Concatenate(output_before, c->Vector(output_middle), &s));
   TF_RETURN_IF_ERROR(c->Concatenate(s, output_after, &s));
+  LOG(INFO) << "ConcatShapeHelper final output_shape=" << c->DebugString(s)
+            << " concat_dim_value=" << c->DebugString(output_middle)
+            << " concat_dim_expr=" << dim_expr_string(output_middle);
   c->set_output(0, s);
   return absl::OkStatus();
 }

@@ -23,6 +23,7 @@ limitations under the License.
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/statusor.h"
+#include "xla/tsl/platform/logging.h"
 
 // These classes are forward declared so that ExecutableRunOptions can be linked
 // into an XLA-compiled binary without having to link all of the pointed-to
@@ -196,11 +197,15 @@ class ExecutableRunOptions {
   }
 
   ExecutableRunOptions& set_batch_size(int64_t batch_size) {
+    LOG(INFO) << "ExecutableRunOptions::set_batch_size(" << batch_size << ")";
     batch_size_ = batch_size;
     return *this;
   }
 
-  int64_t batch_size() const { return batch_size_; }
+  int64_t batch_size() const {
+    LOG(INFO) << "ExecutableRunOptions::batch_size() -> " << batch_size_;
+    return batch_size_;
+  }
 
   int32_t launch_id() const { return launch_id_; }
 
@@ -272,7 +277,7 @@ class ExecutableRunOptions {
   ExecutionProfile* execution_profile_ = nullptr;
   int rng_seed_ = 0;
   int32_t launch_id_ = 0;
-  int64_t batch_size_ = 0;
+  int64_t batch_size_ = -1066;
   stream_executor::Stream* device_to_host_stream_ = nullptr;
   stream_executor::Stream* host_to_device_stream_ = nullptr;
   ThenExecuteFunction* then_execute_function_ = nullptr;

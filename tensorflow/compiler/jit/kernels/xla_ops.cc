@@ -1381,6 +1381,8 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
     }
   
     if (dyn_vals.size() == 1) {
+      LOG(INFO) << "Setting run_options.batch_size from solved dynamic input "
+                << "value: " << *(dyn_vals.begin());
       run_options.set_batch_size(*(dyn_vals.begin()));
       is_set = true;
     } else {
@@ -1397,9 +1399,12 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
           ctx->resource_manager(), BatchSizeResourceName, &bsr);
 
       if (st.ok()) {
+        LOG(INFO) << "Setting run_options.batch_size from BatchSizeResource: "
+                  << bsr->GetBatchSize();
         run_options.set_batch_size(bsr->GetBatchSize());
-        VLOG(1) << "run_options.batch_size is set to: "
-                << run_options.batch_size() << ". step_id: " << ctx->step_id();
+        LOG(INFO) << "run_options.batch_size is set to: "
+                  << run_options.batch_size()
+                  << ". step_id: " << ctx->step_id();
         bsr->Unref();
 
       } else if (IsNotFound(st)) {

@@ -1426,8 +1426,9 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
         LOG(INFO) << "Setting run_options.batch_size from BatchSizeResource: "
                   << bsr->GetBatchSize();
         run_options.set_batch_size(bsr->GetBatchSize());
-        LOG(INFO) << "run_options.batch_size is set to: "
-                  << run_options.batch_size()
+        const int64_t current_batch_size = run_options.batch_size();
+        LOG(INFO) << "XlaRunOp read run_options.batch_size after "
+                  << "BatchSizeResource set: " << current_batch_size
                   << ". step_id: " << ctx->step_id();
         bsr->Unref();
 

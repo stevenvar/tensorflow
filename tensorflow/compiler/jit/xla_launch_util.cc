@@ -460,9 +460,11 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
           has_dynamic = true;
           VLOG(1) << "Current expression is " << expr;
           if (run_options) {
-            LOG(INFO) << "PopulateOutputs reading run_options->batch_size() "
-                      << "for output " << i << " dimension " << dim;
-            xla::DExpr batch_size = xla::DExpr::Const(run_options->batch_size());
+            const int64_t run_options_batch_size = run_options->batch_size();
+            LOG(INFO) << "PopulateOutputs read run_options->batch_size()="
+                      << run_options_batch_size << " for output " << i
+                      << " dimension " << dim;
+            xla::DExpr batch_size = xla::DExpr::Const(run_options_batch_size);
             LOG(INFO) << "Calling output shape substitute with run_options for "
                       << "output " << i << " dimension " << dim
                       << " expr=" << expr << " substitute Var(1)="

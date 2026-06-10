@@ -465,12 +465,22 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
                       << run_options_batch_size << " for output " << i
                       << " dimension " << dim;
             xla::DExpr batch_size = xla::DExpr::Const(run_options_batch_size);
+            const std::set<int> ids = expr->get_all_ids();
+            if (ids.size() != 1) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Runtime shape substitution expected exactly one dynamic "
+                  "variable for output ",
+                  i, ", dimension ", dim, ", but found ", ids.size(),
+                  " variables in expression ", DExprToString(expr)));
+            }
+            const int substitute_var_id = *ids.begin();
             LOG(INFO) << "Calling output shape substitute with run_options for "
                       << "output " << i << " dimension " << dim
                       << " expr=" << DExprToString(expr)
-                      << " substitute Var(1)="
+                      << " substitute Var(" << substitute_var_id << ")="
                       << DExprToString(batch_size);
-            xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
+            xla::DExpr subst_expr =
+                expr.substitute(substitute_var_id, batch_size).simplify();
             LOG(INFO) << "Output shape substitute with run_options for output "
                       << i << " dimension " << dim << " returned "
                       << DExprToString(subst_expr);
@@ -494,13 +504,23 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
                   "BatchSizeResource lookup succeeded but returned null");
             }
             xla::DExpr batch_size = xla::DExpr::Const(bsr->GetBatchSize());
-            // Just substitute Var(1) for now.
+            const std::set<int> ids = expr->get_all_ids();
+            if (ids.size() != 1) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Runtime shape substitution expected exactly one dynamic "
+                  "variable for output ",
+                  i, ", dimension ", dim, ", but found ", ids.size(),
+                  " variables in expression ", DExprToString(expr)));
+            }
+            const int substitute_var_id = *ids.begin();
             LOG(INFO) << "Calling output shape substitute with "
                       << "BatchSizeResource for output " << i
                       << " dimension " << dim
                       << " expr=" << DExprToString(expr)
-                      << " substitute Var(1)=" << DExprToString(batch_size);
-            xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
+                      << " substitute Var(" << substitute_var_id
+                      << ")=" << DExprToString(batch_size);
+            xla::DExpr subst_expr =
+                expr.substitute(substitute_var_id, batch_size).simplify();
             LOG(INFO) << "Output shape substitute with BatchSizeResource for "
                       << "output " << i << " dimension " << dim
                       << " returned " << DExprToString(subst_expr);

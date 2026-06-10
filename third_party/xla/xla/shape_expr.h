@@ -21,12 +21,14 @@ limitations under the License.
 #include <optional>
 #include <ostream>
 #include <set>
+#include <string>
 #include <vector>
 
 #include "absl/hash/hash.h"
 #include "absl/log/check.h"
 #include "absl/types/span.h"
 #include "xla/printer.h"
+#include "xla/tsl/platform/logging.h"
 #include "xla/xla_data.pb.h"
 
 namespace xla {
@@ -71,6 +73,19 @@ class DynExpr {
 
   friend std::ostream& operator<<(std::ostream& os, DynExpr* expr);
 };
+
+inline std::string DynExprToLogString(const DynExpr* expr) {
+  if (expr == nullptr) {
+    return "<null>";
+  }
+  StringPrinter printer;
+  const_cast<DynExpr*>(expr)->print(&printer);
+  return std::move(printer).ToString();
+}
+
+inline std::string OptionalIntToLogString(std::optional<int64_t> value) {
+  return value.has_value() ? std::to_string(*value) : "<none>";
+}
 
 class DExpr {
  public:
@@ -180,14 +195,22 @@ class UnknownExpr : public DynExpr {
   bool is_constant() const override { return true; }
   int get_id() const { return id_; }
   DynExpr* substitute(int id, DynExpr* v) override {
-    (void)id;
-    (void)v;
-    return clone().release();
+    LOG(INFO) << "DynExpr substitute UnknownExpr expr="
+              << DynExprToLogString(this) << " id=" << id
+              << " value=" << DynExprToLogString(v);
+    DynExpr* result = clone().release();
+    LOG(INFO) << "DynExpr substitute UnknownExpr result="
+              << DynExprToLogString(result);
+    return result;
   }
   std::set<int> get_all_ids() override { return {}; }
   std::optional<int64_t> solve(int64_t x) override {
-    (void)x;
-    return std::nullopt;
+    LOG(INFO) << "DynExpr solve UnknownExpr expr=" << DynExprToLogString(this)
+              << " target=" << x;
+    std::optional<int64_t> result = std::nullopt;
+    LOG(INFO) << "DynExpr solve UnknownExpr result="
+              << OptionalIntToLogString(result);
+    return result;
   }
   DynExpr* s() override { return clone().release(); }
 };
@@ -220,9 +243,24 @@ class Constant : public DynExpr {
   }
   bool is_constant() const override { return true; }
   int64_t get_val() const override { return value; }
-  DynExpr* substitute(int id, DynExpr* v) { return clone().release(); }
+  DynExpr* substitute(int id, DynExpr* v) {
+    LOG(INFO) << "DynExpr substitute Constant expr="
+              << DynExprToLogString(this) << " id=" << id
+              << " value=" << DynExprToLogString(v);
+    DynExpr* result = clone().release();
+    LOG(INFO) << "DynExpr substitute Constant result="
+              << DynExprToLogString(result);
+    return result;
+  }
   std::set<int> get_all_ids() { return {}; }
-  std::optional<int64_t> solve(int64_t x) { return std::nullopt; }
+  std::optional<int64_t> solve(int64_t x) {
+    LOG(INFO) << "DynExpr solve Constant expr=" << DynExprToLogString(this)
+              << " target=" << x;
+    std::optional<int64_t> result = std::nullopt;
+    LOG(INFO) << "DynExpr solve Constant result="
+              << OptionalIntToLogString(result);
+    return result;
+  }
   DynExpr* s() override;
 };
 
@@ -252,10 +290,23 @@ class Variable : public DynExpr {
   bool is_constant() const override { return false; }
   int get_id() const { return id; }
   DynExpr* substitute(int id, DynExpr* v) {
-    return get_id() == id ? v->clone().release() : clone().release();
+    LOG(INFO) << "DynExpr substitute Variable expr="
+              << DynExprToLogString(this) << " id=" << id
+              << " value=" << DynExprToLogString(v);
+    DynExpr* result = get_id() == id ? v->clone().release() : clone().release();
+    LOG(INFO) << "DynExpr substitute Variable result="
+              << DynExprToLogString(result);
+    return result;
   }
   std::set<int> get_all_ids() { return {get_id()}; }
-  std::optional<int64_t> solve(int64_t x) { return x; }
+  std::optional<int64_t> solve(int64_t x) {
+    LOG(INFO) << "DynExpr solve Variable expr=" << DynExprToLogString(this)
+              << " target=" << x;
+    std::optional<int64_t> result = x;
+    LOG(INFO) << "DynExpr solve Variable result="
+              << OptionalIntToLogString(result);
+    return result;
+  }
   DynExpr* s() override;
 };
 
@@ -294,7 +345,12 @@ class Add : public DynExpr {
   int64_t get_val() const override { return lhs->get_val() + rhs->get_val(); }
 
   DynExpr* substitute(int id, DynExpr* v) {
-    return new Add(lhs->substitute(id, v), rhs->substitute(id, v));
+    LOG(INFO) << "DynExpr substitute Add expr=" << DynExprToLogString(this)
+              << " id=" << id << " value=" << DynExprToLogString(v);
+    DynExpr* result = new Add(lhs->substitute(id, v), rhs->substitute(id, v));
+    LOG(INFO) << "DynExpr substitute Add result="
+              << DynExprToLogString(result);
+    return result;
   }
 
   std::set<int> get_all_ids() {
@@ -304,17 +360,29 @@ class Add : public DynExpr {
   }
 
   std::optional<int64_t> solve(int64_t x) {
+    LOG(INFO) << "DynExpr solve Add expr=" << DynExprToLogString(this)
+              << " target=" << x;
     // Cannot solve if both lhs and rhs are dynamic...
-    if (lhs->is_dynamic() && rhs->is_dynamic()) return std::nullopt;
+    if (lhs->is_dynamic() && rhs->is_dynamic()) {
+      LOG(INFO) << "DynExpr solve Add result=<none>";
+      return std::nullopt;
+    }
     if (lhs->get_all_ids().size() == 1 && rhs->is_constant()) {
       // (A + c) = x <=> A = x - c => solve A = y with y = x - c
-      return lhs->solve(x - rhs->get_val());
+      std::optional<int64_t> result = lhs->solve(x - rhs->get_val());
+      LOG(INFO) << "DynExpr solve Add result="
+                << OptionalIntToLogString(result);
+      return result;
     }
     if (rhs->get_all_ids().size() == 1 && lhs->is_constant()) {
       // (c + A) = x <=> A = x - c => solve A = y with y = x - c
-      return rhs->solve(x - lhs->get_val());
+      std::optional<int64_t> result = rhs->solve(x - lhs->get_val());
+      LOG(INFO) << "DynExpr solve Add result="
+                << OptionalIntToLogString(result);
+      return result;
     }
     // No solution
+    LOG(INFO) << "DynExpr solve Add result=<none>";
     return std::nullopt;
   }
 
@@ -358,7 +426,12 @@ class Sub : public DynExpr {
   int64_t get_val() const override { return lhs->get_val() - rhs->get_val(); }
 
   DynExpr* substitute(int id, DynExpr* v) {
-    return new Sub(lhs->substitute(id, v), rhs->substitute(id, v));
+    LOG(INFO) << "DynExpr substitute Sub expr=" << DynExprToLogString(this)
+              << " id=" << id << " value=" << DynExprToLogString(v);
+    DynExpr* result = new Sub(lhs->substitute(id, v), rhs->substitute(id, v));
+    LOG(INFO) << "DynExpr substitute Sub result="
+              << DynExprToLogString(result);
+    return result;
   }
 
   std::set<int> get_all_ids() {
@@ -368,17 +441,29 @@ class Sub : public DynExpr {
   }
 
   std::optional<int64_t> solve(int64_t x) {
+    LOG(INFO) << "DynExpr solve Sub expr=" << DynExprToLogString(this)
+              << " target=" << x;
     // Cannot solve if both lhs and rhs are dynamic...
-    if (lhs->is_dynamic() && rhs->is_dynamic()) return std::nullopt;
+    if (lhs->is_dynamic() && rhs->is_dynamic()) {
+      LOG(INFO) << "DynExpr solve Sub result=<none>";
+      return std::nullopt;
+    }
     if (lhs->get_all_ids().size() == 1 && rhs->is_constant()) {
       // (A - c) = x <=> A = x + c => solve A = y with y = x + c
-      return lhs->solve(x + rhs->get_val());
+      std::optional<int64_t> result = lhs->solve(x + rhs->get_val());
+      LOG(INFO) << "DynExpr solve Sub result="
+                << OptionalIntToLogString(result);
+      return result;
     }
     if (rhs->get_all_ids().size() == 1 && lhs->is_constant()) {
       // (c - A) = x <=> A = c - x => solve A = y with y = c - x
-      return rhs->solve(lhs->get_val() - x);
+      std::optional<int64_t> result = rhs->solve(lhs->get_val() - x);
+      LOG(INFO) << "DynExpr solve Sub result="
+                << OptionalIntToLogString(result);
+      return result;
     }
     // No solution
+    LOG(INFO) << "DynExpr solve Sub result=<none>";
     return std::nullopt;
   }
 
@@ -422,7 +507,12 @@ class Mul : public DynExpr {
   int64_t get_val() const override { return lhs->get_val() * rhs->get_val(); }
 
   DynExpr* substitute(int id, DynExpr* v) {
-    return new Mul(lhs->substitute(id, v), rhs->substitute(id, v));
+    LOG(INFO) << "DynExpr substitute Mul expr=" << DynExprToLogString(this)
+              << " id=" << id << " value=" << DynExprToLogString(v);
+    DynExpr* result = new Mul(lhs->substitute(id, v), rhs->substitute(id, v));
+    LOG(INFO) << "DynExpr substitute Mul result="
+              << DynExprToLogString(result);
+    return result;
   }
 
   std::set<int> get_all_ids() {
@@ -432,23 +522,53 @@ class Mul : public DynExpr {
   }
 
   std::optional<int64_t> solve(int64_t x) {
+    LOG(INFO) << "DynExpr solve Mul expr=" << DynExprToLogString(this)
+              << " target=" << x;
     // Cannot solve if both lhs and rhs are dynamic...
-    if (lhs->is_dynamic() && rhs->is_dynamic()) return std::nullopt;
+    if (lhs->is_dynamic() && rhs->is_dynamic()) {
+      LOG(INFO) << "DynExpr solve Mul result=<none>";
+      return std::nullopt;
+    }
     if (lhs->get_all_ids().size() == 1 && rhs->is_constant()) {
       // (A * c) = x <=> A = x / c => solve A = y with y = x / c
       int64_t c = rhs->get_val();
-      if (c == 0) return x == 0 ? lhs->solve(0) : std::nullopt;
-      if (x % c != 0) return std::nullopt;
-      return lhs->solve(x / c);
+      if (c == 0) {
+        std::optional<int64_t> result =
+            x == 0 ? lhs->solve(0) : std::nullopt;
+        LOG(INFO) << "DynExpr solve Mul result="
+                  << OptionalIntToLogString(result);
+        return result;
+      }
+      if (x % c != 0) {
+        LOG(INFO) << "DynExpr solve Mul result=<none>";
+        return std::nullopt;
+      }
+      std::optional<int64_t> result = lhs->solve(x / c);
+      LOG(INFO) << "DynExpr solve Mul result="
+                << OptionalIntToLogString(result);
+      return result;
     }
     if (rhs->get_all_ids().size() == 1 && lhs->is_constant()) {
       // (c * A) = x <=> A = x / c => solve A = y with y = x / c
       int64_t c = lhs->get_val();
-      if (c == 0) return x == 0 ? rhs->solve(0) : std::nullopt;
-      if (x % c != 0) return std::nullopt;
-      return rhs->solve(x / c);
+      if (c == 0) {
+        std::optional<int64_t> result =
+            x == 0 ? rhs->solve(0) : std::nullopt;
+        LOG(INFO) << "DynExpr solve Mul result="
+                  << OptionalIntToLogString(result);
+        return result;
+      }
+      if (x % c != 0) {
+        LOG(INFO) << "DynExpr solve Mul result=<none>";
+        return std::nullopt;
+      }
+      std::optional<int64_t> result = rhs->solve(x / c);
+      LOG(INFO) << "DynExpr solve Mul result="
+                << OptionalIntToLogString(result);
+      return result;
     }
     // No solution
+    LOG(INFO) << "DynExpr solve Mul result=<none>";
     return std::nullopt;
   }
 
@@ -497,7 +617,12 @@ class Div : public DynExpr {
   }
 
   DynExpr* substitute(int id, DynExpr* v) {
-    return new Div(lhs->substitute(id, v), rhs->substitute(id, v));
+    LOG(INFO) << "DynExpr substitute Div expr=" << DynExprToLogString(this)
+              << " id=" << id << " value=" << DynExprToLogString(v);
+    DynExpr* result = new Div(lhs->substitute(id, v), rhs->substitute(id, v));
+    LOG(INFO) << "DynExpr substitute Div result="
+              << DynExprToLogString(result);
+    return result;
   }
 
   DynExpr* s() override;
@@ -509,20 +634,38 @@ class Div : public DynExpr {
   }
 
   std::optional<int64_t> solve(int64_t x) {
+    LOG(INFO) << "DynExpr solve Div expr=" << DynExprToLogString(this)
+              << " target=" << x;
     // Cannot solve if both lhs and rhs are dynamic...
-    if (lhs->is_dynamic() && rhs->is_dynamic()) return std::nullopt;
+    if (lhs->is_dynamic() && rhs->is_dynamic()) {
+      LOG(INFO) << "DynExpr solve Div result=<none>";
+      return std::nullopt;
+    }
     if (lhs->get_all_ids().size() == 1 && rhs->is_constant()) {
       // (A / c) = x <=> A = x * c => solve A = y with y = x * c
-      return lhs->solve(x * rhs->get_val());
+      std::optional<int64_t> result = lhs->solve(x * rhs->get_val());
+      LOG(INFO) << "DynExpr solve Div result="
+                << OptionalIntToLogString(result);
+      return result;
     }
     if (rhs->get_all_ids().size() == 1 && lhs->is_constant()) {
       // (c / A) = x <=> A = c / x => solve A = y with y = c / x
       int64_t c = lhs->get_val();
-      if (x == 0) return std::nullopt;
-      if (c % x != 0) return std::nullopt;
-      return rhs->solve(c / x);
+      if (x == 0) {
+        LOG(INFO) << "DynExpr solve Div result=<none>";
+        return std::nullopt;
+      }
+      if (c % x != 0) {
+        LOG(INFO) << "DynExpr solve Div result=<none>";
+        return std::nullopt;
+      }
+      std::optional<int64_t> result = rhs->solve(c / x);
+      LOG(INFO) << "DynExpr solve Div result="
+                << OptionalIntToLogString(result);
+      return result;
     }
     // No solution
+    LOG(INFO) << "DynExpr solve Div result=<none>";
     return std::nullopt;
   }
 

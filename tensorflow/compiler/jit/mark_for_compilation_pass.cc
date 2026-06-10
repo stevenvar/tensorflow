@@ -939,8 +939,8 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
         if (expr.node_type_case() == ExpressionProto::NODE_TYPE_NOT_SET)
           continue;
 
-        VLOG(1) << "Node " << n.name() << " has expression "
-                << ExprProtoToString(expr);
+        LOG(INFO) << "Node " << n.name() << " has expression "
+                  << ExprProtoToString(expr);
 
         auto ex = ExprFromProto(expr);
         exprs.push_back(std::move(ex));

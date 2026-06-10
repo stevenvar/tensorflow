@@ -36,6 +36,7 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
@@ -1410,8 +1411,9 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
       run_options.set_batch_size(*(dyn_vals.begin()));
       is_set = true;
     } else {
-      // Found multiple variables
-      VLOG(1) << "Warning: Found multiple variables";
+      LOG(INFO) << "Not setting run_options.batch_size from solved dynamic "
+                << "inputs because dyn_vals.size()=" << dyn_vals.size()
+                << " values={" << absl::StrJoin(dyn_vals, ", ") << "}";
     }
     
     if (!is_set) {

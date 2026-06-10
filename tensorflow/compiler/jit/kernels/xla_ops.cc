@@ -638,8 +638,17 @@ absl::Status CompileToLocalExecutable(
               // value and exit loop.
               auto e = DimExprToDExpr(ExprFromProto(exp[idx]).get()).simplify();
               if (e->is_dynamic()) {
+                LOG(INFO) << "Calling dynamic expression solve for compile "
+                          << "argument " << arg_index << " dimension " << idx
+                          << " expr=" << DExprToString(e)
+                          << " target_size=" << shp.dim_size(idx);
                 std::optional<int64_t> solved_value =
                     e->solve(shp.dim_size(idx));
+                LOG(INFO) << "Dynamic expression solve for compile argument "
+                          << arg_index << " dimension " << idx << " returned "
+                          << (solved_value.has_value()
+                                  ? std::to_string(*solved_value)
+                                  : std::string("<none>"));
                 int64_t var_value;
                 if (!solved_value.has_value()) {
                   LOG(WARNING)
@@ -771,7 +780,14 @@ absl::Status CompileToLocalExecutable(
             int64_t old = shp.dim_size(j);
             old_vars.push_back({i, j, old});
             xla::DExpr padded_expr = xla::DExpr::Const(filled_batch);
+            LOG(INFO) << "Calling dynamic expression substitute for compile "
+                      << "argument " << i << " dimension " << j
+                      << " expr=" << DExprToString(e)
+                      << " substitute Var(1)=" << filled_batch;
             xla::DExpr subst_expr = e.substitute(1, padded_expr).simplify();
+            LOG(INFO) << "Dynamic expression substitute for compile argument "
+                      << i << " dimension " << j
+                      << " returned " << DExprToString(subst_expr);
             if (!subst_expr->is_constant()) {
               return errors::InvalidArgument(
                   "Dynamic shape padding substitution did not produce an "
@@ -1362,9 +1378,17 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
           VLOG(1) << "input shape is " << ctx->input(input_idx).shape()
                   << ", corresponding xla input shape is " << xla_shape;
           int64_t size = ctx->input(input_idx).shape().dim_size(dim);
+          LOG(INFO) << "Calling dynamic expression solve for runtime input "
+                    << input_idx << " dimension " << dim
+                    << " expr=" << DExprToString(simplified_expr)
+                    << " target_size=" << size;
           std::optional<int64_t> dyn_val =
               simplified_expr->solve(
                   size);  // TODO: check if the result is correct later.
+          LOG(INFO) << "Dynamic expression solve for runtime input "
+                    << input_idx << " dimension " << dim << " returned "
+                    << (dyn_val.has_value() ? std::to_string(*dyn_val)
+                                            : std::string("<none>"));
           if (dyn_val.has_value()) {
             VLOG(1) << "Found dynamic input. Real size is: " << size
                     << ", solved dynamic value is " << *dyn_val;

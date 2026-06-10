@@ -463,7 +463,14 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
             LOG(INFO) << "PopulateOutputs reading run_options->batch_size() "
                       << "for output " << i << " dimension " << dim;
             xla::DExpr batch_size = xla::DExpr::Const(run_options->batch_size());
+            LOG(INFO) << "Calling output shape substitute with run_options for "
+                      << "output " << i << " dimension " << dim
+                      << " expr=" << expr << " substitute Var(1)="
+                      << DExprToString(batch_size);
             xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
+            LOG(INFO) << "Output shape substitute with run_options for output "
+                      << i << " dimension " << dim << " returned "
+                      << DExprToString(subst_expr);
             if (!subst_expr->is_constant()) {
               return absl::InvalidArgumentError(absl::StrCat(
                   "Runtime shape substitution did not produce an integer "
@@ -481,7 +488,14 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
                           ctx->resource_manager(), BatchSizeResourceName, &bsr));
             xla::DExpr batch_size = xla::DExpr::Const(bsr->GetBatchSize());
             // Just substitute Var(1) for now.
+            LOG(INFO) << "Calling output shape substitute with "
+                      << "BatchSizeResource for output " << i
+                      << " dimension " << dim << " expr=" << expr
+                      << " substitute Var(1)=" << DExprToString(batch_size);
             xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
+            LOG(INFO) << "Output shape substitute with BatchSizeResource for "
+                      << "output " << i << " dimension " << dim
+                      << " returned " << DExprToString(subst_expr);
             if (!subst_expr->is_constant()) {
               return absl::InvalidArgumentError(absl::StrCat(
                   "Runtime shape substitution did not produce an integer "

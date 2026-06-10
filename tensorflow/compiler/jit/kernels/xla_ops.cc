@@ -1410,10 +1410,14 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
                 << "value: " << *(dyn_vals.begin());
       run_options.set_batch_size(*(dyn_vals.begin()));
       is_set = true;
+    } else if (dyn_vals.empty()) {
+      LOG(INFO) << "Not setting run_options.batch_size from solved dynamic "
+                << "inputs because no dynamic values were solved.";
     } else {
       LOG(INFO) << "Not setting run_options.batch_size from solved dynamic "
-                << "inputs because dyn_vals.size()=" << dyn_vals.size()
-                << " values={" << absl::StrJoin(dyn_vals, ", ") << "}";
+                << "inputs because multiple dynamic values were solved: "
+                << "dyn_vals.size()=" << dyn_vals.size() << " values={"
+                << absl::StrJoin(dyn_vals, ", ") << "}";
     }
     
     if (!is_set) {

@@ -1418,42 +1418,104 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
     const int num_constant_args = closure.num_constant_args();
     for (int i = 0; i < comp_result->xla_input_shapes.size(); i++) {
       const auto& xla_shape = closure.compilation_result()->xla_input_shapes[i];
-      if (!xla_shape.IsArray() || xla_shape.expressions().empty()) continue;
+      const bool has_input_mapping = i < comp_result->input_mapping.size();
+      const int mapped_input =
+          has_input_mapping ? comp_result->input_mapping[i] : -1;
+      LOG(INFO) << "Inspecting XLA input shape for dynamic batch value: "
+                << "xla_input_index=" << i
+                << " has_input_mapping=" << has_input_mapping
+                << " input_mapping=" << mapped_input
+                << " num_constant_args=" << num_constant_args
+                << " xla_shape=" << xla_shape;
+      if (!xla_shape.IsArray()) {
+        LOG(INFO) << "Skipping XLA input shape because it is not an array: "
+                  << "xla_input_index=" << i << " xla_shape=" << xla_shape;
+        continue;
+      }
+      if (xla_shape.expressions().empty()) {
+        LOG(INFO) << "Skipping XLA input shape because it has no expressions: "
+                  << "xla_input_index=" << i << " xla_shape=" << xla_shape;
+        continue;
+      }
 
       for (int dim = 0; dim < xla_shape.expressions().size(); dim++) {
         const auto& expr = xla_shape.expressions(dim);
+        LOG(INFO) << "Inspecting XLA input shape expression: "
+                  << "xla_input_index=" << i << " dim=" << dim
+                  << " xla_shape=" << xla_shape
+                  << " expr=" << (expr ? DExprToString(expr) : "<null>");
         if (expr && expr->is_dynamic()) {
           xla::DExpr simplified_expr = expr.simplify();
-          int input_idx = comp_result->input_mapping[i] - num_constant_args;
-          if (input_idx < 0 || input_idx >= ctx->num_inputs()) {
-            VLOG(1) << "Warning: Input index is out of range";
+          if (!has_input_mapping) {
+            LOG(INFO) << "Skipping dynamic expression because XLA input has "
+                      << "no runtime input mapping: xla_input_index=" << i
+                      << " dim=" << dim << " xla_shape=" << xla_shape
+                      << " expr=" << DExprToString(simplified_expr);
             continue;
           }
-          VLOG(1) << "input shape is " << ctx->input(input_idx).shape()
-                  << ", corresponding xla input shape is " << xla_shape;
+          int input_idx = mapped_input - num_constant_args;
+          if (input_idx < 0 || input_idx >= ctx->num_inputs()) {
+            LOG(INFO) << "Skipping dynamic expression because runtime input "
+                      << "index is out of range: xla_input_index=" << i
+                      << " input_mapping=" << mapped_input
+                      << " num_constant_args=" << num_constant_args
+                      << " computed_input_idx=" << input_idx
+                      << " ctx_num_inputs=" << ctx->num_inputs()
+                      << " xla_shape=" << xla_shape
+                      << " expr=" << DExprToString(simplified_expr);
+            continue;
+          }
+          LOG(INFO) << "Runtime input shape for dynamic expression: "
+                    << "xla_input_index=" << i << " runtime_input_index="
+                    << input_idx << " dim=" << dim
+                    << " runtime_input_shape=" << ctx->input(input_idx).shape()
+                    << " xla_shape=" << xla_shape
+                    << " expr=" << DExprToString(simplified_expr);
           int64_t size = ctx->input(input_idx).shape().dim_size(dim);
           LOG(INFO) << "Calling dynamic expression solve for runtime input "
                     << input_idx << " dimension " << dim
+                    << " xla_input_index=" << i
+                    << " xla_shape=" << xla_shape
                     << " expr=" << DExprToString(simplified_expr)
                     << " target_size=" << size;
           std::optional<int64_t> dyn_val =
               simplified_expr->solve(
                   size);  // TODO: check if the result is correct later.
           LOG(INFO) << "Dynamic expression solve for runtime input "
-                    << input_idx << " dimension " << dim << " returned "
+                    << input_idx << " dimension " << dim
+                    << " xla_input_index=" << i
+                    << " xla_shape=" << xla_shape << " returned "
                     << (dyn_val.has_value() ? std::to_string(*dyn_val)
                                             : std::string("<none>"));
           if (dyn_val.has_value()) {
-            VLOG(1) << "Found dynamic input. Real size is: " << size
-                    << ", solved dynamic value is " << *dyn_val;
+            const bool already_present =
+                dyn_vals.find(*dyn_val) != dyn_vals.end();
+            LOG(INFO) << "Found dynamic runtime value: xla_input_index=" << i
+                      << " runtime_input_index=" << input_idx
+                      << " dim=" << dim
+                      << " runtime_dim_size=" << size
+                      << " solved_dynamic_value=" << *dyn_val
+                      << " already_present=" << already_present
+                      << " previous_dyn_vals={" << absl::StrJoin(dyn_vals, ", ")
+                      << "} xla_shape=" << xla_shape
+                      << " expr=" << DExprToString(simplified_expr);
           } else {
             xla::StringPrinter printer;
             simplified_expr->print(&printer);
-            VLOG(1) << "Warning: Failed to solve the expression "
-                    << std::move(printer).ToString();
+            LOG(INFO) << "Failed to solve dynamic expression: "
+                      << "xla_input_index=" << i
+                      << " runtime_input_index=" << input_idx
+                      << " dim=" << dim
+                      << " runtime_dim_size=" << size
+                      << " xla_shape=" << xla_shape
+                      << " expr=" << std::move(printer).ToString();
             continue;
           }
           dyn_vals.insert(*dyn_val);
+          LOG(INFO) << "Dynamic runtime values after insert: xla_input_index="
+                    << i << " runtime_input_index=" << input_idx
+                    << " dim=" << dim << " dyn_vals={"
+                    << absl::StrJoin(dyn_vals, ", ") << "}";
         }
       }
     }

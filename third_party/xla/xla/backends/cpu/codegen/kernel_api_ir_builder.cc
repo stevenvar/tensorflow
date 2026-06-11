@@ -355,19 +355,17 @@ llvm::Value* KernelApiIrBuilder::EmitGetBatchDim(llvm::IRBuilderBase& builder,
   // Print batch size
   llvm::Function* function = builder.GetInsertBlock()->getParent();
   llvm::Module* module = function->getParent();
-  llvm::FunctionType* dprintfType = llvm::FunctionType::get(
-      builder.getInt32Ty(),
-      {builder.getInt32Ty(), llvm::PointerType::get(builder.getInt8Ty(), 0)},
+  llvm::FunctionType* printfToStderrType = llvm::FunctionType::get(
+      builder.getInt32Ty(), llvm::PointerType::get(builder.getInt8Ty(), 0),
       true);
   llvm::Value* funcNameStr =
       builder.CreateGlobalStringPtr(function->getName());
-  llvm::FunctionCallee dprintfFunc =
-      module->getOrInsertFunction("dprintf", dprintfType);
+  llvm::FunctionCallee printfToStderrFunc = module->getOrInsertFunction(
+      "__xla_cpu_runtime_PrintfToStderr", printfToStderrType);
   llvm::Value* formatStr =
       builder.CreateGlobalStringPtr(
           "XLA_CPU_GENERATED_IR_BDIM_VALUE function=%s bdim_value=%lld\n");
-  builder.CreateCall(dprintfFunc,
-                     {builder.getInt32(2), formatStr, funcNameStr, bdim_value});
+  builder.CreateCall(printfToStderrFunc, {formatStr, funcNameStr, bdim_value});
 
   return bdim_value;
 }

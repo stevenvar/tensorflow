@@ -312,6 +312,9 @@ absl::Status CpuExecutable::ExecuteComputeFunction(
   // For the entry computation (like all global computations), all inputs and
   // outputs are in the buffer table, and both the result pointer and args
   // array pointers are unused (so we set them to 'nullptr').
+  LOG(INFO) << "Passing ExecutableRunOptions to generated CPU compute function: "
+            << "run_options=" << run_options
+            << " batch_size=" << run_options->batch_size();
   compute_function_(nullptr, run_options, nullptr, buffer_pointers.data(),
                     &status, profile_counters);
   record_profile();
@@ -395,6 +398,9 @@ absl::Status CpuExecutable::ExecuteThunks(
       &collective_execute_params,
       &custom_call_execute_params,
       run_options->batch_size()};
+  LOG(INFO) << "Passing batch size to XLA:CPU thunk execution params: "
+            << "run_options=" << run_options
+            << " batch_size=" << execute_params.batch_size;
 
   auto executed_event = thunks_->Execute(execute_params);
   tsl::BlockUntilReady(executed_event);

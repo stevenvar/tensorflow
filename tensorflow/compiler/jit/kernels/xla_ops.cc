@@ -514,31 +514,27 @@ absl::Status CompileToLocalExecutable(
     XlaBatchMatcher* xla_batch_matcher =
         xla_device_compiler->xla_batch_matcher();
     std::optional<xla::DExpr> dynamic_dim_expr;
-    absl::flat_hash_map<std::string, int> fresh_var_by_composite_expr;
-    int next_fresh_dynamic_var_id = 1000000;
-    auto normalize_composite_dynamic_expr =
+    absl::flat_hash_map<std::string, int> fresh_var_by_dynamic_expr;
+    int next_fresh_dynamic_var_id = 1;
+    auto normalize_dynamic_expr =
         [&](xla::DExpr expr, absl::string_view context) {
           if (!expr || !expr->is_dynamic()) {
             return expr;
           }
           const std::set<int> ids = expr->get_all_ids();
-          if (ids.size() <= 1) {
-            return expr;
-          }
-
           const std::string expr_string = DExprToString(expr);
-          auto [it, inserted] = fresh_var_by_composite_expr.emplace(
+          auto [it, inserted] = fresh_var_by_dynamic_expr.emplace(
               expr_string, next_fresh_dynamic_var_id);
           if (inserted) {
             ++next_fresh_dynamic_var_id;
-            LOG(INFO) << "Rewriting composite dynamic input expression "
+            LOG(INFO) << "Rewriting dynamic input expression "
                       << expr_string << " to fresh variable Var(" << it->second
                       << ") before XLA compilation. context=" << context
                       << " source_var_ids={" << absl::StrJoin(ids, ", ")
                       << "}";
           } else {
             LOG(INFO) << "Reusing fresh variable Var(" << it->second
-                      << ") for composite dynamic input expression "
+                      << ") for dynamic input expression "
                       << expr_string << " before XLA compilation. context="
                       << context;
           }
@@ -590,7 +586,7 @@ absl::Status CompileToLocalExecutable(
             xla::ExpressionProto expr;
             const xla::DExpr& dim_expr = inferred_shape.get_expression(i);
             if (dim_expr && dim_expr->is_dynamic()) {
-              xla::DExpr normalized_expr = normalize_composite_dynamic_expr(
+              xla::DExpr normalized_expr = normalize_dynamic_expr(
                   dim_expr,
                   absl::StrCat("const_arg=", arg_index, " node=", node_name,
                                " dim=", i));
@@ -647,7 +643,11 @@ absl::Status CompileToLocalExecutable(
                 std::get<TensorShape>(norm_args[arg_index].shape);
             const AttrValue& v = dyn_dim_attr->second;
             int64_t idx = v.i();
-            record_dynamic_dim_value(shp.dim_size(idx), xla::DExpr::Var(1));
+            xla::DExpr dyn_dim_expr = normalize_dynamic_expr(
+                xla::DExpr::Var(1),
+                absl::StrCat("arg=", arg_index, " dim=", idx,
+                             " dynamic_dim_attr"));
+            record_dynamic_dim_value(shp.dim_size(idx), dyn_dim_expr);
             if (!filled_batch && xla_batch_matcher) {
               filled_batch =
                   xla_batch_matcher->get_xla_compile_batch(shp.dim_size(idx));
@@ -657,7 +657,7 @@ absl::Status CompileToLocalExecutable(
             for (int d : shp.dim_sizes()) {
               dyn_exprs.push_back(xla::DExpr::Const(d));
             }
-            dyn_exprs[idx] = xla::DExpr::Var(1);
+            dyn_exprs[idx] = dyn_dim_expr;
             shp.set_expressions(std::move(dyn_exprs));
             continue;
           }
@@ -673,7 +673,7 @@ absl::Status CompileToLocalExecutable(
               // Look for dynamic expression. If found then compute padding
               // value and exit loop.
               auto e = DimExprToDExpr(ExprFromProto(exp[idx]).get()).simplify();
-              e = normalize_composite_dynamic_expr(
+              e = normalize_dynamic_expr(
                       e, absl::StrCat("arg=", arg_index, " dim=", idx,
                                       " before_fill_batch"))
                       .simplify();
@@ -717,7 +717,7 @@ absl::Status CompileToLocalExecutable(
           for (int j = 0; j < exp.size(); ++j) {
             auto e = DimExprToDExpr(ExprFromProto(exp[j]).get());
             if (e->is_dynamic()) {
-              e = normalize_composite_dynamic_expr(
+              e = normalize_dynamic_expr(
                   e, absl::StrCat("arg=", arg_index, " dim=", j,
                                   " input_shape"));
               dyn_exprs[j] = e;

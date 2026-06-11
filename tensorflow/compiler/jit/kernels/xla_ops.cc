@@ -1414,6 +1414,8 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
   if (flags->tf_xla_enable_dynamic_sizes) {
     bool is_set = false;
     std::set<int64_t> dyn_vals;
+    std::map<std::string, std::set<int64_t>> expr_to_dyn_vals;
+    std::map<std::string, std::vector<std::string>> expr_to_contexts;
     const auto* comp_result = closure.compilation_result();
     const int num_constant_args = closure.num_constant_args();
     for (int i = 0; i < comp_result->xla_input_shapes.size(); i++) {
@@ -1490,6 +1492,13 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
           if (dyn_val.has_value()) {
             const bool already_present =
                 dyn_vals.find(*dyn_val) != dyn_vals.end();
+            const std::string expr_string = DExprToString(simplified_expr);
+            const std::string context = absl::StrCat(
+                "xla_input_index=", i, " runtime_input_index=", input_idx,
+                " dim=", dim, " runtime_dim_size=", size,
+                " solved_dynamic_value=", *dyn_val);
+            expr_to_dyn_vals[expr_string].insert(*dyn_val);
+            expr_to_contexts[expr_string].push_back(context);
             LOG(INFO) << "Found dynamic runtime value: xla_input_index=" << i
                       << " runtime_input_index=" << input_idx
                       << " dim=" << dim
@@ -1498,7 +1507,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
                       << " already_present=" << already_present
                       << " previous_dyn_vals={" << absl::StrJoin(dyn_vals, ", ")
                       << "} xla_shape=" << xla_shape
-                      << " expr=" << DExprToString(simplified_expr);
+                      << " expr=" << expr_string;
           } else {
             xla::StringPrinter printer;
             simplified_expr->print(&printer);
@@ -1520,19 +1529,41 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
       }
     }
   
-    if (dyn_vals.size() == 1) {
+    std::vector<std::string> expr_summaries;
+    for (const auto& [expr, values] : expr_to_dyn_vals) {
+      auto contexts_it = expr_to_contexts.find(expr);
+      expr_summaries.push_back(absl::StrCat(
+          "expr=", expr, " values={", absl::StrJoin(values, ", "),
+          "} contexts=[",
+          contexts_it == expr_to_contexts.end()
+              ? std::string()
+              : absl::StrJoin(contexts_it->second, "; "),
+          "]"));
+    }
+    if (expr_to_dyn_vals.size() == 1 &&
+        expr_to_dyn_vals.begin()->second.size() == 1) {
+      const int64_t batch_size = *(expr_to_dyn_vals.begin()->second.begin());
       LOG(INFO) << "Setting run_options.batch_size from solved dynamic input "
-                << "value: " << *(dyn_vals.begin());
-      run_options.set_batch_size(*(dyn_vals.begin()));
+                << "expression: expr=" << expr_to_dyn_vals.begin()->first
+                << " value=" << batch_size;
+      run_options.set_batch_size(batch_size);
       is_set = true;
-    } else if (dyn_vals.empty()) {
+    } else if (expr_to_dyn_vals.empty()) {
       LOG(INFO) << "Not setting run_options.batch_size from solved dynamic "
                 << "inputs because no dynamic values were solved.";
+    } else if (expr_to_dyn_vals.size() == 1) {
+      LOG(INFO) << "Not setting run_options.batch_size because the same "
+                << "dynamic expression solved to multiple runtime values. "
+                << "This indicates inconsistent shape metadata or a mismatched "
+                << "runtime input/dimension pairing: "
+                << absl::StrJoin(expr_summaries, " | ");
     } else {
       LOG(INFO) << "Not setting run_options.batch_size from solved dynamic "
-                << "inputs because multiple dynamic values were solved: "
-                << "dyn_vals.size()=" << dyn_vals.size() << " values={"
-                << absl::StrJoin(dyn_vals, ", ") << "}";
+                << "inputs because multiple dynamic expressions were solved. "
+                << "This should have been rejected before XLA compilation if "
+                << "the expressions are not all the same: "
+                << absl::StrJoin(expr_summaries, " | ")
+                << " all_values={" << absl::StrJoin(dyn_vals, ", ") << "}";
     }
     
     if (!is_set) {

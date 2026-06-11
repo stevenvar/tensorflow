@@ -1413,6 +1413,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
   MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
   if (flags->tf_xla_enable_dynamic_sizes) {
     bool is_set = false;
+    bool batch_size_resource_not_found = false;
     std::set<int64_t> dyn_vals;
     std::map<std::string, std::set<int64_t>> expr_to_dyn_vals;
     std::map<std::string, std::vector<std::string>> expr_to_contexts;
@@ -1585,13 +1586,24 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
         LOG(INFO) << "XlaRunOp read run_options.batch_size after "
                   << "BatchSizeResource set: " << current_batch_size
                   << ". step_id: " << ctx->step_id();
+        is_set = true;
         bsr->Unref();
 
       } else if (IsNotFound(st)) {
+        batch_size_resource_not_found = true;
         VLOG(1) << "Warning: Not found BatchSizeResource in step_container.";
       } else {
         OP_REQUIRES_OK(ctx, st);
       }
+    }
+    if (!is_set) {
+      LOG(WARNING) << "Entering XLA cluster without run_options.batch_size "
+                   << "being set. op=" << def().name() << " closure_key="
+                   << key << " step_id=" << ctx->step_id()
+                   << " current_run_options_batch_size="
+                   << run_options.batch_size()
+                   << " batch_size_resource_not_found="
+                   << batch_size_resource_not_found;
     }
   }
 

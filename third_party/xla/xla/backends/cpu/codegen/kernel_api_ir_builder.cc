@@ -325,7 +325,6 @@ llvm::Value* KernelApiIrBuilder::EmitGetBatchDim(llvm::IRBuilderBase& builder,
       builder.CreateStructGEP(call_frame_ty_, call_frame, 4, "bdim_gep");
   llvm::Value* bdim_value = builder.CreateLoad(i64, bdim_gep, "bdim_value");
 
-#if defined(PRINT_BATCHSIZE)
   // Print batch size
   llvm::Function* function = builder.GetInsertBlock()->getParent();
   llvm::Module* module = function->getParent();
@@ -339,7 +338,6 @@ llvm::Value* KernelApiIrBuilder::EmitGetBatchDim(llvm::IRBuilderBase& builder,
   llvm::Value* formatStr =
       builder.CreateGlobalStringPtr("Function: %s, Batch size is : %lld!\n");
   builder.CreateCall(printfFunc, {formatStr, funcNameStr, bdim_value});
-#endif
 
   return bdim_value;
 }
@@ -378,11 +376,9 @@ auto KernelApiIrBuilder::EmitKernelPrototype(
   b.SetInsertPoint(llvm::BasicBlock::Create(context_, "", function));
 
   llvm::Value* call_frame = function->getArg(0);
-#if defined(PRINT_BATCHSIZE)
   // Keep this first in the emitted kernel entry block so the generated LLVM IR
   // shows the batch dimension value before any other call-frame-derived values.
   EmitGetBatchDim(b, call_frame);
-#endif
 
   // Build thread coordinates from the call frame.
   KernelApiIrBuilder::ThreadDims kernel_thread_dims =

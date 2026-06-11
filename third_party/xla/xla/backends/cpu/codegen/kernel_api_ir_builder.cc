@@ -408,6 +408,11 @@ auto KernelApiIrBuilder::EmitKernelPrototype(
   b.SetInsertPoint(llvm::BasicBlock::Create(context_, "", function));
 
   llvm::Value* call_frame = function->getArg(0);
+#if defined(PRINT_BATCHSIZE)
+  // Keep this first in the emitted kernel entry block so the generated LLVM IR
+  // shows the batch dimension value before any other call-frame-derived values.
+  EmitGetBatchDim(b, call_frame);
+#endif
 
   // Build workgroup coordinates from the call frame.
   KernelApiIrBuilder::NumWorkGroups kernel_workgroup_dim =
@@ -453,8 +458,6 @@ auto KernelApiIrBuilder::EmitKernelPrototype(
     }
     ir_results.push_back(std::move(ir_result));
   }
-
-  EmitGetBatchDim(b, call_frame);
 
   // Return null pointer to signal success as we do not support error handling
   // in the compiled host kernel.

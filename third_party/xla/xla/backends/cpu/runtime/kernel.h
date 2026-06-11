@@ -127,10 +127,10 @@ inline ABSL_ATTRIBUTE_ALWAYS_INLINE absl::Status Kernel::CallOnce(
   LOG(INFO) << "Passing batch size to generated CPU kernel call frame: "
             << "batch_size=" << call_frame.batch_size
             << " call_once=true"
-            << " thread=(" << kernel_thread.x << ", " << kernel_thread.y
-            << ", " << kernel_thread.z << ")"
-            << " thread_dims=(" << kernel_thread_dims.x << ", "
-            << kernel_thread_dims.y << ", " << kernel_thread_dims.z << ")"
+            << " workgroup_id=(" << workgroup_id.x << ", " << workgroup_id.y
+            << ", " << workgroup_id.z << ")"
+            << " num_workgroups=(" << num_workgroups.x << ", "
+            << num_workgroups.y << ", " << num_workgroups.z << ")"
             << " num_args=" << call_frame.num_args;
 
   XLA_CPU_KernelError* error = (*kernel_)(&call_frame);

@@ -111,10 +111,10 @@ absl::Status Kernel::ParallelTask<num_workgroups_x_only>::operator()(
   LOG(INFO) << "Passing batch size to generated CPU kernel call frame: "
             << "batch_size=" << call_frame.batch_size
             << " task_index=" << task_index
-            << " thread=(" << kernel_thread.x << ", " << kernel_thread.y
-            << ", " << kernel_thread.z << ")"
-            << " thread_dims=(" << thread_dims_.x << ", " << thread_dims_.y
-            << ", " << thread_dims_.z << ")"
+            << " workgroup_id=(" << workgroup_id.x << ", " << workgroup_id.y
+            << ", " << workgroup_id.z << ")"
+            << " num_workgroups=(" << num_workgroups_.x << ", "
+            << num_workgroups_.y << ", " << num_workgroups_.z << ")"
             << " num_args=" << call_frame.num_args;
 
   XLA_CPU_KernelError* error = (*kernel_)(&call_frame);
@@ -169,11 +169,10 @@ absl::Status Kernel::Launch(const NumWorkGroups& num_workgroups, size_t batch_si
                                               args.data(), batch_size};
         LOG(INFO) << "Passing batch size to generated CPU kernel call frame: "
                   << "batch_size=" << call_frame.batch_size
-                  << " thread=(" << kernel_thread.x << ", " << kernel_thread.y
-                  << ", " << kernel_thread.z << ")"
-                  << " thread_dims=(" << kernel_thread_dims.x << ", "
-                  << kernel_thread_dims.y << ", " << kernel_thread_dims.z
-                  << ")"
+                  << " workgroup_id=(" << id.x << ", " << id.y << ", "
+                  << id.z << ")"
+                  << " num_workgroups=(" << dim.x << ", " << dim.y << ", "
+                  << dim.z << ")"
                   << " num_args=" << call_frame.num_args;
 
         XLA_CPU_KernelError* error = (*kernel_)(&call_frame);

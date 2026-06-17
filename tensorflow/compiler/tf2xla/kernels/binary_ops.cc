@@ -88,7 +88,7 @@ XLA_MAKE_BINARY(Complex, xla::Complex(lhs, rhs, extend_dimensions), xla::DExpr()
 // }
 static xla::XlaOp DivNoNanImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
                                xla::XlaOp y, const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, lhs_shape, y, rhs_shape, broadcast_helper);
   auto zero = XlaHelpers::Zero(b, dtype);
   auto y_equals_0 = xla::Eq(y, zero);
   auto zeros = xla::ZerosLike(x);
@@ -107,7 +107,7 @@ XLA_MAKE_BINARY(DivNoNan,
 // }
 static xla::XlaOp MulNoNanImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
                                xla::XlaOp y, const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, lhs_shape, y, rhs_shape, broadcast_helper);
   auto zero = XlaHelpers::Zero(b, dtype);
   auto y_equals_0 = xla::Eq(y, zero);
   auto zeros = xla::ZerosLike(x);
@@ -130,7 +130,7 @@ XLA_MAKE_BINARY(MulNoNan,
 // }
 static xla::XlaOp FloorDivImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
                                xla::XlaOp y, const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, lhs_shape, y, rhs_shape, broadcast_helper);
   if (DataTypeIsFloating(dtype)) {
     if (dtype == DataType::DT_BFLOAT16) {
       // The result of a BF16 division may produce the Ceil of what was
@@ -160,7 +160,7 @@ XLA_MAKE_BINARY(FloorDiv,
 
 xla::XlaOp XlogyImpl(xla::XlaOp x, xla::XlaOp y,
                      const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, lhs_shape, y, rhs_shape, broadcast_helper);
   auto zero = xla::ZerosLike(x);
   auto is_zero = xla::Eq(x, zero);
   return xla::Select(is_zero, zero, xla::Mul(x, xla::Log(y)));
@@ -169,7 +169,7 @@ XLA_MAKE_BINARY(Xlogy, XlogyImpl(lhs, rhs, broadcast_helper), xla::DExpr());
 
 xla::XlaOp Xlog1pyImpl(xla::XlaOp x, xla::XlaOp y,
                        const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, lhs_shape, y, rhs_shape, broadcast_helper);
   auto non_zero = xla::Mul(x, xla::Log1p(y));
   auto zero = xla::ZerosLike(non_zero);
   auto x_is_zero = xla::Eq(x, zero);
@@ -180,7 +180,7 @@ XLA_MAKE_BINARY(Xlog1py, Xlog1pyImpl(lhs, rhs, broadcast_helper),
 
 xla::XlaOp XdivyImpl(xla::XlaOp x, xla::XlaOp y,
                      const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, lhs_shape, y, rhs_shape, broadcast_helper);
   auto zero = xla::ZerosLike(x);
   auto is_zero = xla::Eq(x, zero);
   return xla::Select(is_zero, zero, xla::Div(x, y));
@@ -193,7 +193,7 @@ XLA_MAKE_BINARY(Xdivy, XdivyImpl(lhs, rhs, broadcast_helper), xla::DExpr());
 //                                                   : trunc_mod;
 static xla::XlaOp FloorModImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
                                xla::XlaOp y, const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, lhs_shape, y, rhs_shape, broadcast_helper);
   auto zero = XlaHelpers::Zero(b, dtype);
   auto trunc_mod = xla::Rem(x, y);
   auto trunc_mod_not_zero = xla::Ne(trunc_mod, zero);
@@ -252,7 +252,7 @@ XLA_MAKE_BINARY(
 static xla::XlaOp TruncateDivImpl(xla::XlaBuilder* b, DataType dtype,
                                   xla::XlaOp x, xla::XlaOp y,
                                   const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, lhs_shape, y, rhs_shape, broadcast_helper);
   if (!DataTypeIsFloating(dtype)) {
     return xla::Div(x, y);
   }
@@ -319,7 +319,7 @@ XLA_MAKE_BINARY(SquaredDifference,
 
 xla::XlaOp IgammaImpl(xla::XlaOp x, xla::XlaOp y,
                       const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, lhs_shape, y, rhs_shape, broadcast_helper);
   return xla::Igamma(x, y);
 }
 
@@ -327,7 +327,7 @@ XLA_MAKE_BINARY(Igamma, IgammaImpl(lhs, rhs, broadcast_helper), xla::DExpr());
 
 xla::XlaOp IgammaGradAImpl(xla::XlaOp x, xla::XlaOp y,
                            const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, lhs_shape, y, rhs_shape, broadcast_helper);
   return xla::IgammaGradA(x, y);
 }
 
@@ -336,7 +336,7 @@ XLA_MAKE_BINARY(IgammaGradA, IgammaGradAImpl(lhs, rhs, broadcast_helper),
 
 xla::XlaOp RandomGammaGradImpl(xla::XlaOp x, xla::XlaOp y,
                                const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, lhs_shape, y, rhs_shape, broadcast_helper);
   return xla::RandomGammaGrad(x, y);
 }
 
@@ -346,7 +346,7 @@ XLA_MAKE_BINARY(RandomGammaGrad,
 
 xla::XlaOp IgammacImpl(xla::XlaOp x, xla::XlaOp y,
                        const BCast& broadcast_helper) {
-  std::tie(x, y) = XlaBinaryOp::Broadcast(x, y, broadcast_helper);
+  std::tie(x, y) = XlaBinaryOp::Broadcast(x, lhs_shape, y, rhs_shape, broadcast_helper);
   return xla::Igammac(x, y);
 }
 
@@ -355,7 +355,7 @@ XLA_MAKE_BINARY(Igammac, IgammacImpl(lhs, rhs, broadcast_helper),
 
 xla::XlaOp PolygammaImpl(xla::XlaOp n, xla::XlaOp x,
                          const BCast& broadcast_helper) {
-  std::tie(n, x) = XlaBinaryOp::Broadcast(n, x, broadcast_helper);
+  std::tie(n, x) = XlaBinaryOp::Broadcast(n, lhs_shape, x, rhs_shape, broadcast_helper);
   return xla::Polygamma(n, x);
 }
 
@@ -363,7 +363,7 @@ XLA_MAKE_BINARY(Polygamma, PolygammaImpl(lhs, rhs, broadcast_helper),
                 xla::DExpr());
 
 xla::XlaOp ZetaImpl(xla::XlaOp x, xla::XlaOp q, const BCast& broadcast_helper) {
-  std::tie(x, q) = XlaBinaryOp::Broadcast(x, q, broadcast_helper);
+  std::tie(x, q) = XlaBinaryOp::Broadcast(x, lhs_shape, q, rhs_shape, broadcast_helper);
   return xla::Zeta(x, q);
 }
 

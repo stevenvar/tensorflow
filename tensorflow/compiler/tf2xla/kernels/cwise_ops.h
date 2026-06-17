@@ -24,10 +24,11 @@ limitations under the License.
 
 #include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 #include "xla/client/client_library.h"
 #include "xla/hlo/builder/xla_builder.h"
-#include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/util/bcast.h"
 
 namespace tensorflow {
@@ -81,7 +82,8 @@ class XlaBinaryOp : public XlaOpKernel {
   // 'broadcast_helper', yielding arguments 'lhs' and 'rhs' that have the same
   // shape.
   static std::pair<xla::XlaOp, xla::XlaOp> Broadcast(
-      xla::XlaOp lhs, xla::XlaOp rhs, const BCast& broadcast_helper);
+      xla::XlaOp lhs, const TensorShape& lhs_shape, xla::XlaOp rhs,
+      const TensorShape& rhs_shape, const BCast& broadcast_helper);
 };
 
 }  // namespace tensorflow

@@ -206,6 +206,48 @@ bool TryBuildSymbolicBinaryContents(XlaOpKernelContext* ctx,
   return true;
 }
 
+std::vector<xla::DExpr> BuildBroadcastOutputExpressions(
+    const TensorShape& lhs_shape, const TensorShape& rhs_shape,
+    const BCast& bcast) {
+  const auto& output_shape = bcast.output_shape();
+  std::vector<xla::DExpr> output_exprs(output_shape.size());
+
+  for (int out_i = output_shape.size() - 1, lhs_i = lhs_shape.dims() - 1,
+           rhs_i = rhs_shape.dims() - 1;
+       out_i >= 0; --out_i, --lhs_i, --rhs_i) {
+    const bool has_lhs = lhs_i >= 0;
+    const bool has_rhs = rhs_i >= 0;
+    xla::DExpr lhs_expr = has_lhs ? lhs_shape.get_filled_expression(lhs_i)
+                                  : xla::DExpr::Const(1);
+    xla::DExpr rhs_expr = has_rhs ? rhs_shape.get_filled_expression(rhs_i)
+                                  : xla::DExpr::Const(1);
+    const int64_t lhs_dim = has_lhs ? lhs_shape.dim_size(lhs_i) : 1;
+    const int64_t rhs_dim = has_rhs ? rhs_shape.dim_size(rhs_i) : 1;
+
+    if (!has_lhs) {
+      output_exprs[out_i] = rhs_expr;
+    } else if (!has_rhs) {
+      output_exprs[out_i] = lhs_expr;
+    } else if (lhs_dim == 1 && rhs_dim != 1) {
+      output_exprs[out_i] =
+          (lhs_expr && lhs_expr->is_dynamic() ? (lhs_expr * rhs_expr).simplify()
+                                              : rhs_expr);
+    } else if (rhs_dim == 1 && lhs_dim != 1) {
+      output_exprs[out_i] =
+          (rhs_expr && rhs_expr->is_dynamic() ? (rhs_expr * lhs_expr).simplify()
+                                              : lhs_expr);
+    } else if (lhs_expr && lhs_expr->is_dynamic()) {
+      output_exprs[out_i] = lhs_expr;
+    } else if (rhs_expr && rhs_expr->is_dynamic()) {
+      output_exprs[out_i] = rhs_expr;
+    } else {
+      output_exprs[out_i] = xla::DExpr::Const(output_shape[out_i]);
+    }
+  }
+
+  return output_exprs;
+}
+
 }  // namespace
 
 void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
@@ -221,6 +263,7 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
                                                 xla::XlaOp lhs, xla::XlaOp rhs,
                                                 const xla::Shape& lhs_xla_shape,
                                                 const xla::Shape& rhs_xla_shape,
+                                                const TensorShape& rhs_tensor_shape,
                                                 TensorShape* lhs_tensor_shape) {
       // Find out mismatched dimensions that are non-broadcastable.
       // Reconcile the
@@ -240,6 +283,8 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
             lhs = xla::SliceInDim(lhs, 0, rhs_xla_shape.dimensions(i), 1,
                                   /*dimno=*/i);
             lhs_tensor_shape->set_dim(i, rhs_xla_shape.dimensions(i));
+            lhs_tensor_shape->set_expression(
+                i, rhs_tensor_shape.get_filled_expression(i));
             // Propagate dynamic dimension.
             lhs = xla::SetDimensionSize(lhs, size, i);
           }
@@ -262,6 +307,8 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
                 lhs, xla::Zero(ctx->builder(), lhs_xla_shape.element_type()), i,
                 0, diff);
             lhs_tensor_shape->set_dim(i, rhs_xla_shape.dimensions(i));
+            lhs_tensor_shape->set_expression(
+                i, rhs_tensor_shape.get_filled_expression(i));
             // Propagate dynamic dimension.
             lhs = xla::SetDimensionSize(lhs, size, i);
           }
@@ -309,15 +356,21 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
             lhs = xla::SetDimensionSize(lhs, size, i);
 
             lhs_tensor_shape->set_dim(i, rhs_xla_shape.dimensions(i));
+            lhs_tensor_shape->set_expression(
+                i, (lhs_tensor_shape->get_filled_expression(i) *
+                    rhs_tensor_shape.get_filled_expression(i))
+                       .simplify());
           }
         }
       }
       return lhs;
     };
     lhs_handle = reconcile_tensor_mismatched_dims(
-        lhs_handle, rhs_handle, lhs_xla_shape, rhs_xla_shape, &lhs_shape);
+        lhs_handle, rhs_handle, lhs_xla_shape, rhs_xla_shape, rhs_shape,
+        &lhs_shape);
     rhs_handle = reconcile_tensor_mismatched_dims(
-        rhs_handle, lhs_handle, rhs_xla_shape, lhs_xla_shape, &rhs_shape);
+        rhs_handle, lhs_handle, rhs_xla_shape, lhs_xla_shape, lhs_shape,
+        &rhs_shape);
   }
   // By TensorFlow conventions the inputs may not have the same
   // shapes, in which case they will be automatically broadcast if
@@ -377,13 +430,18 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
 }
 
 /* static */ std::pair<xla::XlaOp, xla::XlaOp> XlaBinaryOp::Broadcast(
-    xla::XlaOp lhs, xla::XlaOp rhs, const BCast& broadcast_helper) {
-  auto lhs_output = BroadcastTo(lhs, broadcast_helper.output_shape());
+    xla::XlaOp lhs, const TensorShape& lhs_shape, xla::XlaOp rhs,
+    const TensorShape& rhs_shape, const BCast& broadcast_helper) {
+  std::vector<xla::DExpr> output_exprs =
+      BuildBroadcastOutputExpressions(lhs_shape, rhs_shape, broadcast_helper);
+  auto lhs_output =
+      BroadcastTo(lhs, broadcast_helper.output_shape(), output_exprs);
   if (!lhs_output.ok()) {
     xla::XlaOp error = lhs.builder()->ReportError(lhs_output.status());
     return {error, error};
   }
-  auto rhs_output = BroadcastTo(rhs, broadcast_helper.output_shape());
+  auto rhs_output =
+      BroadcastTo(rhs, broadcast_helper.output_shape(), output_exprs);
   if (!rhs_output.ok()) {
     xla::XlaOp error = rhs.builder()->ReportError(rhs_output.status());
     return {error, error};

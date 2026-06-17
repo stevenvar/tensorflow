@@ -26,6 +26,7 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/tf2xla/lib/broadcast.h"
+#include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "xla/hlo/builder/lib/constants.h"
 #include "xla/hlo/builder/xla_builder.h"
@@ -432,8 +433,22 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
 /* static */ std::pair<xla::XlaOp, xla::XlaOp> XlaBinaryOp::Broadcast(
     xla::XlaOp lhs, const TensorShape& lhs_shape, xla::XlaOp rhs,
     const TensorShape& rhs_shape, const BCast& broadcast_helper) {
+  TensorShape lhs_expr_shape = lhs_shape;
+  TensorShape rhs_expr_shape = rhs_shape;
+
+  auto lhs_xla_shape = lhs.builder()->GetShape(lhs);
+  if (lhs_xla_shape.ok()) {
+    TF_CHECK_OK(XLAShapeToTensorShape(*lhs_xla_shape, &lhs_expr_shape));
+  }
+
+  auto rhs_xla_shape = rhs.builder()->GetShape(rhs);
+  if (rhs_xla_shape.ok()) {
+    TF_CHECK_OK(XLAShapeToTensorShape(*rhs_xla_shape, &rhs_expr_shape));
+  }
+
   std::vector<xla::DExpr> output_exprs =
-      BuildBroadcastOutputExpressions(lhs_shape, rhs_shape, broadcast_helper);
+      BuildBroadcastOutputExpressions(lhs_expr_shape, rhs_expr_shape,
+                                      broadcast_helper);
   auto lhs_output =
       BroadcastTo(lhs, broadcast_helper.output_shape(), output_exprs);
   if (!lhs_output.ok()) {

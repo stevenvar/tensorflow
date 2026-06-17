@@ -48,14 +48,19 @@ namespace {
     explicit NAME##Op(OpKernelConstruction* ctx) : XlaBinaryOp(ctx) {}     \
     xla::XlaOp Computation(                                                \
         XlaOpKernelContext* ctx, const xla::XlaOp& lhs,                    \
-        const absl::Span<const int64_t>& lhs_shape, const xla::XlaOp& rhs, \
+        const absl::Span<const int64_t>& lhs_shape,                        \
+        const absl::Span<const xla::DExpr>& lhs_exprs,                     \
+        const xla::XlaOp& rhs,                                             \
         const absl::Span<const int64_t>& rhs_shape,                        \
+        const absl::Span<const xla::DExpr>& rhs_exprs,                     \
         const BCast& broadcast_helper,                                     \
         const std::vector<int64_t>& extend_dimensions) override {          \
       xla::XlaBuilder* b = ctx->builder();                                 \
       (void)b;                                                             \
       (void)lhs_shape;                                                     \
+      (void)lhs_exprs;                                                     \
       (void)rhs_shape;                                                     \
+      (void)rhs_exprs;                                                     \
       (void)extend_dimensions;                                             \
       return HLO;                                                          \
     }                                                                      \
@@ -88,12 +93,15 @@ XLA_MAKE_BINARY(Complex, xla::Complex(lhs, rhs, extend_dimensions), xla::DExpr()
 // }
 static xla::XlaOp DivNoNanImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
                                const absl::Span<const int64_t>& lhs_shape,
+                               const absl::Span<const xla::DExpr>& lhs_exprs,
                                xla::XlaOp y,
                                const absl::Span<const int64_t>& rhs_shape,
+                               const absl::Span<const xla::DExpr>& rhs_exprs,
                                const BCast& broadcast_helper) {
   std::tie(x, y) =
-      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), y,
-                             TensorShape(rhs_shape), broadcast_helper);
+      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), lhs_exprs, y,
+                             TensorShape(rhs_shape), rhs_exprs,
+                             broadcast_helper);
   auto zero = XlaHelpers::Zero(b, dtype);
   auto y_equals_0 = xla::Eq(y, zero);
   auto zeros = xla::ZerosLike(x);
@@ -101,8 +109,8 @@ static xla::XlaOp DivNoNanImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
   return result;
 }
 XLA_MAKE_BINARY(DivNoNan,
-                DivNoNanImpl(b, input_type(0), lhs, lhs_shape, rhs, rhs_shape,
-                             broadcast_helper),
+                DivNoNanImpl(b, input_type(0), lhs, lhs_shape, lhs_exprs, rhs,
+                             rhs_shape, rhs_exprs, broadcast_helper),
                 xla::DExpr());
 
 // Implementation of MulNoNan. Pseudo-code:
@@ -113,12 +121,15 @@ XLA_MAKE_BINARY(DivNoNan,
 // }
 static xla::XlaOp MulNoNanImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
                                const absl::Span<const int64_t>& lhs_shape,
+                               const absl::Span<const xla::DExpr>& lhs_exprs,
                                xla::XlaOp y,
                                const absl::Span<const int64_t>& rhs_shape,
+                               const absl::Span<const xla::DExpr>& rhs_exprs,
                                const BCast& broadcast_helper) {
   std::tie(x, y) =
-      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), y,
-                             TensorShape(rhs_shape), broadcast_helper);
+      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), lhs_exprs, y,
+                             TensorShape(rhs_shape), rhs_exprs,
+                             broadcast_helper);
   auto zero = XlaHelpers::Zero(b, dtype);
   auto y_equals_0 = xla::Eq(y, zero);
   auto zeros = xla::ZerosLike(x);
@@ -126,8 +137,8 @@ static xla::XlaOp MulNoNanImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
   return result;
 }
 XLA_MAKE_BINARY(MulNoNan,
-                MulNoNanImpl(b, input_type(0), lhs, lhs_shape, rhs, rhs_shape,
-                             broadcast_helper),
+                MulNoNanImpl(b, input_type(0), lhs, lhs_shape, lhs_exprs, rhs,
+                             rhs_shape, rhs_exprs, broadcast_helper),
                 xla::DExpr());
 
 // Implementation of FloorDiv.
@@ -142,12 +153,15 @@ XLA_MAKE_BINARY(MulNoNan,
 // }
 static xla::XlaOp FloorDivImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
                                const absl::Span<const int64_t>& lhs_shape,
+                               const absl::Span<const xla::DExpr>& lhs_exprs,
                                xla::XlaOp y,
                                const absl::Span<const int64_t>& rhs_shape,
+                               const absl::Span<const xla::DExpr>& rhs_exprs,
                                const BCast& broadcast_helper) {
   std::tie(x, y) =
-      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), y,
-                             TensorShape(rhs_shape), broadcast_helper);
+      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), lhs_exprs, y,
+                             TensorShape(rhs_shape), rhs_exprs,
+                             broadcast_helper);
   if (DataTypeIsFloating(dtype)) {
     if (dtype == DataType::DT_BFLOAT16) {
       // The result of a BF16 division may produce the Ceil of what was
@@ -172,53 +186,65 @@ static xla::XlaOp FloorDivImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
   return xla::Select(round_down, xla::Sub(x_div_y, one), x_div_y);
 }
 XLA_MAKE_BINARY(FloorDiv,
-                FloorDivImpl(b, input_type(0), lhs, lhs_shape, rhs, rhs_shape,
-                             broadcast_helper),
+                FloorDivImpl(b, input_type(0), lhs, lhs_shape, lhs_exprs, rhs,
+                             rhs_shape, rhs_exprs, broadcast_helper),
                 (lhs / rhs).simplify());
 
 xla::XlaOp XlogyImpl(xla::XlaOp x, xla::XlaOp y,
                      const absl::Span<const int64_t>& lhs_shape,
+                     const absl::Span<const xla::DExpr>& lhs_exprs,
                      const absl::Span<const int64_t>& rhs_shape,
+                     const absl::Span<const xla::DExpr>& rhs_exprs,
                      const BCast& broadcast_helper) {
   std::tie(x, y) =
-      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), y,
-                             TensorShape(rhs_shape), broadcast_helper);
+      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), lhs_exprs, y,
+                             TensorShape(rhs_shape), rhs_exprs,
+                             broadcast_helper);
   auto zero = xla::ZerosLike(x);
   auto is_zero = xla::Eq(x, zero);
   return xla::Select(is_zero, zero, xla::Mul(x, xla::Log(y)));
 }
-XLA_MAKE_BINARY(Xlogy, XlogyImpl(lhs, rhs, lhs_shape, rhs_shape,
+XLA_MAKE_BINARY(Xlogy, XlogyImpl(lhs, rhs, lhs_shape, lhs_exprs, rhs_shape,
+                                 rhs_exprs,
                                  broadcast_helper),
                 xla::DExpr());
 
 xla::XlaOp Xlog1pyImpl(xla::XlaOp x, xla::XlaOp y,
                        const absl::Span<const int64_t>& lhs_shape,
+                       const absl::Span<const xla::DExpr>& lhs_exprs,
                        const absl::Span<const int64_t>& rhs_shape,
+                       const absl::Span<const xla::DExpr>& rhs_exprs,
                        const BCast& broadcast_helper) {
   std::tie(x, y) =
-      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), y,
-                             TensorShape(rhs_shape), broadcast_helper);
+      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), lhs_exprs, y,
+                             TensorShape(rhs_shape), rhs_exprs,
+                             broadcast_helper);
   auto non_zero = xla::Mul(x, xla::Log1p(y));
   auto zero = xla::ZerosLike(non_zero);
   auto x_is_zero = xla::Eq(x, zero);
   return xla::Select(x_is_zero, zero, non_zero);
 }
-XLA_MAKE_BINARY(Xlog1py, Xlog1pyImpl(lhs, rhs, lhs_shape, rhs_shape,
+XLA_MAKE_BINARY(Xlog1py, Xlog1pyImpl(lhs, rhs, lhs_shape, lhs_exprs, rhs_shape,
+                                     rhs_exprs,
                                      broadcast_helper),
                 xla::DExpr());
 
 xla::XlaOp XdivyImpl(xla::XlaOp x, xla::XlaOp y,
                      const absl::Span<const int64_t>& lhs_shape,
+                     const absl::Span<const xla::DExpr>& lhs_exprs,
                      const absl::Span<const int64_t>& rhs_shape,
+                     const absl::Span<const xla::DExpr>& rhs_exprs,
                      const BCast& broadcast_helper) {
   std::tie(x, y) =
-      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), y,
-                             TensorShape(rhs_shape), broadcast_helper);
+      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), lhs_exprs, y,
+                             TensorShape(rhs_shape), rhs_exprs,
+                             broadcast_helper);
   auto zero = xla::ZerosLike(x);
   auto is_zero = xla::Eq(x, zero);
   return xla::Select(is_zero, zero, xla::Div(x, y));
 }
-XLA_MAKE_BINARY(Xdivy, XdivyImpl(lhs, rhs, lhs_shape, rhs_shape,
+XLA_MAKE_BINARY(Xdivy, XdivyImpl(lhs, rhs, lhs_shape, lhs_exprs, rhs_shape,
+                                 rhs_exprs,
                                  broadcast_helper),
                 xla::DExpr());
 
@@ -228,12 +254,15 @@ XLA_MAKE_BINARY(Xdivy, XdivyImpl(lhs, rhs, lhs_shape, rhs_shape,
 //                                                   : trunc_mod;
 static xla::XlaOp FloorModImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
                                const absl::Span<const int64_t>& lhs_shape,
+                               const absl::Span<const xla::DExpr>& lhs_exprs,
                                xla::XlaOp y,
                                const absl::Span<const int64_t>& rhs_shape,
+                               const absl::Span<const xla::DExpr>& rhs_exprs,
                                const BCast& broadcast_helper) {
   std::tie(x, y) =
-      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), y,
-                             TensorShape(rhs_shape), broadcast_helper);
+      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), lhs_exprs, y,
+                             TensorShape(rhs_shape), rhs_exprs,
+                             broadcast_helper);
   auto zero = XlaHelpers::Zero(b, dtype);
   auto trunc_mod = xla::Rem(x, y);
   auto trunc_mod_shape = b->GetShape(trunc_mod);
@@ -254,8 +283,8 @@ static xla::XlaOp FloorModImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
   return xla::Select(do_plus, xla::Add(trunc_mod, y), trunc_mod);
 }
 XLA_MAKE_BINARY(FloorMod,
-                FloorModImpl(b, input_type(0), lhs, lhs_shape, rhs, rhs_shape,
-                             broadcast_helper),
+                FloorModImpl(b, input_type(0), lhs, lhs_shape, lhs_exprs, rhs,
+                             rhs_shape, rhs_exprs, broadcast_helper),
                 xla::DExpr());
 
 XLA_MAKE_BINARY(BitwiseAnd, xla::And(lhs, rhs, extend_dimensions),
@@ -305,12 +334,15 @@ XLA_MAKE_BINARY(
 static xla::XlaOp TruncateDivImpl(xla::XlaBuilder* b, DataType dtype,
                                   xla::XlaOp x,
                                   const absl::Span<const int64_t>& lhs_shape,
+                                  const absl::Span<const xla::DExpr>& lhs_exprs,
                                   xla::XlaOp y,
                                   const absl::Span<const int64_t>& rhs_shape,
+                                  const absl::Span<const xla::DExpr>& rhs_exprs,
                                   const BCast& broadcast_helper) {
   std::tie(x, y) =
-      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), y,
-                             TensorShape(rhs_shape), broadcast_helper);
+      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), lhs_exprs, y,
+                             TensorShape(rhs_shape), rhs_exprs,
+                             broadcast_helper);
   if (!DataTypeIsFloating(dtype)) {
     return xla::Div(x, y);
   }
@@ -320,8 +352,8 @@ static xla::XlaOp TruncateDivImpl(xla::XlaBuilder* b, DataType dtype,
   return xla::Select(round_up, xla::Ceil(x_div_y), xla::Floor(x_div_y));
 }
 XLA_MAKE_BINARY(TruncateDiv,
-                TruncateDivImpl(b, input_type(0), lhs, lhs_shape, rhs,
-                                rhs_shape, broadcast_helper),
+                TruncateDivImpl(b, input_type(0), lhs, lhs_shape, lhs_exprs,
+                                rhs, rhs_shape, rhs_exprs, broadcast_helper),
                 (lhs / rhs).simplify());
 XLA_MAKE_BINARY(TruncateMod, xla::Rem(lhs, rhs, extend_dimensions),
                 xla::DExpr());
@@ -378,86 +410,110 @@ XLA_MAKE_BINARY(SquaredDifference,
 
 xla::XlaOp IgammaImpl(xla::XlaOp x, xla::XlaOp y,
                       const absl::Span<const int64_t>& lhs_shape,
+                      const absl::Span<const xla::DExpr>& lhs_exprs,
                       const absl::Span<const int64_t>& rhs_shape,
+                      const absl::Span<const xla::DExpr>& rhs_exprs,
                       const BCast& broadcast_helper) {
   std::tie(x, y) =
-      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), y,
-                             TensorShape(rhs_shape), broadcast_helper);
+      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), lhs_exprs, y,
+                             TensorShape(rhs_shape), rhs_exprs,
+                             broadcast_helper);
   return xla::Igamma(x, y);
 }
 
-XLA_MAKE_BINARY(Igamma, IgammaImpl(lhs, rhs, lhs_shape, rhs_shape,
+XLA_MAKE_BINARY(Igamma, IgammaImpl(lhs, rhs, lhs_shape, lhs_exprs, rhs_shape,
+                                   rhs_exprs,
                                    broadcast_helper),
                 xla::DExpr());
 
 xla::XlaOp IgammaGradAImpl(xla::XlaOp x, xla::XlaOp y,
                            const absl::Span<const int64_t>& lhs_shape,
+                           const absl::Span<const xla::DExpr>& lhs_exprs,
                            const absl::Span<const int64_t>& rhs_shape,
+                           const absl::Span<const xla::DExpr>& rhs_exprs,
                            const BCast& broadcast_helper) {
   std::tie(x, y) =
-      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), y,
-                             TensorShape(rhs_shape), broadcast_helper);
+      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), lhs_exprs, y,
+                             TensorShape(rhs_shape), rhs_exprs,
+                             broadcast_helper);
   return xla::IgammaGradA(x, y);
 }
 
-XLA_MAKE_BINARY(IgammaGradA, IgammaGradAImpl(lhs, rhs, lhs_shape, rhs_shape,
-                                             broadcast_helper),
+XLA_MAKE_BINARY(IgammaGradA,
+                IgammaGradAImpl(lhs, rhs, lhs_shape, lhs_exprs, rhs_shape,
+                                rhs_exprs, broadcast_helper),
                 xla::DExpr());
 
 xla::XlaOp RandomGammaGradImpl(xla::XlaOp x, xla::XlaOp y,
                                const absl::Span<const int64_t>& lhs_shape,
+                               const absl::Span<const xla::DExpr>& lhs_exprs,
                                const absl::Span<const int64_t>& rhs_shape,
+                               const absl::Span<const xla::DExpr>& rhs_exprs,
                                const BCast& broadcast_helper) {
   std::tie(x, y) =
-      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), y,
-                             TensorShape(rhs_shape), broadcast_helper);
+      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), lhs_exprs, y,
+                             TensorShape(rhs_shape), rhs_exprs,
+                             broadcast_helper);
   return xla::RandomGammaGrad(x, y);
 }
 
 XLA_MAKE_BINARY(RandomGammaGrad,
-                RandomGammaGradImpl(lhs, rhs, lhs_shape, rhs_shape,
+                RandomGammaGradImpl(lhs, rhs, lhs_shape, lhs_exprs, rhs_shape,
+                                    rhs_exprs,
                                     broadcast_helper),
                 xla::DExpr());
 
 xla::XlaOp IgammacImpl(xla::XlaOp x, xla::XlaOp y,
                        const absl::Span<const int64_t>& lhs_shape,
+                       const absl::Span<const xla::DExpr>& lhs_exprs,
                        const absl::Span<const int64_t>& rhs_shape,
+                       const absl::Span<const xla::DExpr>& rhs_exprs,
                        const BCast& broadcast_helper) {
   std::tie(x, y) =
-      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), y,
-                             TensorShape(rhs_shape), broadcast_helper);
+      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), lhs_exprs, y,
+                             TensorShape(rhs_shape), rhs_exprs,
+                             broadcast_helper);
   return xla::Igammac(x, y);
 }
 
-XLA_MAKE_BINARY(Igammac, IgammacImpl(lhs, rhs, lhs_shape, rhs_shape,
+XLA_MAKE_BINARY(Igammac, IgammacImpl(lhs, rhs, lhs_shape, lhs_exprs, rhs_shape,
+                                     rhs_exprs,
                                      broadcast_helper),
                 xla::DExpr());
 
 xla::XlaOp PolygammaImpl(xla::XlaOp n, xla::XlaOp x,
                          const absl::Span<const int64_t>& lhs_shape,
+                         const absl::Span<const xla::DExpr>& lhs_exprs,
                          const absl::Span<const int64_t>& rhs_shape,
+                         const absl::Span<const xla::DExpr>& rhs_exprs,
                          const BCast& broadcast_helper) {
   std::tie(n, x) =
-      XlaBinaryOp::Broadcast(n, TensorShape(lhs_shape), x,
-                             TensorShape(rhs_shape), broadcast_helper);
+      XlaBinaryOp::Broadcast(n, TensorShape(lhs_shape), lhs_exprs, x,
+                             TensorShape(rhs_shape), rhs_exprs,
+                             broadcast_helper);
   return xla::Polygamma(n, x);
 }
 
-XLA_MAKE_BINARY(Polygamma, PolygammaImpl(lhs, rhs, lhs_shape, rhs_shape,
+XLA_MAKE_BINARY(Polygamma, PolygammaImpl(lhs, rhs, lhs_shape, lhs_exprs,
+                                         rhs_shape, rhs_exprs,
                                          broadcast_helper),
                 xla::DExpr());
 
 xla::XlaOp ZetaImpl(xla::XlaOp x, xla::XlaOp q,
                     const absl::Span<const int64_t>& lhs_shape,
+                    const absl::Span<const xla::DExpr>& lhs_exprs,
                     const absl::Span<const int64_t>& rhs_shape,
+                    const absl::Span<const xla::DExpr>& rhs_exprs,
                     const BCast& broadcast_helper) {
   std::tie(x, q) =
-      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), q,
-                             TensorShape(rhs_shape), broadcast_helper);
+      XlaBinaryOp::Broadcast(x, TensorShape(lhs_shape), lhs_exprs, q,
+                             TensorShape(rhs_shape), rhs_exprs,
+                             broadcast_helper);
   return xla::Zeta(x, q);
 }
 
-XLA_MAKE_BINARY(Zeta, ZetaImpl(lhs, rhs, lhs_shape, rhs_shape,
+XLA_MAKE_BINARY(Zeta, ZetaImpl(lhs, rhs, lhs_shape, lhs_exprs, rhs_shape,
+                               rhs_exprs,
                                broadcast_helper),
                 xla::DExpr());
 

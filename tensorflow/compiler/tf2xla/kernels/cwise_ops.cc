@@ -26,7 +26,6 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/tf2xla/lib/broadcast.h"
-#include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "xla/hlo/builder/lib/constants.h"
 #include "xla/hlo/builder/xla_builder.h"
@@ -411,9 +410,11 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
   }
 
   // Call virtual method to emit the computation.
+  std::vector<xla::DExpr> lhs_exprs = lhs_shape.get_filled_expressions();
+  std::vector<xla::DExpr> rhs_exprs = rhs_shape.get_filled_expressions();
   xla::XlaOp output =
-      Computation(ctx, lhs_handle, lhs_shape.dim_sizes(), rhs_handle,
-                  rhs_shape.dim_sizes(), bcast, extend_dimension);
+      Computation(ctx, lhs_handle, lhs_shape.dim_sizes(), lhs_exprs, rhs_handle,
+                  rhs_shape.dim_sizes(), rhs_exprs, bcast, extend_dimension);
 
   // The TensorFlow helper computed the post-broadcast shape in
   // output_shape: we rely on subclassed Computations to implement the
@@ -431,20 +432,17 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
 }
 
 /* static */ std::pair<xla::XlaOp, xla::XlaOp> XlaBinaryOp::Broadcast(
-    xla::XlaOp lhs, const TensorShape& lhs_shape, xla::XlaOp rhs,
-    const TensorShape& rhs_shape, const BCast& broadcast_helper) {
+    xla::XlaOp lhs, const TensorShape& lhs_shape,
+    const absl::Span<const xla::DExpr>& lhs_exprs, xla::XlaOp rhs,
+    const TensorShape& rhs_shape,
+    const absl::Span<const xla::DExpr>& rhs_exprs,
+    const BCast& broadcast_helper) {
   TensorShape lhs_expr_shape = lhs_shape;
   TensorShape rhs_expr_shape = rhs_shape;
-
-  auto lhs_xla_shape = lhs.builder()->GetShape(lhs);
-  if (lhs_xla_shape.ok()) {
-    TF_CHECK_OK(XLAShapeToTensorShape(*lhs_xla_shape, &lhs_expr_shape));
-  }
-
-  auto rhs_xla_shape = rhs.builder()->GetShape(rhs);
-  if (rhs_xla_shape.ok()) {
-    TF_CHECK_OK(XLAShapeToTensorShape(*rhs_xla_shape, &rhs_expr_shape));
-  }
+  lhs_expr_shape.set_expressions(
+      std::vector<xla::DExpr>(lhs_exprs.begin(), lhs_exprs.end()));
+  rhs_expr_shape.set_expressions(
+      std::vector<xla::DExpr>(rhs_exprs.begin(), rhs_exprs.end()));
 
   std::vector<xla::DExpr> output_exprs =
       BuildBroadcastOutputExpressions(lhs_expr_shape, rhs_expr_shape,

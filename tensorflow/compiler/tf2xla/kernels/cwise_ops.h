@@ -64,8 +64,11 @@ class XlaBinaryOp : public XlaOpKernel {
   // in the XLA documentation.
   virtual xla::XlaOp Computation(
       XlaOpKernelContext* ctx, const xla::XlaOp& lhs,
-      const absl::Span<const int64_t>& lhs_shape, const xla::XlaOp& rhs,
-      const absl::Span<const int64_t>& rhs_shape, const BCast& broadcast_helper,
+      const absl::Span<const int64_t>& lhs_shape,
+      const absl::Span<const xla::DExpr>& lhs_exprs, const xla::XlaOp& rhs,
+      const absl::Span<const int64_t>& rhs_shape,
+      const absl::Span<const xla::DExpr>& rhs_exprs,
+      const BCast& broadcast_helper,
       const std::vector<int64_t>& extend_dimensions) = 0;
 
   // Returns a symbolic expression for one output element when content metadata
@@ -82,8 +85,11 @@ class XlaBinaryOp : public XlaOpKernel {
   // 'broadcast_helper', yielding arguments 'lhs' and 'rhs' that have the same
   // shape.
   static std::pair<xla::XlaOp, xla::XlaOp> Broadcast(
-      xla::XlaOp lhs, const TensorShape& lhs_shape, xla::XlaOp rhs,
-      const TensorShape& rhs_shape, const BCast& broadcast_helper);
+      xla::XlaOp lhs, const TensorShape& lhs_shape,
+      const absl::Span<const xla::DExpr>& lhs_exprs, xla::XlaOp rhs,
+      const TensorShape& rhs_shape,
+      const absl::Span<const xla::DExpr>& rhs_exprs,
+      const BCast& broadcast_helper);
 };
 
 }  // namespace tensorflow

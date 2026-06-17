@@ -236,6 +236,18 @@ static xla::XlaOp FloorModImpl(xla::XlaBuilder* b, DataType dtype, xla::XlaOp x,
                              TensorShape(rhs_shape), broadcast_helper);
   auto zero = XlaHelpers::Zero(b, dtype);
   auto trunc_mod = xla::Rem(x, y);
+  auto trunc_mod_shape = b->GetShape(trunc_mod);
+  if (!trunc_mod_shape.ok()) {
+    return b->ReportError(trunc_mod_shape.status());
+  }
+  if (!trunc_mod_shape->dimensions().empty()) {
+    auto zero_broadcast = BroadcastTo(
+        zero, trunc_mod_shape->dimensions(), trunc_mod_shape->expressions());
+    if (!zero_broadcast.ok()) {
+      return b->ReportError(zero_broadcast.status());
+    }
+    zero = *zero_broadcast;
+  }
   auto trunc_mod_not_zero = xla::Ne(trunc_mod, zero);
   auto do_plus = xla::And(xla::Ne(xla::Lt(trunc_mod, zero), xla::Lt(y, zero)),
                           trunc_mod_not_zero);

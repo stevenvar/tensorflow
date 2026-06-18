@@ -209,6 +209,35 @@ bool TryBuildSymbolicBinaryContents(XlaOpKernelContext* ctx,
 std::vector<xla::DExpr> BuildBroadcastOutputExpressions(
     const TensorShape& lhs_shape, const TensorShape& rhs_shape,
     const BCast& bcast) {
+  auto merge_broadcast_dim = [](bool has_lhs, int64_t lhs_dim,
+                                const xla::DExpr& lhs_expr, bool has_rhs,
+                                int64_t rhs_dim, const xla::DExpr& rhs_expr,
+                                int64_t output_dim) {
+    if (!has_lhs) {
+      return rhs_expr;
+    }
+    if (!has_rhs) {
+      return lhs_expr;
+    }
+    if (lhs_dim == 1 && rhs_dim != 1) {
+      return lhs_expr && lhs_expr->is_dynamic()
+                 ? (lhs_expr * rhs_expr).simplify()
+                 : rhs_expr;
+    }
+    if (rhs_dim == 1 && lhs_dim != 1) {
+      return rhs_expr && rhs_expr->is_dynamic()
+                 ? (rhs_expr * lhs_expr).simplify()
+                 : lhs_expr;
+    }
+    if (lhs_expr && lhs_expr->is_dynamic()) {
+      return lhs_expr;
+    }
+    if (rhs_expr && rhs_expr->is_dynamic()) {
+      return rhs_expr;
+    }
+    return xla::DExpr::Const(output_dim);
+  };
+
   const auto& output_shape = bcast.output_shape();
   std::vector<xla::DExpr> output_exprs(output_shape.size());
 
@@ -223,26 +252,9 @@ std::vector<xla::DExpr> BuildBroadcastOutputExpressions(
                                   : xla::DExpr::Const(1);
     const int64_t lhs_dim = has_lhs ? lhs_shape.dim_size(lhs_i) : 1;
     const int64_t rhs_dim = has_rhs ? rhs_shape.dim_size(rhs_i) : 1;
-
-    if (!has_lhs) {
-      output_exprs[out_i] = rhs_expr;
-    } else if (!has_rhs) {
-      output_exprs[out_i] = lhs_expr;
-    } else if (lhs_dim == 1 && rhs_dim != 1) {
-      output_exprs[out_i] =
-          (lhs_expr && lhs_expr->is_dynamic() ? (lhs_expr * rhs_expr).simplify()
-                                              : rhs_expr);
-    } else if (rhs_dim == 1 && lhs_dim != 1) {
-      output_exprs[out_i] =
-          (rhs_expr && rhs_expr->is_dynamic() ? (rhs_expr * lhs_expr).simplify()
-                                              : lhs_expr);
-    } else if (lhs_expr && lhs_expr->is_dynamic()) {
-      output_exprs[out_i] = lhs_expr;
-    } else if (rhs_expr && rhs_expr->is_dynamic()) {
-      output_exprs[out_i] = rhs_expr;
-    } else {
-      output_exprs[out_i] = xla::DExpr::Const(output_shape[out_i]);
-    }
+    output_exprs[out_i] = merge_broadcast_dim(
+        has_lhs, lhs_dim, lhs_expr, has_rhs, rhs_dim, rhs_expr,
+        output_shape[out_i]);
   }
 
   return output_exprs;

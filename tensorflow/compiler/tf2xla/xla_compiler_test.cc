@@ -295,6 +295,44 @@ TEST_F(XlaCompilerTest, SimpleDynamicShapeParameter) {
                   .is_dynamic());
 }
 
+TEST_F(XlaCompilerTest, ScalarBroadcastPreservesDynamicShapeExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto a = ops::_Arg(scope.WithOpName("A"), DT_INT32, 0);
+  auto scalar = ops::Const(scope.WithOpName("Scalar"), 7);
+  auto add = ops::Add(scope.WithOpName("Add"), a, scalar);
+  auto ret = ops::_Retval(scope.WithOpName("Ret"), add, 0);
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape =
+      xla::ShapeUtil::MakeShape(/*element_type=*/xla::S32,
+                                /*dimensions=*/{2, 1},
+                                /*dynamic_dimensions=*/{true, false});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompileOptions compile_options;
+  compile_options.always_return_tuple = false;
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(compile_options, "broadcast_add",
+                                     std::move(graph), args, &result));
+
+  auto hlo = result.computation->proto();
+  TF_ASSERT_OK_AND_ASSIGN(auto module, LoadModuleFromHloProto(hlo));
+  EXPECT_EQ(module->computation_count(), 1);
+
+  const xla::Shape& root_shape =
+      module->entry_computation()->root_instruction()->shape();
+  ASSERT_EQ(root_shape.dimensions_size(), 2);
+  ASSERT_EQ(root_shape.expressions().size(), 2);
+  EXPECT_TRUE(root_shape.expressions(0) &&
+              root_shape.expressions(0)->is_dynamic());
+  EXPECT_TRUE(root_shape.expressions(1) &&
+              root_shape.expressions(1)->is_constant());
+}
+
 // Tests compilation of a graph where the _Retval node is not necessarily last
 // amongst the graph nodes in construction order, and always_return_tuple is
 // false. Regression test for bug where the wrong value was returned.

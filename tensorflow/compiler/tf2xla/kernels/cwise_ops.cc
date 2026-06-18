@@ -220,15 +220,20 @@ std::vector<xla::DExpr> BuildBroadcastOutputExpressions(
       return lhs_expr;
     }
     if (lhs_dim == 1 && rhs_dim != 1) {
+      // A broadcasted singleton usually inherits the other side's expression,
+      // but keep a dynamic singleton visible by folding it into the result.
       return lhs_expr && lhs_expr->is_dynamic()
                  ? (lhs_expr * rhs_expr).simplify()
                  : rhs_expr;
     }
     if (rhs_dim == 1 && lhs_dim != 1) {
+      // Symmetric case for a singleton rhs broadcast.
       return rhs_expr && rhs_expr->is_dynamic()
                  ? (rhs_expr * lhs_expr).simplify()
                  : lhs_expr;
     }
+    // When both sides describe the same logical dimension, prefer whichever
+    // side still carries a dynamic symbolic expression.
     if (lhs_expr && lhs_expr->is_dynamic()) {
       return lhs_expr;
     }

@@ -295,6 +295,8 @@ TEST_F(XlaCompilerTest, SimpleDynamicShapeParameter) {
                   .is_dynamic());
 }
 
+// Tests compilation preserves dynamic shape expressions through scalar
+// broadcasting in binary ops.
 TEST_F(XlaCompilerTest, ScalarBroadcastPreservesDynamicShapeExpressions) {
   Scope scope = Scope::NewRootScope().ExitOnError();
   auto a = ops::_Arg(scope.WithOpName("A"), DT_INT32, 0);

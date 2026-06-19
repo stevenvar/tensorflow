@@ -939,8 +939,9 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
         if (expr.node_type_case() == ExpressionProto::NODE_TYPE_NOT_SET)
           continue;
 
-        LOG(INFO) << "Node " << n.name() << " has expression "
-                  << ExprProtoToString(expr);
+        LOG(INFO) << "[EXPR][GP] node=" << n.name() << " output=" << out_idx
+                  << " dim=" << d << " size=" << dim.size()
+                  << " expr=" << ExprProtoToString(expr);
 
         auto ex = ExprFromProto(expr);
         exprs.push_back(std::move(ex));
@@ -1820,8 +1821,8 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
     if (debug_options_.enable_dynamic_sizes) {
       std::string reason;
       if (!DynamicInputExpressionsAreCompatible(*node, &reason)) {
-        VLOG(1) << "Rejecting " << node->name()
-                << " from XLA clustering: " << reason;
+        LOG(INFO) << "Rejecting " << node->name()
+                  << " from XLA clustering: " << reason;
         continue;
       }
     }

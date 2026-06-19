@@ -866,12 +866,11 @@ llvm::Value* GetBatchDimByName(llvm::IRBuilderBase* b, int64_t multiplier,
         bdim_ptr_i8, llvm::PointerType::getUnqual(i64Type), "bdim_ptr");
     loadedValue = entry_builder.CreateLoad(i64Type, bdim_ptr, kBdimValueName);
 
-    llvm::FunctionType* printf_to_stderr_type = llvm::FunctionType::get(
+    llvm::FunctionType* printf_type = llvm::FunctionType::get(
         entry_builder.getInt32Ty(),
         llvm::PointerType::get(entry_builder.getInt8Ty(), 0), true);
-    llvm::FunctionCallee printf_to_stderr_func =
-        function->getParent()->getOrInsertFunction(
-            "__xla_cpu_runtime_PrintfToStderr", printf_to_stderr_type);
+    llvm::FunctionCallee printf_func =
+        function->getParent()->getOrInsertFunction("printf", printf_type);
     llvm::Value* format_str = entry_builder.CreateGlobalStringPtr(
         "XLA_CPU_DIRECT_IR_BDIM_VALUE function=%s run_options=%p "
         "batch_size_offset=%lld bdim_value=%lld\n");
@@ -879,7 +878,7 @@ llvm::Value* GetBatchDimByName(llvm::IRBuilderBase* b, int64_t multiplier,
         function->getName(), "bdim_function_name");
     llvm::Value* offset_value = llvm::ConstantInt::get(i64Type, off);
     entry_builder.CreateCall(
-        printf_to_stderr_func,
+        printf_func,
         {format_str, function_name, run_options, offset_value, loadedValue});
   }
   if (multiplier < 1) {

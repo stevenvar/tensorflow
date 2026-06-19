@@ -319,6 +319,7 @@ TEST_F(XlaCompilerTest, ScalarBroadcastPreservesDynamicShapeExpressions) {
   XlaCompiler compiler(DefaultOptions());
   XlaCompiler::CompileOptions compile_options;
   compile_options.always_return_tuple = false;
+  compile_options.is_entry_computation = false;
   XlaCompiler::CompilationResult result;
   TF_ASSERT_OK(compiler.CompileGraph(compile_options, "broadcast_add",
                                      std::move(graph), args, &result));

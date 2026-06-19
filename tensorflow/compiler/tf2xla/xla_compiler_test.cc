@@ -314,6 +314,7 @@ TEST_F(XlaCompilerTest, ScalarBroadcastPreservesDynamicShapeExpressions) {
   xla::Shape dynamic_shape = xla::ShapeUtil::MakeShape(
       /*element_type=*/xla::S32, /*dimensions=*/{2, 1});
   dynamic_shape.set_dynamic_dimension(0, true);
+  dynamic_shape.set_expressions({xla::DExpr::Var(1), xla::DExpr::Const(1)});
   args[0].shape = dynamic_shape;
 
   XlaCompiler compiler(DefaultOptions());

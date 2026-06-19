@@ -309,10 +309,10 @@ TEST_F(XlaCompilerTest, ScalarBroadcastPreservesDynamicShapeExpressions) {
   std::vector<XlaCompiler::Argument> args(1);
   args[0].kind = XlaCompiler::Argument::kParameter;
   args[0].type = DT_INT32;
-  args[0].shape =
-      xla::ShapeUtil::MakeShape(/*element_type=*/xla::S32,
-                                /*dimensions=*/{2, 1},
-                                /*dynamic_dimensions=*/{true, false});
+  xla::Shape dynamic_shape = xla::ShapeUtil::MakeShape(
+      /*element_type=*/xla::S32, /*dimensions=*/{2, 1});
+  dynamic_shape.set_dynamic_dimension(0, true);
+  args[0].shape = dynamic_shape;
 
   XlaCompiler compiler(DefaultOptions());
   XlaCompiler::CompileOptions compile_options;

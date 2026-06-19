@@ -272,9 +272,11 @@ TEST_F(XlaCompilerTest, SimpleDynamicShapeParameter) {
   std::vector<XlaCompiler::Argument> args(2);
   args[0].kind = XlaCompiler::Argument::kParameter;
   args[0].type = DT_INT32;
-  args[0].shape =
-      xla::ShapeUtil::MakeShape(/*element_type=*/xla::S32, /*dimensions=*/{2},
-                                /*dynamic_dimensions=*/{true});
+  xla::Shape dynamic_shape =
+      xla::ShapeUtil::MakeShape(/*element_type=*/xla::S32,
+                                /*dimensions=*/{2});
+  dynamic_shape.set_dynamic_dimension(0, true);
+  args[0].shape = dynamic_shape;
   args[1].kind = XlaCompiler::Argument::kParameter;
   args[1].type = DT_INT32;
   args[1].shape = TensorShape(/*dimensions=*/{2});

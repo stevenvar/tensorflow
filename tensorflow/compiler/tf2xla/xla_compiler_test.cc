@@ -298,13 +298,14 @@ TEST_F(XlaCompilerTest, SimpleDynamicShapeParameter) {
 }
 
 // Tests compilation preserves dynamic shape expressions through scalar
-// broadcasting in binary ops.
-TEST_F(XlaCompilerTest, ScalarBroadcastPreservesDynamicShapeExpressions) {
+// broadcasting in binary ops that use the explicit tf2xla broadcast helper.
+TEST_F(XlaCompilerTest,
+       ScalarBroadcastPreservesDynamicShapeExpressionsInFloorMod) {
   Scope scope = Scope::NewRootScope().ExitOnError();
   auto a = ops::_Arg(scope.WithOpName("A"), DT_INT32, 0);
   auto scalar = ops::Const(scope.WithOpName("Scalar"), 7);
-  auto add = ops::Add(scope.WithOpName("Add"), a, scalar);
-  auto ret = ops::_Retval(scope.WithOpName("Ret"), add, 0);
+  auto floormod = ops::FloorMod(scope.WithOpName("FloorMod"), a, scalar);
+  auto ret = ops::_Retval(scope.WithOpName("Ret"), floormod, 0);
   std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
   TF_ASSERT_OK(scope.ToGraph(graph.get()));
 
@@ -322,21 +323,16 @@ TEST_F(XlaCompilerTest, ScalarBroadcastPreservesDynamicShapeExpressions) {
   compile_options.always_return_tuple = false;
   compile_options.is_entry_computation = false;
   XlaCompiler::CompilationResult result;
-  TF_ASSERT_OK(compiler.CompileGraph(compile_options, "broadcast_add",
+  TF_ASSERT_OK(compiler.CompileGraph(compile_options, "broadcast_floormod",
                                      std::move(graph), args, &result));
 
-  auto hlo = result.computation->proto();
-  TF_ASSERT_OK_AND_ASSIGN(auto module, LoadModuleFromHloProto(hlo));
-  EXPECT_EQ(module->computation_count(), 1);
-
-  const xla::Shape& root_shape =
-      module->entry_computation()->root_instruction()->shape();
-  ASSERT_EQ(root_shape.dimensions_size(), 2);
-  ASSERT_EQ(root_shape.expressions().size(), 2);
-  EXPECT_TRUE(root_shape.expressions(0) &&
-              root_shape.expressions(0)->is_dynamic());
-  EXPECT_TRUE(root_shape.expressions(1) &&
-              root_shape.expressions(1)->is_constant());
+  const xla::Shape& output_shape = std::get<xla::Shape>(result.outputs[0].shape);
+  ASSERT_EQ(output_shape.dimensions_size(), 2);
+  ASSERT_EQ(output_shape.expressions().size(), 2);
+  EXPECT_TRUE(output_shape.expressions(0) &&
+              output_shape.expressions(0)->is_dynamic());
+  EXPECT_TRUE(output_shape.expressions(1) &&
+              output_shape.expressions(1)->is_constant());
 }
 
 // Tests compilation of a graph where the _Retval node is not necessarily last

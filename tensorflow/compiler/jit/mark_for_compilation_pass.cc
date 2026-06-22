@@ -1001,7 +1001,7 @@ MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
   const std::string exprs_key = DExprListCacheKey(dynamic_exprs);
   auto cache_it = dynamic_compatibility_reason_cache_.find(exprs_key);
   if (cache_it != dynamic_compatibility_reason_cache_.end()) {
-    VLOG(1) << "Using cached dynamic expression compatibility result for "
+    LOG(INFO) << "Using cached dynamic expression compatibility result for "
               << dynamic_exprs.size() << " expressions: ["
               << DExprListToString(dynamic_exprs) << "]";
     if (cache_it->second.empty()) {
@@ -1010,14 +1010,14 @@ MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
     return cache_it->second;
   }
 
-  VLOG(1) << "Checking dynamic expression compatibility for "
+  LOG(INFO) << "Checking dynamic expression compatibility for "
             << dynamic_exprs.size() << " expressions: ["
             << DExprListToString(dynamic_exprs) << "]";
 
   const xla::DExpr anchor_source = dynamic_exprs.front();
   const xla::DExpr anchor =
       FindSmallestCoveringSubexpressionCached(anchor_source);
-  VLOG(1) << "Selected dynamic clustering anchor source="
+  LOG(INFO) << "Selected dynamic clustering anchor source="
             << DExprToString(anchor_source) << " anchor="
             << DExprToString(anchor);
   int fresh_id = 1;
@@ -1026,14 +1026,14 @@ MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
       fresh_id = std::max(fresh_id, id + 1);
     }
   }
-  VLOG(1) << "Using fresh dynamic clustering variable Var(" << fresh_id
+  LOG(INFO) << "Using fresh dynamic clustering variable Var(" << fresh_id
             << ")";
 
   for (const xla::DExpr& expr : dynamic_exprs) {
     xla::DExpr substituted =
         ReplaceSubexpressionWithVariable(expr, anchor, fresh_id).simplify();
     std::set<int> remaining_ids = substituted->get_all_ids();
-    VLOG(1) << "Dynamic clustering substitution expr="
+    LOG(INFO) << "Dynamic clustering substitution expr="
               << DExprToString(expr) << " substituted="
               << DExprToString(substituted) << " remaining_ids={"
               << absl::StrJoin(remaining_ids, ", ") << "}";
@@ -1105,22 +1105,22 @@ bool MarkForCompilationPassImpl::DynamicNodeExpressionsAreCompatible(
   }
 
   if (!node_exprs.empty()) {
-    VLOG(1) << "Node " << node.name()
+    LOG(INFO) << "Node " << node.name()
               << " dynamic input/output expressions: ["
               << DExprListToString(node_exprs) << "]";
   } else {
-    VLOG(1) << "Node " << node.name()
+    LOG(INFO) << "Node " << node.name()
               << " has no dynamic input/output expressions";
   }
 
   std::optional<std::string> incompatibility =
       CheckDynamicExpressionCompatibility(node_exprs);
   if (!incompatibility.has_value()) {
-    VLOG(1) << "Node " << node.name()
+    LOG(INFO) << "Node " << node.name()
               << " passed dynamic expression compatibility";
     return true;
   }
-  VLOG(1) << "Node " << node.name()
+  LOG(INFO) << "Node " << node.name()
             << " failed dynamic expression compatibility: "
             << *incompatibility;
   *reason = *incompatibility;
@@ -2543,7 +2543,7 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
     combined_exprs.insert(combined_exprs.end(), to->dim_exprs().begin(),
                           to->dim_exprs().end());
     if (!combined_exprs.empty()) {
-      VLOG(1) << "Checking dynamic clustering merge from "
+      LOG(INFO) << "Checking dynamic clustering merge from "
                 << from->DebugString(*graph_) << " to "
                 << to->DebugString(*graph_) << " with expressions ["
                 << DExprListToString(combined_exprs) << "]";
@@ -2551,14 +2551,14 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
     std::optional<std::string> incompatibility =
         CheckDynamicExpressionCompatibility(combined_exprs);
     if (incompatibility.has_value()) {
-      VLOG(1) << "Dynamic clustering merge failed from "
+      LOG(INFO) << "Dynamic clustering merge failed from "
                 << from->DebugString(*graph_) << " to "
                 << to->DebugString(*graph_) << ": " << *incompatibility;
       return LogNotContractableAndReturnFalse(
           from, to, *incompatibility);
     }
     if (!combined_exprs.empty()) {
-      VLOG(1) << "Dynamic clustering merge passed from "
+      LOG(INFO) << "Dynamic clustering merge passed from "
                 << from->DebugString(*graph_) << " to "
                 << to->DebugString(*graph_);
     }

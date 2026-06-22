@@ -1015,6 +1015,31 @@ MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
             << DExprListToString(dynamic_exprs) << "]";
 
   const xla::DExpr anchor_source = dynamic_exprs.front();
+  for (const xla::DExpr& expr : dynamic_exprs) {
+    if (expr.kind() != xla::DExpr::Kind::kVariable) {
+      continue;
+    }
+    const int expected_id = static_cast<const xla::Variable*>(expr.get())->get_id();
+    LOG(INFO) << "Using single-variable dynamic clustering fast path with "
+              << "variable id " << expected_id;
+    bool all_match = true;
+    for (const xla::DExpr& candidate : dynamic_exprs) {
+      std::set<int> candidate_ids = candidate->get_all_ids();
+      LOG(INFO) << "Dynamic clustering single-variable check expr="
+                << DExprToString(candidate) << " ids={"
+                << absl::StrJoin(candidate_ids, ", ") << "}";
+      if (candidate_ids.size() != 1 || *candidate_ids.begin() != expected_id) {
+        all_match = false;
+        break;
+      }
+    }
+    if (all_match) {
+      dynamic_compatibility_reason_cache_.emplace(exprs_key, std::string());
+      return std::nullopt;
+    }
+    break;
+  }
+
   int fresh_id = 1;
   for (const xla::DExpr& expr : dynamic_exprs) {
     for (int id : expr->get_all_ids()) {

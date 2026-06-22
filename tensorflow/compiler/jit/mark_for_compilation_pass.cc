@@ -918,60 +918,6 @@ xla::DExpr FindSmallestCoveringSubexpression(const xla::DExpr& expr) {
   return *best_it;
 }
 
-xla::DExpr ReplaceSubexpressionWithVariable(const xla::DExpr& expr,
-                                           const xla::DExpr& target,
-                                           int replacement_id) {
-  CHECK(expr);
-  CHECK(target);
-  if (expr == target) {
-    return xla::DExpr::Var(replacement_id);
-  }
-
-  switch (expr.kind()) {
-    case xla::DExpr::Kind::kUnknown:
-    case xla::DExpr::Kind::kConstant:
-    case xla::DExpr::Kind::kVariable:
-      return expr;
-    case xla::DExpr::Kind::kAdd: {
-      const auto* add = static_cast<const xla::Add*>(expr.get());
-      return ReplaceSubexpressionWithVariable(
-                 xla::DExpr::Adopt(add->get_lhs()->clone().release()), target,
-                 replacement_id) +
-             ReplaceSubexpressionWithVariable(
-                 xla::DExpr::Adopt(add->get_rhs()->clone().release()), target,
-                 replacement_id);
-    }
-    case xla::DExpr::Kind::kSub: {
-      const auto* sub = static_cast<const xla::Sub*>(expr.get());
-      return ReplaceSubexpressionWithVariable(
-                 xla::DExpr::Adopt(sub->get_lhs()->clone().release()), target,
-                 replacement_id) -
-             ReplaceSubexpressionWithVariable(
-                 xla::DExpr::Adopt(sub->get_rhs()->clone().release()), target,
-                 replacement_id);
-    }
-    case xla::DExpr::Kind::kMul: {
-      const auto* mul = static_cast<const xla::Mul*>(expr.get());
-      return ReplaceSubexpressionWithVariable(
-                 xla::DExpr::Adopt(mul->get_lhs()->clone().release()), target,
-                 replacement_id) *
-             ReplaceSubexpressionWithVariable(
-                 xla::DExpr::Adopt(mul->get_rhs()->clone().release()), target,
-                 replacement_id);
-    }
-    case xla::DExpr::Kind::kDiv: {
-      const auto* div = static_cast<const xla::Div*>(expr.get());
-      return ReplaceSubexpressionWithVariable(
-                 xla::DExpr::Adopt(div->get_lhs()->clone().release()), target,
-                 replacement_id) /
-             ReplaceSubexpressionWithVariable(
-                 xla::DExpr::Adopt(div->get_rhs()->clone().release()), target,
-                 replacement_id);
-    }
-  }
-  return expr;
-}
-
 xla::DExpr MarkForCompilationPassImpl::FindSmallestCoveringSubexpressionCached(
     const xla::DExpr& expr) {
   const std::string expr_key = DExprToString(expr);
@@ -1040,61 +986,25 @@ MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
     break;
   }
 
-  int fresh_id = 1;
+  const xla::DExpr expected_core =
+      FindSmallestCoveringSubexpressionCached(anchor_source);
+  LOG(INFO) << "Using dynamic clustering core from source="
+            << DExprToString(anchor_source) << " core="
+            << DExprToString(expected_core);
+
   for (const xla::DExpr& expr : dynamic_exprs) {
-    for (int id : expr->get_all_ids()) {
-      fresh_id = std::max(fresh_id, id + 1);
+    const xla::DExpr core = FindSmallestCoveringSubexpressionCached(expr);
+    LOG(INFO) << "Dynamic clustering core check expr="
+              << DExprToString(expr) << " core=" << DExprToString(core);
+    if (!(core == expected_core)) {
+      std::string reason = absl::StrCat(
+          "dynamic expressions do not share the same clusterable core: "
+          "expected=",
+          DExprToString(expected_core), ", expr=", DExprToString(expr),
+          ", core=", DExprToString(core));
+      dynamic_compatibility_reason_cache_.emplace(exprs_key, reason);
+      return reason;
     }
-  }
-  LOG(INFO) << "Using fresh dynamic clustering variable Var(" << fresh_id
-            << ")";
-
-  auto try_anchor = [&](const xla::DExpr& anchor,
-                        absl::string_view anchor_kind)
-      -> std::optional<std::string> {
-    LOG(INFO) << "Selected dynamic clustering anchor source="
-              << DExprToString(anchor_source) << " anchor="
-              << DExprToString(anchor) << " kind=" << anchor_kind;
-    for (const xla::DExpr& expr : dynamic_exprs) {
-      xla::DExpr substituted =
-          ReplaceSubexpressionWithVariable(expr, anchor, fresh_id).simplify();
-      std::set<int> remaining_ids = substituted->get_all_ids();
-      LOG(INFO) << "Dynamic clustering substitution expr="
-                << DExprToString(expr) << " substituted="
-                << DExprToString(substituted) << " remaining_ids={"
-                << absl::StrJoin(remaining_ids, ", ") << "} anchor_kind="
-                << anchor_kind;
-      if (remaining_ids.empty()) {
-        continue;
-      }
-      if (remaining_ids.size() == 1 && *remaining_ids.begin() == fresh_id) {
-        continue;
-      }
-      return absl::StrCat(
-          "dynamic expressions do not share a clusterable core: anchor=",
-          DExprToString(anchor), ", expr=", DExprToString(expr),
-          ", substituted=", DExprToString(substituted));
-    }
-    return std::nullopt;
-  };
-
-  if (std::optional<std::string> full_anchor_failure =
-          try_anchor(anchor_source, "full")) {
-    const xla::DExpr smaller_anchor =
-        FindSmallestCoveringSubexpressionCached(anchor_source);
-    if (!(smaller_anchor == anchor_source)) {
-      if (std::optional<std::string> smaller_anchor_failure =
-              try_anchor(smaller_anchor, "smallest-covering")) {
-        dynamic_compatibility_reason_cache_.emplace(exprs_key,
-                                                    *smaller_anchor_failure);
-        return smaller_anchor_failure;
-      }
-      dynamic_compatibility_reason_cache_.emplace(exprs_key, std::string());
-      return std::nullopt;
-    }
-    dynamic_compatibility_reason_cache_.emplace(exprs_key,
-                                                *full_anchor_failure);
-    return full_anchor_failure;
   }
 
   dynamic_compatibility_reason_cache_.emplace(exprs_key, std::string());

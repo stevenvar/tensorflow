@@ -352,6 +352,11 @@ class MarkForCompilationPassImpl {
 
   absl::Status AssignAnnotatedClusterIDs();
   absl::Status AssignDimVars();
+  xla::DExpr FindSmallestCoveringSubexpressionCached(const xla::DExpr& expr);
+  std::optional<std::string> CheckDynamicExpressionCompatibility(
+      absl::Span<const xla::DExpr> exprs);
+  bool DynamicNodeExpressionsAreCompatible(const Node& node,
+                                           std::string* reason);
   void collectInputNodes(std::set<Node*> &path_nodes);
   void collectMergeNodes(const std::vector<Node*>& nodeSet,
                          std::set<Node*> &merger_nodes);
@@ -519,6 +524,10 @@ class MarkForCompilationPassImpl {
   bool cpu_global_jit_;
   const std::string cluster_name_prefix_;
   absl::flat_hash_map<const Cluster*, bool> should_compile_cluster_cache_;
+  absl::flat_hash_map<std::string, xla::DExpr>
+      dynamic_anchor_expr_cache_;
+  absl::flat_hash_map<std::string, std::string>
+      dynamic_compatibility_reason_cache_;
   jit::DeviceInfoCache device_info_cache_;
 
   bool initialized_ = false;
@@ -807,6 +816,15 @@ std::string DExprListToString(absl::Span<const xla::DExpr> exprs) {
   return absl::StrJoin(pieces, ", ");
 }
 
+std::string DExprListCacheKey(absl::Span<const xla::DExpr> exprs) {
+  std::vector<std::string> pieces;
+  pieces.reserve(exprs.size());
+  for (const xla::DExpr& expr : exprs) {
+    pieces.push_back(DExprToString(expr));
+  }
+  return absl::StrJoin(pieces, " || ");
+}
+
 int DExprNodeCount(const xla::DynExpr* expr) {
   CHECK(expr != nullptr);
   switch (expr->kind()) {
@@ -954,7 +972,20 @@ xla::DExpr ReplaceSubexpressionWithVariable(const xla::DExpr& expr,
   return expr;
 }
 
-std::optional<std::string> CheckDynamicExpressionCompatibility(
+xla::DExpr MarkForCompilationPassImpl::FindSmallestCoveringSubexpressionCached(
+    const xla::DExpr& expr) {
+  const std::string expr_key = DExprToString(expr);
+  auto it = dynamic_anchor_expr_cache_.find(expr_key);
+  if (it != dynamic_anchor_expr_cache_.end()) {
+    return it->second;
+  }
+  xla::DExpr anchor = FindSmallestCoveringSubexpression(expr);
+  dynamic_anchor_expr_cache_.emplace(expr_key, anchor);
+  return anchor;
+}
+
+std::optional<std::string>
+MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
     absl::Span<const xla::DExpr> exprs) {
   std::vector<xla::DExpr> dynamic_exprs;
   dynamic_exprs.reserve(exprs.size());
@@ -967,12 +998,25 @@ std::optional<std::string> CheckDynamicExpressionCompatibility(
     return std::nullopt;
   }
 
+  const std::string exprs_key = DExprListCacheKey(dynamic_exprs);
+  auto cache_it = dynamic_compatibility_reason_cache_.find(exprs_key);
+  if (cache_it != dynamic_compatibility_reason_cache_.end()) {
+    LOG(INFO) << "Using cached dynamic expression compatibility result for "
+              << dynamic_exprs.size() << " expressions: ["
+              << DExprListToString(dynamic_exprs) << "]";
+    if (cache_it->second.empty()) {
+      return std::nullopt;
+    }
+    return cache_it->second;
+  }
+
   LOG(INFO) << "Checking dynamic expression compatibility for "
             << dynamic_exprs.size() << " expressions: ["
             << DExprListToString(dynamic_exprs) << "]";
 
   const xla::DExpr anchor_source = dynamic_exprs.front();
-  const xla::DExpr anchor = FindSmallestCoveringSubexpression(anchor_source);
+  const xla::DExpr anchor =
+      FindSmallestCoveringSubexpressionCached(anchor_source);
   LOG(INFO) << "Selected dynamic clustering anchor source="
             << DExprToString(anchor_source) << " anchor="
             << DExprToString(anchor);
@@ -999,18 +1043,20 @@ std::optional<std::string> CheckDynamicExpressionCompatibility(
     if (remaining_ids.size() == 1 && *remaining_ids.begin() == fresh_id) {
       continue;
     }
-    return absl::StrCat("dynamic expressions do not share a clusterable core: "
-                        "anchor=",
-                        DExprToString(anchor), ", expr=",
-                        DExprToString(expr), ", substituted=",
-                        DExprToString(substituted));
+    std::string reason = absl::StrCat(
+        "dynamic expressions do not share a clusterable core: anchor=",
+        DExprToString(anchor), ", expr=", DExprToString(expr),
+        ", substituted=", DExprToString(substituted));
+    dynamic_compatibility_reason_cache_.emplace(exprs_key, reason);
+    return reason;
   }
 
+  dynamic_compatibility_reason_cache_.emplace(exprs_key, std::string());
   return std::nullopt;
 }
 
-bool DynamicNodeExpressionsAreCompatible(const Node& node,
-                                         std::string* reason) {
+bool MarkForCompilationPassImpl::DynamicNodeExpressionsAreCompatible(
+    const Node& node, std::string* reason) {
   std::vector<xla::DExpr> node_exprs;
 
   for (const Edge* edge : node.in_edges()) {

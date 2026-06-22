@@ -798,6 +798,15 @@ std::string DExprToString(const xla::DExpr& expr) {
   return oss.str();
 }
 
+std::string DExprListToString(absl::Span<const xla::DExpr> exprs) {
+  std::vector<std::string> pieces;
+  pieces.reserve(exprs.size());
+  for (const xla::DExpr& expr : exprs) {
+    pieces.push_back(DExprToString(expr));
+  }
+  return absl::StrJoin(pieces, ", ");
+}
+
 int DExprNodeCount(const xla::DynExpr* expr) {
   CHECK(expr != nullptr);
   switch (expr->kind()) {
@@ -958,19 +967,32 @@ std::optional<std::string> CheckDynamicExpressionCompatibility(
     return std::nullopt;
   }
 
+  LOG(INFO) << "Checking dynamic expression compatibility for "
+            << dynamic_exprs.size() << " expressions: ["
+            << DExprListToString(dynamic_exprs) << "]";
+
   const xla::DExpr anchor_source = dynamic_exprs.front();
   const xla::DExpr anchor = FindSmallestCoveringSubexpression(anchor_source);
+  LOG(INFO) << "Selected dynamic clustering anchor source="
+            << DExprToString(anchor_source) << " anchor="
+            << DExprToString(anchor);
   int fresh_id = 1;
   for (const xla::DExpr& expr : dynamic_exprs) {
     for (int id : expr->get_all_ids()) {
       fresh_id = std::max(fresh_id, id + 1);
     }
   }
+  LOG(INFO) << "Using fresh dynamic clustering variable Var(" << fresh_id
+            << ")";
 
   for (const xla::DExpr& expr : dynamic_exprs) {
     xla::DExpr substituted =
         ReplaceSubexpressionWithVariable(expr, anchor, fresh_id).simplify();
     std::set<int> remaining_ids = substituted->get_all_ids();
+    LOG(INFO) << "Dynamic clustering substitution expr="
+              << DExprToString(expr) << " substituted="
+              << DExprToString(substituted) << " remaining_ids={"
+              << absl::StrJoin(remaining_ids, ", ") << "}";
     if (remaining_ids.empty()) {
       continue;
     }
@@ -1020,11 +1042,24 @@ bool DynamicInputExpressionsAreCompatible(const Node& node,
     }
   }
 
+  if (!input_exprs.empty()) {
+    LOG(INFO) << "Node " << node.name()
+              << " dynamic input expressions: ["
+              << DExprListToString(input_exprs) << "]";
+  }
+
   std::optional<std::string> incompatibility =
       CheckDynamicExpressionCompatibility(input_exprs);
   if (!incompatibility.has_value()) {
+    if (!input_exprs.empty()) {
+      LOG(INFO) << "Node " << node.name()
+                << " passed dynamic expression compatibility";
+    }
     return true;
   }
+  LOG(INFO) << "Node " << node.name()
+            << " failed dynamic expression compatibility: "
+            << *incompatibility;
   *reason = *incompatibility;
   return false;
 }
@@ -2444,6 +2479,12 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
     std::vector<xla::DExpr> combined_exprs = from->dim_exprs();
     combined_exprs.insert(combined_exprs.end(), to->dim_exprs().begin(),
                           to->dim_exprs().end());
+    if (!combined_exprs.empty()) {
+      LOG(INFO) << "Checking dynamic clustering merge from "
+                << from->DebugString(*graph_) << " to "
+                << to->DebugString(*graph_) << " with expressions ["
+                << DExprListToString(combined_exprs) << "]";
+    }
     std::optional<std::string> incompatibility =
         CheckDynamicExpressionCompatibility(combined_exprs);
     if (incompatibility.has_value()) {

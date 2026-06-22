@@ -1009,9 +1009,9 @@ std::optional<std::string> CheckDynamicExpressionCompatibility(
   return std::nullopt;
 }
 
-bool DynamicInputExpressionsAreCompatible(const Node& node,
-                                          std::string* reason) {
-  std::vector<xla::DExpr> input_exprs;
+bool DynamicNodeExpressionsAreCompatible(const Node& node,
+                                         std::string* reason) {
+  std::vector<xla::DExpr> node_exprs;
 
   for (const Edge* edge : node.in_edges()) {
     if (edge->IsControlEdge()) {
@@ -1038,21 +1038,37 @@ bool DynamicInputExpressionsAreCompatible(const Node& node,
       if (!dyn || !dyn->is_dynamic()) {
         continue;
       }
-      input_exprs.push_back(dyn);
+      node_exprs.push_back(dyn);
     }
   }
 
-  if (!input_exprs.empty()) {
+  auto output_it = expr_map.find(node.name());
+  if (output_it != expr_map.end()) {
+    for (const auto& output_exprs : output_it->second) {
+      for (const auto& expr_ptr : output_exprs) {
+        if (expr_ptr == nullptr) {
+          continue;
+        }
+        xla::DExpr dyn = DimExprToDExpr(expr_ptr.get());
+        if (!dyn || !dyn->is_dynamic()) {
+          continue;
+        }
+        node_exprs.push_back(dyn);
+      }
+    }
+  }
+
+  if (!node_exprs.empty()) {
     LOG(INFO) << "Node " << node.name()
-              << " dynamic input expressions: ["
-              << DExprListToString(input_exprs) << "]";
+              << " dynamic input/output expressions: ["
+              << DExprListToString(node_exprs) << "]";
   } else {
     LOG(INFO) << "Node " << node.name()
-              << " has no dynamic input expressions";
+              << " has no dynamic input/output expressions";
   }
 
   std::optional<std::string> incompatibility =
-      CheckDynamicExpressionCompatibility(input_exprs);
+      CheckDynamicExpressionCompatibility(node_exprs);
   if (!incompatibility.has_value()) {
     LOG(INFO) << "Node " << node.name()
               << " passed dynamic expression compatibility";
@@ -2016,7 +2032,7 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
 
     if (debug_options_.enable_dynamic_sizes) {
       std::string reason;
-      if (!DynamicInputExpressionsAreCompatible(*node, &reason)) {
+      if (!DynamicNodeExpressionsAreCompatible(*node, &reason)) {
         LOG(INFO) << "Rejecting " << node->name()
                   << " from XLA clustering: " << reason;
         continue;

@@ -838,63 +838,84 @@ int DExprNodeCount(const xla::DynExpr* expr) {
   return 1;
 }
 
-void CollectCoveringSubexpressions(const xla::DExpr& expr,
-                                   const std::set<int>& ids,
-                                   std::vector<xla::DExpr>* matches) {
+std::set<int> CollectCoveringSubexpressions(const xla::DynExpr* expr,
+                                            const std::set<int>& ids,
+                                            std::vector<xla::DExpr>* matches) {
   CHECK(matches != nullptr);
-  if (!expr || !expr->is_dynamic()) {
-    return;
-  }
-  if (expr->get_all_ids() == ids) {
-    matches->push_back(expr);
+  if (expr == nullptr || expr->is_constant()) {
+    return {};
   }
 
-  switch (expr.kind()) {
+  switch (expr->kind()) {
     case xla::DExpr::Kind::kUnknown:
     case xla::DExpr::Kind::kConstant:
-    case xla::DExpr::Kind::kVariable:
-      return;
+      return {};
+    case xla::DExpr::Kind::kVariable: {
+      auto single_id = std::set<int>{
+          static_cast<const xla::Variable*>(expr)->get_id()};
+      if (single_id == ids) {
+        matches->push_back(xla::DExpr::Adopt(expr->clone().release()));
+      }
+      return single_id;
+    }
     case xla::DExpr::Kind::kAdd: {
-      const auto* add = static_cast<const xla::Add*>(expr.get());
-      CollectCoveringSubexpressions(
-          xla::DExpr::Adopt(add->get_lhs()->clone().release()), ids, matches);
-      CollectCoveringSubexpressions(
-          xla::DExpr::Adopt(add->get_rhs()->clone().release()), ids, matches);
-      return;
+      const auto* add = static_cast<const xla::Add*>(expr);
+      std::set<int> lhs_ids =
+          CollectCoveringSubexpressions(add->get_lhs(), ids, matches);
+      std::set<int> rhs_ids =
+          CollectCoveringSubexpressions(add->get_rhs(), ids, matches);
+      lhs_ids.merge(std::move(rhs_ids));
+      if (lhs_ids == ids) {
+        matches->push_back(xla::DExpr::Adopt(expr->clone().release()));
+      }
+      return lhs_ids;
     }
     case xla::DExpr::Kind::kSub: {
-      const auto* sub = static_cast<const xla::Sub*>(expr.get());
-      CollectCoveringSubexpressions(
-          xla::DExpr::Adopt(sub->get_lhs()->clone().release()), ids, matches);
-      CollectCoveringSubexpressions(
-          xla::DExpr::Adopt(sub->get_rhs()->clone().release()), ids, matches);
-      return;
+      const auto* sub = static_cast<const xla::Sub*>(expr);
+      std::set<int> lhs_ids =
+          CollectCoveringSubexpressions(sub->get_lhs(), ids, matches);
+      std::set<int> rhs_ids =
+          CollectCoveringSubexpressions(sub->get_rhs(), ids, matches);
+      lhs_ids.merge(std::move(rhs_ids));
+      if (lhs_ids == ids) {
+        matches->push_back(xla::DExpr::Adopt(expr->clone().release()));
+      }
+      return lhs_ids;
     }
     case xla::DExpr::Kind::kMul: {
-      const auto* mul = static_cast<const xla::Mul*>(expr.get());
-      CollectCoveringSubexpressions(
-          xla::DExpr::Adopt(mul->get_lhs()->clone().release()), ids, matches);
-      CollectCoveringSubexpressions(
-          xla::DExpr::Adopt(mul->get_rhs()->clone().release()), ids, matches);
-      return;
+      const auto* mul = static_cast<const xla::Mul*>(expr);
+      std::set<int> lhs_ids =
+          CollectCoveringSubexpressions(mul->get_lhs(), ids, matches);
+      std::set<int> rhs_ids =
+          CollectCoveringSubexpressions(mul->get_rhs(), ids, matches);
+      lhs_ids.merge(std::move(rhs_ids));
+      if (lhs_ids == ids) {
+        matches->push_back(xla::DExpr::Adopt(expr->clone().release()));
+      }
+      return lhs_ids;
     }
     case xla::DExpr::Kind::kDiv: {
-      const auto* div = static_cast<const xla::Div*>(expr.get());
-      CollectCoveringSubexpressions(
-          xla::DExpr::Adopt(div->get_lhs()->clone().release()), ids, matches);
-      CollectCoveringSubexpressions(
-          xla::DExpr::Adopt(div->get_rhs()->clone().release()), ids, matches);
-      return;
+      const auto* div = static_cast<const xla::Div*>(expr);
+      std::set<int> lhs_ids =
+          CollectCoveringSubexpressions(div->get_lhs(), ids, matches);
+      std::set<int> rhs_ids =
+          CollectCoveringSubexpressions(div->get_rhs(), ids, matches);
+      lhs_ids.merge(std::move(rhs_ids));
+      if (lhs_ids == ids) {
+        matches->push_back(xla::DExpr::Adopt(expr->clone().release()));
+      }
+      return lhs_ids;
     }
   }
+  return {};
 }
 
-xla::DExpr FindSmallestCoveringSubexpression(const xla::DExpr& expr) {
+xla::DExpr FindSmallestCoveringSubexpression(const xla::DExpr& expr,
+                                             const std::set<int>& ids) {
   CHECK(expr);
-  std::set<int> ids = expr->get_all_ids();
   CHECK(!ids.empty());
   std::vector<xla::DExpr> matches;
-  CollectCoveringSubexpressions(expr, ids, &matches);
+  CollectCoveringSubexpressions(expr.get(), ids, &matches);
   CHECK(!matches.empty());
   auto best_it = std::min_element(
       matches.begin(), matches.end(),
@@ -908,10 +929,17 @@ std::optional<std::string>
 MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
     absl::Span<const xla::DExpr> exprs) {
   std::vector<xla::DExpr> dynamic_exprs;
+  std::vector<std::set<int>> dynamic_expr_ids;
   dynamic_exprs.reserve(exprs.size());
+  dynamic_expr_ids.reserve(exprs.size());
   for (const xla::DExpr& expr : exprs) {
-    if (expr && expr->is_dynamic() && !expr->get_all_ids().empty()) {
+    if (expr && expr->is_dynamic()) {
+      std::set<int> expr_ids = expr->get_all_ids();
+      if (expr_ids.empty()) {
+        continue;
+      }
       dynamic_exprs.push_back(expr);
+      dynamic_expr_ids.push_back(std::move(expr_ids));
     }
   }
   if (dynamic_exprs.empty()) {
@@ -923,7 +951,8 @@ MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
             << DExprListToString(dynamic_exprs) << "]";
 
   const xla::DExpr anchor_source = dynamic_exprs.front();
-  for (const xla::DExpr& expr : dynamic_exprs) {
+  for (int i = 0; i < dynamic_exprs.size(); ++i) {
+    const xla::DExpr& expr = dynamic_exprs[i];
     if (expr.kind() != xla::DExpr::Kind::kVariable) {
       continue;
     }
@@ -931,8 +960,9 @@ MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
     LOG(INFO) << "Using single-variable dynamic clustering fast path with "
               << "variable id " << expected_id;
     bool all_match = true;
-    for (const xla::DExpr& candidate : dynamic_exprs) {
-      std::set<int> candidate_ids = candidate->get_all_ids();
+    for (int j = 0; j < dynamic_exprs.size(); ++j) {
+      const xla::DExpr& candidate = dynamic_exprs[j];
+      const std::set<int>& candidate_ids = dynamic_expr_ids[j];
       LOG(INFO) << "Dynamic clustering single-variable check expr="
                 << DExprToString(candidate) << " ids={"
                 << absl::StrJoin(candidate_ids, ", ") << "}";
@@ -948,13 +978,15 @@ MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
   }
 
   const xla::DExpr expected_core =
-      FindSmallestCoveringSubexpression(anchor_source);
+      FindSmallestCoveringSubexpression(anchor_source, dynamic_expr_ids.front());
   LOG(INFO) << "Using dynamic clustering core from source="
             << DExprToString(anchor_source) << " core="
             << DExprToString(expected_core);
 
-  for (const xla::DExpr& expr : dynamic_exprs) {
-    const xla::DExpr core = FindSmallestCoveringSubexpression(expr);
+  for (int i = 0; i < dynamic_exprs.size(); ++i) {
+    const xla::DExpr& expr = dynamic_exprs[i];
+    const xla::DExpr core =
+        FindSmallestCoveringSubexpression(expr, dynamic_expr_ids[i]);
     LOG(INFO) << "Dynamic clustering core check expr="
               << DExprToString(expr) << " core=" << DExprToString(core);
     if (!(core == expected_core)) {

@@ -1046,15 +1046,16 @@ bool DynamicInputExpressionsAreCompatible(const Node& node,
     LOG(INFO) << "Node " << node.name()
               << " dynamic input expressions: ["
               << DExprListToString(input_exprs) << "]";
+  } else {
+    LOG(INFO) << "Node " << node.name()
+              << " has no dynamic input expressions";
   }
 
   std::optional<std::string> incompatibility =
       CheckDynamicExpressionCompatibility(input_exprs);
   if (!incompatibility.has_value()) {
-    if (!input_exprs.empty()) {
-      LOG(INFO) << "Node " << node.name()
-                << " passed dynamic expression compatibility";
-    }
+    LOG(INFO) << "Node " << node.name()
+              << " passed dynamic expression compatibility";
     return true;
   }
   LOG(INFO) << "Node " << node.name()

@@ -923,6 +923,7 @@ MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
             << DExprListToString(dynamic_exprs) << "]";
 
   const xla::DExpr anchor_source = dynamic_exprs.front();
+  const std::set<int> expected_ids = anchor_source->get_all_ids();
   for (const xla::DExpr& expr : dynamic_exprs) {
     if (expr.kind() != xla::DExpr::Kind::kVariable) {
       continue;
@@ -945,6 +946,21 @@ MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
       return std::nullopt;
     }
     break;
+  }
+
+  for (const xla::DExpr& expr : dynamic_exprs) {
+    const std::set<int> expr_ids = expr->get_all_ids();
+    LOG(INFO) << "Dynamic clustering id-set check expr="
+              << DExprToString(expr) << " ids={"
+              << absl::StrJoin(expr_ids, ", ") << "}";
+    if (expr_ids != expected_ids) {
+      return absl::StrCat(
+          "dynamic expressions do not share the same variable ids: "
+          "expected={",
+          absl::StrJoin(expected_ids, ", "), "}, expr=",
+          DExprToString(expr), ", ids={",
+          absl::StrJoin(expr_ids, ", "), "}");
+    }
   }
 
   const xla::DExpr expected_core =

@@ -2505,8 +2505,16 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
     std::optional<std::string> incompatibility =
         CheckDynamicExpressionCompatibility(combined_exprs);
     if (incompatibility.has_value()) {
+      LOG(INFO) << "Dynamic clustering merge failed from "
+                << from->DebugString(*graph_) << " to "
+                << to->DebugString(*graph_) << ": " << *incompatibility;
       return LogNotContractableAndReturnFalse(
           from, to, *incompatibility);
+    }
+    if (!combined_exprs.empty()) {
+      LOG(INFO) << "Dynamic clustering merge passed from "
+                << from->DebugString(*graph_) << " to "
+                << to->DebugString(*graph_);
     }
   }
 

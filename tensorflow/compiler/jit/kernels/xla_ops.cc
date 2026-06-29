@@ -584,7 +584,7 @@ ConcatFunctionDebugInfo LogConcatFunctionDebugInfo(const FunctionDef& fdef) {
     info.contains_concat = true;
     const int axis_input_index =
         node_def.op() == "ConcatV2" ? node_def.input_size() - 1 : 0;
-    LOG(INFO) << "XlaCompileOp concat cluster node: function="
+    LOG(INFO) << "[XLA CONCAT DEBUG] cluster_node function="
               << fdef.signature().name() << " concat_node=" << node_def.name()
               << " op=" << node_def.op()
               << " output_exprs=" << NodeOutputExpressionsSummary(node_def);
@@ -599,7 +599,7 @@ ConcatFunctionDebugInfo LogConcatFunctionDebugInfo(const FunctionDef& fdef) {
       const std::string producer_name(tensor_id.node());
       auto producer_it = nodes_by_name.find(producer_name);
       if (producer_it == nodes_by_name.end()) {
-        LOG(INFO) << "XlaCompileOp concat input: function="
+        LOG(INFO) << "[XLA CONCAT DEBUG] cluster_input function="
                   << fdef.signature().name() << " concat_node="
                   << node_def.name() << " input_index=" << input_index
                   << " role=" << (is_axis_input ? "axis" : "tensor")
@@ -612,7 +612,7 @@ ConcatFunctionDebugInfo LogConcatFunctionDebugInfo(const FunctionDef& fdef) {
       if (!is_axis_input && producer.op() == "_Arg") {
         info.direct_concat_arg_names.insert(producer.name());
       }
-      LOG(INFO) << "XlaCompileOp concat input: function="
+      LOG(INFO) << "[XLA CONCAT DEBUG] cluster_input function="
                 << fdef.signature().name() << " concat_node="
                 << node_def.name() << " input_index=" << input_index
                 << " role=" << (is_axis_input ? "axis" : "tensor")
@@ -977,7 +977,7 @@ absl::Status CompileToLocalExecutable(
             shp.set_expressions(std::move(dyn_exprs));
             LOG(INFO) << "XlaCompileOp normalized input argument: "
                       << "arg_index=" << arg_index << " node=" << node_name
-                      << " cluster_contains_concat="
+                      << " [XLA CONCAT DEBUG] cluster_contains_concat="
                       << concat_debug_info.contains_concat
                       << " feeds_concat_directly=" << feeds_concat_directly
                       << " source=dynamic_dim_attr"
@@ -1051,7 +1051,7 @@ absl::Status CompileToLocalExecutable(
           shp.set_expressions(std::move(dyn_exprs));
           LOG(INFO) << "XlaCompileOp normalized input argument: "
                     << "arg_index=" << arg_index << " node=" << node_name
-                    << " cluster_contains_concat="
+                    << " [XLA CONCAT DEBUG] cluster_contains_concat="
                     << concat_debug_info.contains_concat
                     << " feeds_concat_directly=" << feeds_concat_directly
                     << " source=inferred_output_shape"

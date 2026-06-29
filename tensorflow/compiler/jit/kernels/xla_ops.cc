@@ -480,6 +480,23 @@ std::string RuntimeShapeSummary(const TensorShape& runtime_shape) {
   return absl::StrCat("[", absl::StrJoin(dim_summaries, ", "), "]");
 }
 
+std::string TensorInputsSummary(absl::Span<const Tensor* const> inputs) {
+  std::vector<std::string> input_summaries;
+  input_summaries.reserve(inputs.size());
+  for (int i = 0; i < inputs.size(); ++i) {
+    const Tensor* input = inputs[i];
+    if (input == nullptr) {
+      input_summaries.push_back(absl::StrCat("input", i, "=<null>"));
+      continue;
+    }
+    input_summaries.push_back(absl::StrCat(
+        "input", i, "{dtype=", DataTypeString(input->dtype()),
+        ", shape=", input->shape().DebugString(),
+        ", dims=", RuntimeShapeSummary(input->shape()), "}"));
+  }
+  return absl::StrCat("[", absl::StrJoin(input_summaries, ", "), "]");
+}
+
 std::string TensorShapeExpressionsSummary(const TensorShape& tensor_shape) {
   std::vector<std::string> dim_summaries;
   dim_summaries.reserve(tensor_shape.dims());
@@ -1415,6 +1432,9 @@ void XlaCompileOp::Compute(OpKernelContext* ctx) {
       cannot_compile_cluster) {
     executable = nullptr;
   } else {
+    LOG(INFO) << "XlaCompileOp input shapes before compilation: op="
+              << def().name() << " function=" << function_.name()
+              << " inputs=" << TensorInputsSummary(inputs);
     auto args_and_variables_snapshot = GetXlaCompilerArgsAndSnapshotVariables(
         resources_, constants_, inputs, ctx);
     OP_REQUIRES_OK(ctx, args_and_variables_snapshot.status());

@@ -480,6 +480,18 @@ std::string RuntimeShapeSummary(const TensorShape& runtime_shape) {
   return absl::StrCat("[", absl::StrJoin(dim_summaries, ", "), "]");
 }
 
+std::string TensorShapeExpressionsSummary(const TensorShape& tensor_shape) {
+  std::vector<std::string> dim_summaries;
+  dim_summaries.reserve(tensor_shape.dims());
+  for (int dim = 0; dim < tensor_shape.dims(); ++dim) {
+    const xla::DExpr& expr = tensor_shape.get_expression(dim);
+    dim_summaries.push_back(absl::StrCat(
+        "dim", dim, "{size=", tensor_shape.dim_size(dim),
+        ", expr=", (expr ? DExprToString(expr) : "<none>"), "}"));
+  }
+  return absl::StrCat("[", absl::StrJoin(dim_summaries, ", "), "]");
+}
+
 int ExprProtoNodeCount(const xla::ExpressionProto& proto) {
   switch (proto.node_type_case()) {
     case xla::ExpressionProto::kConstantValue:
@@ -825,6 +837,11 @@ absl::Status CompileToLocalExecutable(
             }
             dyn_exprs[idx] = dyn_dim_expr;
             shp.set_expressions(std::move(dyn_exprs));
+            LOG(INFO) << "XlaCompileOp normalized input argument: "
+                      << "arg_index=" << arg_index << " node=" << node_name
+                      << " source=dynamic_dim_attr"
+                      << " tensor_shape=" << shp.DebugString()
+                      << " exprs=" << TensorShapeExpressionsSummary(shp);
             continue;
           }
           auto it = attr_map.find(kXlaInferredOutputShapesAttrName);
@@ -891,6 +908,11 @@ absl::Status CompileToLocalExecutable(
             }
           }
           shp.set_expressions(std::move(dyn_exprs));
+          LOG(INFO) << "XlaCompileOp normalized input argument: "
+                    << "arg_index=" << arg_index << " node=" << node_name
+                    << " source=inferred_output_shape"
+                    << " tensor_shape=" << shp.DebugString()
+                    << " exprs=" << TensorShapeExpressionsSummary(shp);
         }
       }
     }

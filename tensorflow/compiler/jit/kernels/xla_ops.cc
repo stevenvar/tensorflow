@@ -456,8 +456,8 @@ std::string XlaShapeExpressionsSummary(const xla::Shape& xla_shape) {
     return "<non-array>";
   }
   std::vector<std::string> dim_summaries;
-  dim_summaries.reserve(xla_shape.rank());
-  for (int dim = 0; dim < xla_shape.rank(); ++dim) {
+  dim_summaries.reserve(xla_shape.dimensions_size());
+  for (int dim = 0; dim < xla_shape.dimensions_size(); ++dim) {
     std::string expr_summary = "<none>";
     if (dim < xla_shape.expressions().size()) {
       const auto& expr = xla_shape.expressions(dim);

@@ -451,6 +451,35 @@ static xla::DExpr DimExprToDExpr(const DimExpr* e) {
   return xla::DExpr::Unknown();
 }
 
+std::string XlaShapeExpressionsSummary(const xla::Shape& xla_shape) {
+  if (!xla_shape.IsArray()) {
+    return "<non-array>";
+  }
+  std::vector<std::string> dim_summaries;
+  dim_summaries.reserve(xla_shape.rank());
+  for (int dim = 0; dim < xla_shape.rank(); ++dim) {
+    std::string expr_summary = "<none>";
+    if (dim < xla_shape.expressions().size()) {
+      const auto& expr = xla_shape.expressions(dim);
+      expr_summary = expr ? DExprToString(expr) : "<null>";
+    }
+    dim_summaries.push_back(absl::StrCat(
+        "dim", dim, "{size=", xla_shape.dimensions(dim),
+        ", expr=", expr_summary, "}"));
+  }
+  return absl::StrCat("[", absl::StrJoin(dim_summaries, ", "), "]");
+}
+
+std::string RuntimeShapeSummary(const TensorShape& runtime_shape) {
+  std::vector<std::string> dim_summaries;
+  dim_summaries.reserve(runtime_shape.dims());
+  for (int dim = 0; dim < runtime_shape.dims(); ++dim) {
+    dim_summaries.push_back(
+        absl::StrCat("dim", dim, "{size=", runtime_shape.dim_size(dim), "}"));
+  }
+  return absl::StrCat("[", absl::StrJoin(dim_summaries, ", "), "]");
+}
+
 int ExprProtoNodeCount(const xla::ExpressionProto& proto) {
   switch (proto.node_type_case()) {
     case xla::ExpressionProto::kConstantValue:
@@ -1606,6 +1635,17 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
                       << " expr=" << DExprToString(simplified_expr);
             continue;
           }
+          LOG(INFO) << "Dynamic expression solve candidate: "
+                    << "xla_input_index=" << i
+                    << " runtime_input_index=" << input_idx
+                    << " xla_shape=" << xla_shape
+                    << " xla_dims="
+                    << XlaShapeExpressionsSummary(xla_shape)
+                    << " runtime_input_shape=" << ctx->input(input_idx).shape()
+                    << " runtime_dims="
+                    << RuntimeShapeSummary(ctx->input(input_idx).shape())
+                    << " solving_dim=" << dim
+                    << " solving_expr=" << DExprToString(simplified_expr);
           LOG(INFO) << "Runtime input shape for dynamic expression: "
                     << "xla_input_index=" << i << " runtime_input_index="
                     << input_idx << " dim=" << dim
@@ -1719,12 +1759,15 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
                 << "variable id: "
                 << absl::StrJoin(expr_summaries, " | ");
     } else {
-      LOG(INFO) << "Not setting run_options.batch_size from solved dynamic "
-                << "inputs because multiple dynamic expressions were solved. "
-                << "This should have been rejected before XLA compilation if "
-                << "the expressions are not all the same: "
-                << absl::StrJoin(expr_summaries, " | ")
-                << " all_values={" << absl::StrJoin(dyn_vals, ", ") << "}";
+      const std::string error_message = absl::StrCat(
+          "Failed to recover a unique XLA dynamic batch size from runtime "
+          "input expressions. solved_expressions=[",
+          absl::StrJoin(expr_summaries, " | "), "] all_values={",
+          absl::StrJoin(dyn_vals, ", "),
+          "}. Refusing to run the XLA cluster with an invalid batch size.");
+      LOG(ERROR) << error_message;
+      ctx->CtxFailure(errors::InvalidArgument(error_message));
+      return;
     }
     
     if (!is_set) {

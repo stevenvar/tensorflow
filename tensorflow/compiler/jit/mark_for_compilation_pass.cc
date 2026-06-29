@@ -25,6 +25,7 @@ limitations under the License.
 #include <optional>
 #include <regex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -267,10 +268,16 @@ class MarkForCompilationPassImpl {
       dim_vars_.insert(dim_vars.begin(), dim_vars.end());
     }
     const std::set<int>& dim_vars() const { return dim_vars_; }
+    void add_dim_expr(const xla::DExpr& dim_expr) { dim_exprs_.push_back(dim_expr); }
+    void merge_dim_exprs(const std::vector<xla::DExpr>& dim_exprs) {
+      dim_exprs_.insert(dim_exprs_.end(), dim_exprs.begin(), dim_exprs.end());
+    }
+    const std::vector<xla::DExpr>& dim_exprs() const { return dim_exprs_; }
 
    private:
     int annotated_id_ = -1;
     std::set<int> dim_vars_;
+    std::vector<xla::DExpr> dim_exprs_;
     int chain_id_ = -1;
     int cluster_size_ = 1;
     int cycles_graph_node_id_;
@@ -345,6 +352,10 @@ class MarkForCompilationPassImpl {
 
   absl::Status AssignAnnotatedClusterIDs();
   absl::Status AssignDimVars();
+  std::optional<std::string> CheckDynamicExpressionCompatibility(
+      absl::Span<const xla::DExpr> exprs);
+  bool DynamicNodeExpressionsAreCompatible(const Node& node,
+                                           std::string* reason);
   void collectInputNodes(std::set<Node*> &path_nodes);
   void collectMergeNodes(const std::vector<Node*>& nodeSet,
                          std::set<Node*> &merger_nodes);
@@ -645,6 +656,8 @@ void MarkForCompilationPassImpl::Cluster::Merge(Cluster* other) {
 
   merge_dim_vars(other->dim_vars_);
   other->dim_vars_.clear();
+  merge_dim_exprs(other->dim_exprs_);
+  other->dim_exprs_.clear();
 
   resource_var_operation_node_ids_.reserve(
       resource_var_operation_node_ids_.size() +
@@ -783,6 +796,267 @@ static xla::DExpr DimExprToDExpr(const DimExpr* e) {
   return xla::DExpr();
 }
 
+std::string DExprToString(const xla::DExpr& expr) {
+  std::ostringstream oss;
+  oss << expr.get();
+  return oss.str();
+}
+
+std::string DExprListToString(absl::Span<const xla::DExpr> exprs) {
+  std::vector<std::string> pieces;
+  pieces.reserve(exprs.size());
+  for (const xla::DExpr& expr : exprs) {
+    pieces.push_back(DExprToString(expr));
+  }
+  return absl::StrJoin(pieces, ", ");
+}
+
+int DExprNodeCount(const xla::DynExpr* expr) {
+  CHECK(expr != nullptr);
+  switch (expr->kind()) {
+    case xla::DExpr::Kind::kUnknown:
+    case xla::DExpr::Kind::kConstant:
+    case xla::DExpr::Kind::kVariable:
+      return 1;
+    case xla::DExpr::Kind::kAdd: {
+      const auto* add = static_cast<const xla::Add*>(expr);
+      return 1 + DExprNodeCount(add->get_lhs()) + DExprNodeCount(add->get_rhs());
+    }
+    case xla::DExpr::Kind::kSub: {
+      const auto* sub = static_cast<const xla::Sub*>(expr);
+      return 1 + DExprNodeCount(sub->get_lhs()) + DExprNodeCount(sub->get_rhs());
+    }
+    case xla::DExpr::Kind::kMul: {
+      const auto* mul = static_cast<const xla::Mul*>(expr);
+      return 1 + DExprNodeCount(mul->get_lhs()) + DExprNodeCount(mul->get_rhs());
+    }
+    case xla::DExpr::Kind::kDiv: {
+      const auto* div = static_cast<const xla::Div*>(expr);
+      return 1 + DExprNodeCount(div->get_lhs()) + DExprNodeCount(div->get_rhs());
+    }
+  }
+  return 1;
+}
+
+void CollectCoveringSubexpressions(const xla::DExpr& expr,
+                                   const std::set<int>& ids,
+                                   std::vector<xla::DExpr>* matches) {
+  CHECK(matches != nullptr);
+  if (!expr || !expr->is_dynamic()) {
+    return;
+  }
+  if (expr->get_all_ids() == ids) {
+    matches->push_back(expr);
+  }
+
+  switch (expr.kind()) {
+    case xla::DExpr::Kind::kUnknown:
+    case xla::DExpr::Kind::kConstant:
+    case xla::DExpr::Kind::kVariable:
+      return;
+    case xla::DExpr::Kind::kAdd: {
+      const auto* add = static_cast<const xla::Add*>(expr.get());
+      CollectCoveringSubexpressions(
+          xla::DExpr::Adopt(add->get_lhs()->clone().release()), ids, matches);
+      CollectCoveringSubexpressions(
+          xla::DExpr::Adopt(add->get_rhs()->clone().release()), ids, matches);
+      return;
+    }
+    case xla::DExpr::Kind::kSub: {
+      const auto* sub = static_cast<const xla::Sub*>(expr.get());
+      CollectCoveringSubexpressions(
+          xla::DExpr::Adopt(sub->get_lhs()->clone().release()), ids, matches);
+      CollectCoveringSubexpressions(
+          xla::DExpr::Adopt(sub->get_rhs()->clone().release()), ids, matches);
+      return;
+    }
+    case xla::DExpr::Kind::kMul: {
+      const auto* mul = static_cast<const xla::Mul*>(expr.get());
+      CollectCoveringSubexpressions(
+          xla::DExpr::Adopt(mul->get_lhs()->clone().release()), ids, matches);
+      CollectCoveringSubexpressions(
+          xla::DExpr::Adopt(mul->get_rhs()->clone().release()), ids, matches);
+      return;
+    }
+    case xla::DExpr::Kind::kDiv: {
+      const auto* div = static_cast<const xla::Div*>(expr.get());
+      CollectCoveringSubexpressions(
+          xla::DExpr::Adopt(div->get_lhs()->clone().release()), ids, matches);
+      CollectCoveringSubexpressions(
+          xla::DExpr::Adopt(div->get_rhs()->clone().release()), ids, matches);
+      return;
+    }
+  }
+}
+
+xla::DExpr FindSmallestCoveringSubexpression(const xla::DExpr& expr) {
+  CHECK(expr);
+  std::set<int> ids = expr->get_all_ids();
+  CHECK(!ids.empty());
+  std::vector<xla::DExpr> matches;
+  CollectCoveringSubexpressions(expr, ids, &matches);
+  CHECK(!matches.empty());
+  auto best_it = std::min_element(
+      matches.begin(), matches.end(),
+      [](const xla::DExpr& lhs, const xla::DExpr& rhs) {
+        return DExprNodeCount(lhs.get()) < DExprNodeCount(rhs.get());
+      });
+  return *best_it;
+}
+
+std::optional<std::string>
+MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
+    absl::Span<const xla::DExpr> exprs) {
+  std::vector<xla::DExpr> dynamic_exprs;
+  dynamic_exprs.reserve(exprs.size());
+  for (const xla::DExpr& expr : exprs) {
+    if (expr && expr->is_dynamic() && !expr->get_all_ids().empty()) {
+      dynamic_exprs.push_back(expr);
+    }
+  }
+  if (dynamic_exprs.empty()) {
+    return std::nullopt;
+  }
+
+  VLOG(1) << "Checking dynamic expression compatibility for "
+          << dynamic_exprs.size() << " expressions: ["
+          << DExprListToString(dynamic_exprs) << "]";
+
+  const xla::DExpr anchor_source = dynamic_exprs.front();
+  const std::set<int> expected_ids = anchor_source->get_all_ids();
+  for (const xla::DExpr& expr : dynamic_exprs) {
+    if (expr.kind() != xla::DExpr::Kind::kVariable) {
+      continue;
+    }
+    const int expected_id = static_cast<const xla::Variable*>(expr.get())->get_id();
+    VLOG(1) << "Using single-variable dynamic clustering fast path with "
+            << "variable id " << expected_id;
+    bool all_match = true;
+    for (const xla::DExpr& candidate : dynamic_exprs) {
+      std::set<int> candidate_ids = candidate->get_all_ids();
+      VLOG(1) << "Dynamic clustering single-variable check expr="
+              << DExprToString(candidate) << " ids={"
+              << absl::StrJoin(candidate_ids, ", ") << "}";
+      if (candidate_ids.size() != 1 || *candidate_ids.begin() != expected_id) {
+        all_match = false;
+        break;
+      }
+    }
+    if (all_match) {
+      return std::nullopt;
+    }
+    break;
+  }
+
+  for (const xla::DExpr& expr : dynamic_exprs) {
+    const std::set<int> expr_ids = expr->get_all_ids();
+    VLOG(1) << "Dynamic clustering id-set check expr="
+            << DExprToString(expr) << " ids={"
+            << absl::StrJoin(expr_ids, ", ") << "}";
+    if (expr_ids != expected_ids) {
+      return absl::StrCat(
+          "dynamic expressions do not share the same variable ids: "
+          "expected={",
+          absl::StrJoin(expected_ids, ", "), "}, expr=",
+          DExprToString(expr), ", ids={",
+          absl::StrJoin(expr_ids, ", "), "}");
+    }
+  }
+
+  const xla::DExpr expected_core =
+      FindSmallestCoveringSubexpression(anchor_source);
+  VLOG(1) << "Using dynamic clustering core from source="
+          << DExprToString(anchor_source) << " core="
+          << DExprToString(expected_core);
+
+  for (const xla::DExpr& expr : dynamic_exprs) {
+    const xla::DExpr core = FindSmallestCoveringSubexpression(expr);
+    VLOG(1) << "Dynamic clustering core check expr="
+            << DExprToString(expr) << " core=" << DExprToString(core);
+    if (!(core == expected_core)) {
+      return absl::StrCat(
+          "dynamic expressions do not share the same clusterable core: "
+          "expected=",
+          DExprToString(expected_core), ", expr=", DExprToString(expr),
+          ", core=", DExprToString(core));
+    }
+  }
+
+  return std::nullopt;
+}
+
+bool MarkForCompilationPassImpl::DynamicNodeExpressionsAreCompatible(
+    const Node& node, std::string* reason) {
+  std::vector<xla::DExpr> node_exprs;
+
+  for (const Edge* edge : node.in_edges()) {
+    if (edge->IsControlEdge()) {
+      continue;
+    }
+
+    const Node* src = edge->src();
+    auto it = expr_map.find(src->name());
+    if (it == expr_map.end()) {
+      continue;
+    }
+
+    const int output_index = edge->src_output();
+    if (output_index < 0 ||
+        output_index >= static_cast<int>(it->second.size())) {
+      continue;
+    }
+
+    for (const auto& expr_ptr : it->second[output_index]) {
+      if (expr_ptr == nullptr) {
+        continue;
+      }
+      xla::DExpr dyn = DimExprToDExpr(expr_ptr.get());
+      if (!dyn || !dyn->is_dynamic()) {
+        continue;
+      }
+      node_exprs.push_back(dyn);
+    }
+  }
+
+  auto output_it = expr_map.find(node.name());
+  if (output_it != expr_map.end()) {
+    for (const auto& output_exprs : output_it->second) {
+      for (const auto& expr_ptr : output_exprs) {
+        if (expr_ptr == nullptr) {
+          continue;
+        }
+        xla::DExpr dyn = DimExprToDExpr(expr_ptr.get());
+        if (!dyn || !dyn->is_dynamic()) {
+          continue;
+        }
+        node_exprs.push_back(dyn);
+      }
+    }
+  }
+
+  if (!node_exprs.empty()) {
+    VLOG(1) << "Node " << node.name()
+            << " dynamic input/output expressions: ["
+            << DExprListToString(node_exprs) << "]";
+  } else {
+    VLOG(1) << "Node " << node.name()
+            << " has no dynamic input/output expressions";
+  }
+
+  std::optional<std::string> incompatibility =
+      CheckDynamicExpressionCompatibility(node_exprs);
+  if (!incompatibility.has_value()) {
+    VLOG(1) << "Node " << node.name()
+             << " passed dynamic expression compatibility";
+    return true;
+  }
+  VLOG(1) << "Node " << node.name()
+           << " failed dynamic expression compatibility: "
+           << *incompatibility;
+  *reason = *incompatibility;
+  return false;
+}
+
 // Runs Grappler static inference and logs any ExpressionProto found in output
 // tensor shapes (from GraphProperties, not from _output_shapes attrs).
 void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
@@ -792,6 +1066,8 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
   using tensorflow::TensorShapeProto;
   using tensorflow::grappler::GraphProperties;
   using tensorflow::grappler::GrapplerItem;
+
+  expr_map.clear();
 
   GraphDef graph_def;
   graph.ToGraphDef(&graph_def);
@@ -851,8 +1127,9 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
         if (expr.node_type_case() == ExpressionProto::NODE_TYPE_NOT_SET)
           continue;
 
-        VLOG(1) << "Node " << n.name() << " has expression "
-                << ExprProtoToString(expr);
+        LOG(INFO) << "[EXPR][GP] node=" << n.name() << " output=" << out_idx
+                  << " dim=" << d << " size=" << dim.size()
+                  << " expr=" << ExprProtoToString(expr);
 
         auto ex = ExprFromProto(expr);
         exprs.push_back(std::move(ex));
@@ -883,6 +1160,10 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
 absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
   TF_RET_CHECK(!initialized_ && !edges_contracted_ && !clusters_created_);
   initialized_ = true;
+
+  if (debug_options_.enable_dynamic_sizes) {
+    LogExpressionsViaGraphProperties(*graph_);
+  }
 
   TF_RETURN_IF_ERROR(FindCompilationCandidates());
 
@@ -921,7 +1202,6 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
     TF_RETURN_IF_ERROR(AssignAnnotatedClusterIDs());
   }
   if (debug_options_.enable_dynamic_sizes) {
-    LogExpressionsViaGraphProperties(*graph_);
     TF_RETURN_IF_ERROR(AssignDimVars());
     auto has_dynamic_input_expression = [&](const Node* n) {
       for (const Edge* edge : n->in_edges()) {
@@ -1722,6 +2002,15 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
       continue;
     }
 
+    if (debug_options_.enable_dynamic_sizes) {
+      std::string reason;
+      if (!DynamicNodeExpressionsAreCompatible(*node, &reason)) {
+        LOG(INFO) << "Rejecting " << node->name()
+                  << " from XLA clustering: " << reason;
+        continue;
+      }
+    }
+
     if (compile_time_const_nodes[node->id()]) {
       const OpDef* op_def;
       TF_RETURN_IF_ERROR(
@@ -1906,10 +2195,29 @@ absl::Status MarkForCompilationPassImpl::AssignDimVars(void) {
       for (auto& pDim: (it->second)[output_index]) {
         DimExpr * d= pDim.get();
         xla::DExpr dyn = DimExprToDExpr(d);
+        if (!dyn || !dyn->is_dynamic()) {
+          continue;
+        }
+        cluster->add_dim_expr(dyn);
         auto new_ids = dyn->get_all_ids();
         for (auto id : new_ids) {
           cluster->add_dim_var(id);
           VLOG(2) << "Add dim var " << id << " to cluster of node "<< node_name;
+        }
+      }
+    }
+    auto output_it = expr_map.find(node_name);
+    if (output_it != expr_map.end()) {
+      for (const auto& output_exprs : output_it->second) {
+        for (const auto& expr_ptr : output_exprs) {
+          if (expr_ptr == nullptr) {
+            continue;
+          }
+          xla::DExpr dyn = DimExprToDExpr(expr_ptr.get());
+          if (!dyn || !dyn->is_dynamic()) {
+            continue;
+          }
+          cluster->add_dim_expr(dyn);
         }
       }
     }
@@ -2157,29 +2465,28 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
   }
 
   if (debug_options_.enable_dynamic_sizes) {
-    if (from->dim_vars().size() > 1 || to->dim_vars().size() > 1) {
-      std::string from_str = "from_vars: ";
-      for (auto id : from->dim_vars()) {
-        from_str += std::to_string(id) + ", ";
-      }
-      std::string to_str = "to_vars: ";
-      for (auto id : to->dim_vars()) {
-        to_str += std::to_string(id) + ", ";
-      }
-      return LogNotContractableAndReturnFalse(
-        from, to, absl::StrCat("the two nodes have multiple dynamic dimensions: ",
-        from_str, " and ", to_str));
+    std::vector<xla::DExpr> combined_exprs = from->dim_exprs();
+    combined_exprs.insert(combined_exprs.end(), to->dim_exprs().begin(),
+                          to->dim_exprs().end());
+    if (!combined_exprs.empty()) {
+      VLOG(1) << "Checking dynamic clustering merge from "
+              << from->DebugString(*graph_) << " to "
+              << to->DebugString(*graph_) << " with expressions ["
+              << DExprListToString(combined_exprs) << "]";
     }
-    if (from->dim_vars().size() == 1 && to->dim_vars().size() == 1 &&
-        from->dim_vars() != to->dim_vars()) {
+    std::optional<std::string> incompatibility =
+        CheckDynamicExpressionCompatibility(combined_exprs);
+    if (incompatibility.has_value()) {
+      VLOG(1) << "Dynamic clustering merge failed from "
+              << from->DebugString(*graph_) << " to "
+              << to->DebugString(*graph_) << ": " << *incompatibility;
       return LogNotContractableAndReturnFalse(
-        from, to,
-        absl::StrCat("the two nodes have different dynamic dimensions: ",
-                     from->dim_vars().size() == 1
-                       ? std::to_string(*from->dim_vars().begin()) : "none",
-                     " and ",
-                     to->dim_vars().size() == 1
-                       ? std::to_string(*to->dim_vars().begin()) : "none"));
+          from, to, *incompatibility);
+    }
+    if (!combined_exprs.empty()) {
+      VLOG(1) << "Dynamic clustering merge passed from "
+              << from->DebugString(*graph_) << " to "
+              << to->DebugString(*graph_);
     }
   }
 

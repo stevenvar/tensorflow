@@ -460,8 +460,30 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
           has_dynamic = true;
           VLOG(1) << "Current expression is " << expr;
           if (run_options) {
-            xla::DExpr batch_size = xla::DExpr::Const(run_options->batch_size());
-            xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
+            const int64_t run_options_batch_size = run_options->batch_size();
+            LOG(INFO) << "PopulateOutputs read run_options->batch_size()="
+                      << run_options_batch_size << " for output " << i
+                      << " dimension " << dim;
+            xla::DExpr batch_size = xla::DExpr::Const(run_options_batch_size);
+            const std::set<int> ids = expr->get_all_ids();
+            if (ids.size() != 1) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Runtime shape substitution expected exactly one dynamic "
+                  "variable for output ",
+                  i, ", dimension ", dim, ", but found ", ids.size(),
+                  " variables in expression ", DExprToString(expr)));
+            }
+            const int substitute_var_id = *ids.begin();
+            LOG(INFO) << "Calling output shape substitute with run_options for "
+                      << "output " << i << " dimension " << dim
+                      << " expr=" << DExprToString(expr)
+                      << " substitute Var(" << substitute_var_id << ")="
+                      << DExprToString(batch_size);
+            xla::DExpr subst_expr =
+                expr.substitute(substitute_var_id, batch_size).simplify();
+            LOG(INFO) << "Output shape substitute with run_options for output "
+                      << i << " dimension " << dim << " returned "
+                      << DExprToString(subst_expr);
             if (!subst_expr->is_constant()) {
               return absl::InvalidArgumentError(absl::StrCat(
                   "Runtime shape substitution did not produce an integer "
@@ -471,14 +493,37 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
             shape.set_dim(dim, subst_expr->get_val());
           } else {
             // TODO: Fallback to BatchSizeResource for now. Remove it later.
-            VLOG(1) << "Warning: Didn't find run_options";
+            LOG(INFO) << "PopulateOutputs did not receive run_options for "
+                      << "output " << i << " dimension " << dim;
             BatchSizeResource* bsr = nullptr;
             ScopedStepContainer* step_container = ctx->step_container();
             TF_RETURN_IF_ERROR(step_container->Lookup<BatchSizeResource>(
                           ctx->resource_manager(), BatchSizeResourceName, &bsr));
+            if (bsr == nullptr) {
+              return errors::Internal(
+                  "BatchSizeResource lookup succeeded but returned null");
+            }
             xla::DExpr batch_size = xla::DExpr::Const(bsr->GetBatchSize());
-            // Just substitute Var(1) for now.
-            xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
+            const std::set<int> ids = expr->get_all_ids();
+            if (ids.size() != 1) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Runtime shape substitution expected exactly one dynamic "
+                  "variable for output ",
+                  i, ", dimension ", dim, ", but found ", ids.size(),
+                  " variables in expression ", DExprToString(expr)));
+            }
+            const int substitute_var_id = *ids.begin();
+            LOG(INFO) << "Calling output shape substitute with "
+                      << "BatchSizeResource for output " << i
+                      << " dimension " << dim
+                      << " expr=" << DExprToString(expr)
+                      << " substitute Var(" << substitute_var_id
+                      << ")=" << DExprToString(batch_size);
+            xla::DExpr subst_expr =
+                expr.substitute(substitute_var_id, batch_size).simplify();
+            LOG(INFO) << "Output shape substitute with BatchSizeResource for "
+                      << "output " << i << " dimension " << dim
+                      << " returned " << DExprToString(subst_expr);
             if (!subst_expr->is_constant()) {
               return absl::InvalidArgumentError(absl::StrCat(
                   "Runtime shape substitution did not produce an integer "

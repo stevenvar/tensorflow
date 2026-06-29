@@ -86,6 +86,16 @@ class MatMulOp : public XlaOpKernel {
     int first_index = transpose_a_ ? 0 : 1;
     int second_index = transpose_b_ ? 1 : 0;
 
+    LOG(INFO) << "MatMul shape compatibility check: a_shape="
+              << a_shape.DebugString()
+              << " b_shape=" << b_shape.DebugString()
+              << " transpose_a=" << transpose_a_
+              << " transpose_b=" << transpose_b_
+              << " first_index=" << first_index
+              << " second_index=" << second_index
+              << " a_dim=" << a_shape.dim_size(first_index)
+              << " b_dim=" << b_shape.dim_size(second_index);
+
     OP_REQUIRES(ctx,
                 a_shape.dim_size(first_index) == b_shape.dim_size(second_index),
                 errors::InvalidArgument(

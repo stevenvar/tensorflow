@@ -29,6 +29,7 @@ limitations under the License.
 #include "xla/stream_executor/device_memory.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
 #include "xla/tsl/concurrency/chain.h"
+#include "xla/tsl/platform/logging.h"
 
 namespace Eigen {
 struct ThreadPoolDevice;
@@ -123,6 +124,14 @@ inline ABSL_ATTRIBUTE_ALWAYS_INLINE absl::Status Kernel::CallOnce(
 
   XLA_CPU_KernelCallFrame call_frame = {&num_workgroups, &workgroup_id,
                                         args.size(), args.data(), batch_size};
+  LOG(INFO) << "Passing batch size to generated CPU kernel call frame: "
+            << "batch_size=" << call_frame.batch_size
+            << " call_once=true"
+            << " workgroup_id=(" << workgroup_id.x << ", " << workgroup_id.y
+            << ", " << workgroup_id.z << ")"
+            << " num_workgroups=(" << num_workgroups.x << ", "
+            << num_workgroups.y << ", " << num_workgroups.z << ")"
+            << " num_args=" << call_frame.num_args;
 
   XLA_CPU_KernelError* error = (*kernel_)(&call_frame);
 

@@ -167,6 +167,10 @@ void AppendMarkForCompilationPassFlagsInternal(std::vector<Flag>* flag_list) {
       Flag("tf_xla_enable_dynamic_sizes",
            &mark_for_compilation_flags->tf_xla_enable_dynamic_sizes,
            "Enable dynamic sizes support."),
+      Flag("tf_xla_concat_only_clustering_debug",
+           &mark_for_compilation_flags->tf_xla_concat_only_clustering_debug,
+           "If true, restrict XLA auto-clustering candidates to Concat and "
+           "ConcatV2 ops only. Intended as a temporary debugging aid."),
       Flag("tf_xla_disable_dynamic_size_padding",
            &mark_for_compilation_flags->tf_xla_disable_dynamic_size_padding,
            "Disable padding dynamic runtime sizes up to an XLA compile batch "
@@ -269,6 +273,7 @@ void AllocateAndParseFlags() {
       ->tf_xla_disable_resource_variable_safety_checks_for_debugging = false;
   mark_for_compilation_flags->tf_xla_deterministic_cluster_names = false;
   mark_for_compilation_flags->tf_xla_enable_dynamic_sizes = false;
+  mark_for_compilation_flags->tf_xla_concat_only_clustering_debug = false;
   mark_for_compilation_flags->tf_xla_disable_dynamic_size_padding = false;
   mark_for_compilation_flags->tf_xla_enable_symbolic_content = false;
   mark_for_compilation_flags->tf_xla_persistent_cache_directory = "";

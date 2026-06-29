@@ -451,6 +451,144 @@ static xla::DExpr DimExprToDExpr(const DimExpr* e) {
   return xla::DExpr::Unknown();
 }
 
+int ExprProtoNodeCount(const xla::ExpressionProto& proto) {
+  switch (proto.node_type_case()) {
+    case xla::ExpressionProto::kConstantValue:
+    case xla::ExpressionProto::kVariableId:
+    case xla::ExpressionProto::NODE_TYPE_NOT_SET:
+      return 1;
+    case xla::ExpressionProto::kAddNode:
+      return 1 + ExprProtoNodeCount(proto.add_node().lhs()) +
+             ExprProtoNodeCount(proto.add_node().rhs());
+    case xla::ExpressionProto::kSubNode:
+      return 1 + ExprProtoNodeCount(proto.sub_node().lhs()) +
+             ExprProtoNodeCount(proto.sub_node().rhs());
+    case xla::ExpressionProto::kMulNode:
+      return 1 + ExprProtoNodeCount(proto.mul_node().lhs()) +
+             ExprProtoNodeCount(proto.mul_node().rhs());
+    case xla::ExpressionProto::kDivNode:
+      return 1 + ExprProtoNodeCount(proto.div_node().lhs()) +
+             ExprProtoNodeCount(proto.div_node().rhs());
+  }
+  return 1;
+}
+
+void CollectCoveringSubexpressions(const xla::DExpr& expr,
+                                   const std::set<int>& ids,
+                                   std::vector<xla::DExpr>* matches) {
+  CHECK(matches != nullptr);
+  if (!expr || !expr->is_dynamic()) {
+    return;
+  }
+  if (expr->get_all_ids() == ids) {
+    matches->push_back(expr);
+  }
+
+  xla::ExpressionProto proto;
+  expr.to_proto(&proto);
+  auto recurse = [&](const xla::ExpressionProto& child) {
+    xla::DExpr child_expr = xla::DExprFromProto(child);
+    CollectCoveringSubexpressions(child_expr, ids, matches);
+  };
+
+  switch (proto.node_type_case()) {
+    case xla::ExpressionProto::kAddNode:
+      recurse(proto.add_node().lhs());
+      recurse(proto.add_node().rhs());
+      return;
+    case xla::ExpressionProto::kSubNode:
+      recurse(proto.sub_node().lhs());
+      recurse(proto.sub_node().rhs());
+      return;
+    case xla::ExpressionProto::kMulNode:
+      recurse(proto.mul_node().lhs());
+      recurse(proto.mul_node().rhs());
+      return;
+    case xla::ExpressionProto::kDivNode:
+      recurse(proto.div_node().lhs());
+      recurse(proto.div_node().rhs());
+      return;
+    case xla::ExpressionProto::kConstantValue:
+    case xla::ExpressionProto::kVariableId:
+    case xla::ExpressionProto::NODE_TYPE_NOT_SET:
+      return;
+  }
+}
+
+xla::DExpr FindSmallestCoveringSubexpression(const xla::DExpr& expr) {
+  CHECK(expr);
+  std::set<int> ids = expr->get_all_ids();
+  CHECK(!ids.empty());
+  std::vector<xla::DExpr> matches;
+  CollectCoveringSubexpressions(expr, ids, &matches);
+  CHECK(!matches.empty());
+  auto best_it = std::min_element(
+      matches.begin(), matches.end(),
+      [](const xla::DExpr& lhs, const xla::DExpr& rhs) {
+        xla::ExpressionProto lhs_proto;
+        xla::ExpressionProto rhs_proto;
+        lhs.to_proto(&lhs_proto);
+        rhs.to_proto(&rhs_proto);
+        return ExprProtoNodeCount(lhs_proto) < ExprProtoNodeCount(rhs_proto);
+      });
+  return *best_it;
+}
+
+void ReplaceDynamicSubexpressionProto(xla::ExpressionProto* expr_proto,
+                                      const xla::DExpr& target,
+                                      int replacement_var_id) {
+  CHECK(expr_proto != nullptr);
+  xla::DExpr current = xla::DExprFromProto(*expr_proto);
+  if (current && current == target) {
+    expr_proto->Clear();
+    expr_proto->set_variable_id(replacement_var_id);
+    return;
+  }
+
+  switch (expr_proto->node_type_case()) {
+    case xla::ExpressionProto::kAddNode:
+      ReplaceDynamicSubexpressionProto(expr_proto->mutable_add_node()->mutable_lhs(),
+                                       target, replacement_var_id);
+      ReplaceDynamicSubexpressionProto(expr_proto->mutable_add_node()->mutable_rhs(),
+                                       target, replacement_var_id);
+      return;
+    case xla::ExpressionProto::kSubNode:
+      ReplaceDynamicSubexpressionProto(expr_proto->mutable_sub_node()->mutable_lhs(),
+                                       target, replacement_var_id);
+      ReplaceDynamicSubexpressionProto(expr_proto->mutable_sub_node()->mutable_rhs(),
+                                       target, replacement_var_id);
+      return;
+    case xla::ExpressionProto::kMulNode:
+      ReplaceDynamicSubexpressionProto(expr_proto->mutable_mul_node()->mutable_lhs(),
+                                       target, replacement_var_id);
+      ReplaceDynamicSubexpressionProto(expr_proto->mutable_mul_node()->mutable_rhs(),
+                                       target, replacement_var_id);
+      return;
+    case xla::ExpressionProto::kDivNode:
+      ReplaceDynamicSubexpressionProto(expr_proto->mutable_div_node()->mutable_lhs(),
+                                       target, replacement_var_id);
+      ReplaceDynamicSubexpressionProto(expr_proto->mutable_div_node()->mutable_rhs(),
+                                       target, replacement_var_id);
+      return;
+    case xla::ExpressionProto::kConstantValue:
+    case xla::ExpressionProto::kVariableId:
+    case xla::ExpressionProto::NODE_TYPE_NOT_SET:
+      return;
+  }
+}
+
+xla::DExpr ReplaceDynamicSubexpression(const xla::DExpr& expr,
+                                       const xla::DExpr& target,
+                                       int replacement_var_id) {
+  if (!expr) {
+    return expr;
+  }
+  xla::ExpressionProto proto;
+  expr.to_proto(&proto);
+  ReplaceDynamicSubexpressionProto(&proto, target, replacement_var_id);
+  return xla::DExprFromProto(proto).simplify();
+}
+
 
 absl::Status CompileToLocalExecutable(
     OpKernelContext* ctx, const NameAttrList& function, bool has_ref_vars,
@@ -516,31 +654,27 @@ absl::Status CompileToLocalExecutable(
     XlaBatchMatcher* xla_batch_matcher =
         xla_device_compiler->xla_batch_matcher();
     std::optional<xla::DExpr> dynamic_dim_expr;
-    absl::flat_hash_map<std::string, int> fresh_var_by_dynamic_expr;
-    int next_fresh_dynamic_var_id = 1;
+    std::optional<xla::DExpr> shared_dynamic_subexpr;
     auto normalize_dynamic_expr =
         [&](xla::DExpr expr, absl::string_view context) {
           if (!expr || !expr->is_dynamic()) {
             return expr;
           }
-          const std::set<int> ids = expr->get_all_ids();
-          const std::string expr_string = DExprToString(expr);
-          auto [it, inserted] = fresh_var_by_dynamic_expr.emplace(
-              expr_string, next_fresh_dynamic_var_id);
-          if (inserted) {
-            ++next_fresh_dynamic_var_id;
-            LOG(INFO) << "Rewriting dynamic input expression "
-                      << expr_string << " to fresh variable Var(" << it->second
-                      << ") before XLA compilation. context=" << context
-                      << " source_var_ids={" << absl::StrJoin(ids, ", ")
-                      << "}";
-          } else {
-            LOG(INFO) << "Reusing fresh variable Var(" << it->second
-                      << ") for dynamic input expression "
-                      << expr_string << " before XLA compilation. context="
+          if (!shared_dynamic_subexpr.has_value()) {
+            shared_dynamic_subexpr = FindSmallestCoveringSubexpression(expr);
+            LOG(INFO) << "Using shared dynamic subexpression "
+                      << DExprToString(*shared_dynamic_subexpr)
+                      << " for XLA dynamic input normalization. context="
                       << context;
           }
-          return xla::DExpr::Var(it->second);
+          xla::DExpr normalized_expr = ReplaceDynamicSubexpression(
+              expr, *shared_dynamic_subexpr, /*replacement_var_id=*/1);
+          LOG(INFO) << "Rewriting dynamic input expression "
+                    << DExprToString(expr)
+                    << " to shared-core form "
+                    << DExprToString(normalized_expr)
+                    << " before XLA compilation. context=" << context;
+          return normalized_expr;
         };
     auto maybe_attach_shape_contents_from_attrs =
         [&](int arg_index, const auto& attr_map,
@@ -1535,6 +1669,8 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
     }
   
     std::vector<std::string> expr_summaries;
+    std::optional<std::set<int>> expected_dyn_ids;
+    bool mismatched_dyn_ids = false;
     for (const auto& [expr, values] : expr_to_dyn_vals) {
       auto contexts_it = expr_to_contexts.find(expr);
       expr_summaries.push_back(absl::StrCat(
@@ -1545,22 +1681,42 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
               : absl::StrJoin(contexts_it->second, "; "),
           "]"));
     }
-    if (expr_to_dyn_vals.size() == 1 &&
-        expr_to_dyn_vals.begin()->second.size() == 1) {
-      const int64_t batch_size = *(expr_to_dyn_vals.begin()->second.begin());
+    for (int i = 0; i < comp_result->xla_input_shapes.size(); i++) {
+      const auto& xla_shape = closure.compilation_result()->xla_input_shapes[i];
+      if (!xla_shape.IsArray() || xla_shape.expressions().empty()) continue;
+      for (int dim = 0; dim < xla_shape.expressions().size(); dim++) {
+        const auto& expr = xla_shape.expressions(dim);
+        if (!(expr && expr->is_dynamic())) {
+          continue;
+        }
+        std::set<int> ids = expr->get_all_ids();
+        if (!expected_dyn_ids.has_value()) {
+          expected_dyn_ids = ids;
+        } else if (*expected_dyn_ids != ids) {
+          mismatched_dyn_ids = true;
+        }
+      }
+    }
+    if (dyn_vals.size() == 1 && expected_dyn_ids.has_value() &&
+        expected_dyn_ids->size() == 1 && !mismatched_dyn_ids) {
+      const int64_t batch_size = *dyn_vals.begin();
       LOG(INFO) << "Setting run_options.batch_size from solved dynamic input "
-                << "expression: expr=" << expr_to_dyn_vals.begin()->first
-                << " value=" << batch_size;
+                << "expressions with shared variable ids={"
+                << absl::StrJoin(*expected_dyn_ids, ", ")
+                << "} value=" << batch_size;
       run_options.set_batch_size(batch_size);
       is_set = true;
     } else if (expr_to_dyn_vals.empty()) {
       LOG(INFO) << "Not setting run_options.batch_size from solved dynamic "
                 << "inputs because no dynamic values were solved.";
-    } else if (expr_to_dyn_vals.size() == 1) {
-      LOG(INFO) << "Not setting run_options.batch_size because the same "
-                << "dynamic expression solved to multiple runtime values. "
-                << "This indicates inconsistent shape metadata or a mismatched "
-                << "runtime input/dimension pairing: "
+    } else if (dyn_vals.size() == 1 && mismatched_dyn_ids) {
+      LOG(INFO) << "Not setting run_options.batch_size because solved dynamic "
+                << "expressions do not share the same variable ids: "
+                << absl::StrJoin(expr_summaries, " | ");
+    } else if (dyn_vals.size() == 1) {
+      LOG(INFO) << "Not setting run_options.batch_size because solved dynamic "
+                << "expressions do not map to exactly one shared dynamic "
+                << "variable id: "
                 << absl::StrJoin(expr_summaries, " | ");
     } else {
       LOG(INFO) << "Not setting run_options.batch_size from solved dynamic "

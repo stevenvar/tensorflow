@@ -78,6 +78,7 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor_util.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/graph/tensor_id.h"
 #include "tensorflow/core/lib/monitoring/counter.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/errors.h"
@@ -509,6 +510,122 @@ std::string TensorShapeExpressionsSummary(const TensorShape& tensor_shape) {
   return absl::StrCat("[", absl::StrJoin(dim_summaries, ", "), "]");
 }
 
+std::string TensorShapeProtoExpressionsSummary(
+    const TensorShapeProto& tensor_shape_proto) {
+  if (tensor_shape_proto.unknown_rank()) {
+    return "<unknown-rank>";
+  }
+  std::vector<std::string> dim_summaries;
+  dim_summaries.reserve(tensor_shape_proto.dim_size());
+  for (int dim = 0; dim < tensor_shape_proto.dim_size(); ++dim) {
+    std::string expr_summary = "<none>";
+    if (dim < tensor_shape_proto.expressions_size()) {
+      const auto& expr_proto = tensor_shape_proto.expressions(dim);
+      if (expr_proto.node_type_case() != ExpressionProto::NODE_TYPE_NOT_SET) {
+        expr_summary = DExprToString(
+            DimExprToDExpr(ExprFromProto(expr_proto).get()).simplify());
+      } else {
+        expr_summary = std::to_string(tensor_shape_proto.dim(dim).size());
+      }
+    }
+    dim_summaries.push_back(absl::StrCat(
+        "dim", dim, "{size=", tensor_shape_proto.dim(dim).size(),
+        ", expr=", expr_summary, "}"));
+  }
+  return absl::StrCat("[", absl::StrJoin(dim_summaries, ", "), "]");
+}
+
+std::string NodeOutputExpressionsSummary(const NodeDef& node_def) {
+  auto summarize_shapes_attr = [](const AttrValue& attr_value) {
+    std::vector<std::string> output_summaries;
+    output_summaries.reserve(attr_value.list().shape_size());
+    for (int i = 0; i < attr_value.list().shape_size(); ++i) {
+      output_summaries.push_back(absl::StrCat(
+          "output", i, "=",
+          TensorShapeProtoExpressionsSummary(attr_value.list().shape(i))));
+    }
+    return absl::StrCat("[", absl::StrJoin(output_summaries, ", "), "]");
+  };
+
+  const auto& attrs = node_def.attr();
+  auto inferred_tensor_shapes =
+      attrs.find(kXlaInferredOutputTensorShapesAttrName);
+  if (inferred_tensor_shapes != attrs.end()) {
+    return summarize_shapes_attr(inferred_tensor_shapes->second);
+  }
+  auto inferred_arg_shapes = attrs.find(kXlaInferredOutputShapesAttrName);
+  if (inferred_arg_shapes != attrs.end()) {
+    return summarize_shapes_attr(inferred_arg_shapes->second);
+  }
+  return "<missing>";
+}
+
+bool IsConcatNode(const NodeDef& node_def) {
+  return node_def.op() == "ConcatV2" || node_def.op() == "Concat";
+}
+
+struct ConcatFunctionDebugInfo {
+  bool contains_concat = false;
+  absl::flat_hash_set<std::string> direct_concat_arg_names;
+};
+
+ConcatFunctionDebugInfo LogConcatFunctionDebugInfo(const FunctionDef& fdef) {
+  ConcatFunctionDebugInfo info;
+  absl::flat_hash_map<std::string, const NodeDef*> nodes_by_name;
+  nodes_by_name.reserve(fdef.node_def_size());
+  for (const NodeDef& node_def : fdef.node_def()) {
+    nodes_by_name.emplace(node_def.name(), &node_def);
+  }
+
+  for (const NodeDef& node_def : fdef.node_def()) {
+    if (!IsConcatNode(node_def)) {
+      continue;
+    }
+    info.contains_concat = true;
+    const int axis_input_index =
+        node_def.op() == "ConcatV2" ? node_def.input_size() - 1 : 0;
+    LOG(INFO) << "XlaCompileOp concat cluster node: function="
+              << fdef.signature().name() << " concat_node=" << node_def.name()
+              << " op=" << node_def.op()
+              << " output_exprs=" << NodeOutputExpressionsSummary(node_def);
+
+    for (int input_index = 0; input_index < node_def.input_size();
+         ++input_index) {
+      const TensorId tensor_id = ParseTensorName(node_def.input(input_index));
+      if (IsTensorIdControl(tensor_id)) {
+        continue;
+      }
+      const bool is_axis_input = input_index == axis_input_index;
+      const std::string producer_name(tensor_id.node());
+      auto producer_it = nodes_by_name.find(producer_name);
+      if (producer_it == nodes_by_name.end()) {
+        LOG(INFO) << "XlaCompileOp concat input: function="
+                  << fdef.signature().name() << " concat_node="
+                  << node_def.name() << " input_index=" << input_index
+                  << " role=" << (is_axis_input ? "axis" : "tensor")
+                  << " producer=" << tensor_id.ToString()
+                  << " producer_node=<missing>";
+        continue;
+      }
+
+      const NodeDef& producer = *producer_it->second;
+      if (!is_axis_input && producer.op() == "_Arg") {
+        info.direct_concat_arg_names.insert(producer.name());
+      }
+      LOG(INFO) << "XlaCompileOp concat input: function="
+                << fdef.signature().name() << " concat_node="
+                << node_def.name() << " input_index=" << input_index
+                << " role=" << (is_axis_input ? "axis" : "tensor")
+                << " producer=" << producer.name() << ":" << tensor_id.index()
+                << " producer_op=" << producer.op()
+                << " producer_output_exprs="
+                << NodeOutputExpressionsSummary(producer);
+    }
+  }
+
+  return info;
+}
+
 int ExprProtoNodeCount(const xla::ExpressionProto& proto) {
   switch (proto.node_type_case()) {
     case xla::ExpressionProto::kConstantValue:
@@ -814,14 +931,18 @@ absl::Status CompileToLocalExecutable(
         has_multiple_dynamic_dim_values = true;
       }
     };
+    ConcatFunctionDebugInfo concat_debug_info;
     if (options.flib_def != nullptr) {
       const FunctionDef* fdef = options.flib_def->Find(function.name());
       if (fdef != nullptr) {
+        concat_debug_info = LogConcatFunctionDebugInfo(*fdef);
         for (const auto& kv : fdef->arg_attr()) {
           int arg_index = kv.first;
           const auto& attr_map = kv.second.attr();
           const std::string& node_name =
               fdef->signature().input_arg(arg_index).name();
+          const bool feeds_concat_directly =
+              concat_debug_info.direct_concat_arg_names.contains(node_name);
 
           auto shape_derived_attr = attr_map.find(kXlaShapeDerivedAttrName);
           if (shape_derived_attr != attr_map.end()) {
@@ -856,6 +977,9 @@ absl::Status CompileToLocalExecutable(
             shp.set_expressions(std::move(dyn_exprs));
             LOG(INFO) << "XlaCompileOp normalized input argument: "
                       << "arg_index=" << arg_index << " node=" << node_name
+                      << " cluster_contains_concat="
+                      << concat_debug_info.contains_concat
+                      << " feeds_concat_directly=" << feeds_concat_directly
                       << " source=dynamic_dim_attr"
                       << " tensor_shape=" << shp.DebugString()
                       << " exprs=" << TensorShapeExpressionsSummary(shp);
@@ -927,6 +1051,9 @@ absl::Status CompileToLocalExecutable(
           shp.set_expressions(std::move(dyn_exprs));
           LOG(INFO) << "XlaCompileOp normalized input argument: "
                     << "arg_index=" << arg_index << " node=" << node_name
+                    << " cluster_contains_concat="
+                    << concat_debug_info.contains_concat
+                    << " feeds_concat_directly=" << feeds_concat_directly
                     << " source=inferred_output_shape"
                     << " tensor_shape=" << shp.DebugString()
                     << " exprs=" << TensorShapeExpressionsSummary(shp);

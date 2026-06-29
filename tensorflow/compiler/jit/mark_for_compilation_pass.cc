@@ -2469,14 +2469,17 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
   }
 
   if (debug_options_.enable_dynamic_sizes) {
+    const auto& from_exprs = from->dim_exprs();
+    const auto& to_exprs = to->dim_exprs();
     std::vector<xla::DExpr> combined_exprs = from->dim_exprs();
     combined_exprs.insert(combined_exprs.end(), to->dim_exprs().begin(),
                           to->dim_exprs().end());
     if (!combined_exprs.empty()) {
       LOG(INFO) << "Checking dynamic clustering merge from "
                 << from->DebugString(*graph_) << " to "
-                << to->DebugString(*graph_) << " with expressions ["
-                << DExprListToString(combined_exprs) << "]";
+                << to->DebugString(*graph_) << " with from_exprs=["
+                << DExprListToString(from_exprs) << "] to_exprs=["
+                << DExprListToString(to_exprs) << "]";
     }
     std::optional<std::string> incompatibility =
         CheckDynamicExpressionCompatibility(combined_exprs);

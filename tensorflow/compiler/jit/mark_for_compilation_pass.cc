@@ -1914,6 +1914,7 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
   VLOG(2) << "sorted_nodes.size() = " << sorted_nodes.size();
 
   auto allowlist = GetOrCreateAllowlist();
+  MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
 
   std::vector<string> vall_ops = XlaOpRegistry::GetAllRegisteredOps();
   absl::flat_hash_set<string> all_ops(vall_ops.begin(), vall_ops.end());
@@ -1946,6 +1947,14 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
         device_info_cache_.GetDeviceTypeFor(node->assigned_device_name()));
     VLOG(4) << "Device type for " << node->name() << ": "
             << device_type.type_string();
+
+    if (flags->tf_xla_concat_only_clustering_debug &&
+        node->type_string() != "Concat" &&
+        node->type_string() != "ConcatV2") {
+      VLOG(1) << "Rejecting " << node->name()
+              << ": tf_xla_concat_only_clustering_debug is enabled";
+      continue;
+    }
 
     if (CompilationDisallowedByXlaCompileAttr(node) ||
         cluster_exclude_op_list.contains(node->type_string())) {

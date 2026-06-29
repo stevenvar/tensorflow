@@ -102,6 +102,10 @@ struct MarkForCompilationPassFlags {
   // If true enables support of dynamic sizes.
   bool tf_xla_enable_dynamic_sizes;
 
+  // If true, only Concat/ConcatV2 ops are considered for XLA auto-clustering.
+  // This is intended as a temporary debugging aid.
+  bool tf_xla_concat_only_clustering_debug;
+
   // If true disables padding runtime dynamic sizes up to an XLA compile batch.
   bool tf_xla_disable_dynamic_size_padding;
 

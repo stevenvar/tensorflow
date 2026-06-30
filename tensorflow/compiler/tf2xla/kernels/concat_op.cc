@@ -111,6 +111,15 @@ class ConcatBaseOp : public XlaOpKernel {
                     "[",
                     -input_dims, ", ", input_dims, "), but got ", concat_dim));
 
+    LOG(INFO) << "[XLA CONCAT DEBUG][TF2XLA] node=" << name()
+              << " op=" << type_string() << " concat_dim=" << concat_dim
+              << " axis=" << axis << " num_values=" << N;
+    for (int i = 0; i < N; ++i) {
+      LOG(INFO) << "[XLA CONCAT DEBUG][TF2XLA] node=" << name()
+                << " input_index=" << i
+                << " tensor_shape=" << shapes[i].DebugString();
+    }
+
     // Make a vector holding the XlaOp for each of the inputs that has non-zero
     // elements.
     std::vector<xla::XlaOp> input_data;
@@ -160,6 +169,16 @@ class ConcatBaseOp : public XlaOpKernel {
       }
       output_concat_dim += in_shape.dims() > 0 ? in_shape.dim_size(axis) : 1;
     }
+
+    TensorShape output_shape = input_shape;
+    if (output_shape.dims() == 0) {
+      output_shape = TensorShape();
+      output_shape.AddDim(output_concat_dim);
+    } else {
+      output_shape.set_dim(axis, output_concat_dim);
+    }
+    LOG(INFO) << "[XLA CONCAT DEBUG][TF2XLA] node=" << name()
+              << " output_shape=" << output_shape.DebugString();
 
     VLOG(1) << "Concat dim " << concat_dim << " equivalent to " << axis;
     auto output = xla::ConcatInDim(ctx->builder(), input_data, axis);

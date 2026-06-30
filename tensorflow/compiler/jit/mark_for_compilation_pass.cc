@@ -161,7 +161,8 @@ class MarkForCompilationPassImpl {
    public:
     // Constructs a trivial cluster representing a single TF node.
     Cluster(int tf_graph_node_id, int effective_cluster_size,
-            bool has_functional_control_flow, DeviceSet devices,
+            bool has_functional_control_flow, bool contains_concat,
+            DeviceSet devices,
             std::optional<DeviceId> resource_op_device,
             std::optional<int> resource_var_operation_node_id,
             std::optional<DeadnessPredicate> deadness_predicate,
@@ -169,6 +170,7 @@ class MarkForCompilationPassImpl {
         : cycles_graph_node_id_(tf_graph_node_id),
           effective_cluster_size_(effective_cluster_size),
           has_functional_control_flow_(has_functional_control_flow),
+          contains_concat_(contains_concat),
           devices_(std::move(devices)),
           resource_op_device_(resource_op_device),
           deadness_predicate_(deadness_predicate),
@@ -209,6 +211,7 @@ class MarkForCompilationPassImpl {
     bool has_functional_control_flow() const {
       return has_functional_control_flow_;
     }
+    bool contains_concat() const { return contains_concat_; }
 
     // The set of devices nodes in the cluster are placed on.
     const DeviceSet& devices() const { return devices_; }
@@ -283,6 +286,7 @@ class MarkForCompilationPassImpl {
     int cycles_graph_node_id_;
     int effective_cluster_size_;
     bool has_functional_control_flow_;
+    bool contains_concat_;
     DeviceSet devices_;
     std::optional<DeviceId> resource_op_device_;
     std::optional<DeadnessPredicate> deadness_predicate_;
@@ -408,6 +412,7 @@ class MarkForCompilationPassImpl {
 
   Cluster* MakeNewCluster(int cycles_graph_node_id, int effective_cluster_size,
                           bool has_functional_control_flow,
+                          bool contains_concat,
                           const DeviceSet& device_set,
                           std::optional<DeviceId> resource_op_device,
                           std::optional<int> resource_var_operation_node_id,
@@ -416,7 +421,7 @@ class MarkForCompilationPassImpl {
                           std::optional<string> xla_scope) {
     cluster_storage_.push_back(std::make_unique<Cluster>(
         cycles_graph_node_id, effective_cluster_size,
-        has_functional_control_flow, device_set, resource_op_device,
+        has_functional_control_flow, contains_concat, device_set, resource_op_device,
         resource_var_operation_node_id, deadness_predicate,
         is_xla_compile_attr_true, xla_scope));
     return cluster_storage_.back().get();
@@ -636,6 +641,7 @@ void MarkForCompilationPassImpl::Cluster::Merge(Cluster* other) {
   cluster_size_ += other->cluster_size_;
   effective_cluster_size_ += other->effective_cluster_size_;
   has_functional_control_flow_ |= other->has_functional_control_flow_;
+  contains_concat_ |= other->contains_concat_;
 
   devices_.UnionWith(other->devices_);
 
@@ -1108,6 +1114,28 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
     return out;
   };
 
+  auto format_graph_properties_shape =
+      [](const TensorShapeProto& gp_shape) -> std::string {
+    if (gp_shape.unknown_rank()) {
+      return "<unknown rank>";
+    }
+    std::vector<std::string> dims;
+    dims.reserve(gp_shape.dim_size());
+    for (int d = 0; d < gp_shape.dim_size(); ++d) {
+      const auto& dim = gp_shape.dim(d);
+      std::ostringstream oss;
+      oss << "dim" << d << "{size=" << dim.size() << ", expr=";
+      if (dim.expr().node_type_case() != ExpressionProto::NODE_TYPE_NOT_SET) {
+        oss << ExprProtoToString(dim.expr());
+      } else {
+        oss << dim.size();
+      }
+      oss << "}";
+      dims.push_back(oss.str());
+    }
+    return "[" + absl::StrJoin(dims, ", ") + "]";
+  };
+
   for (const NodeDef& n : graph_def.node()) {
     if (!props.HasOutputProperties(n.name())) continue;
     const auto& outs = props.GetOutputProperties(n.name());
@@ -1130,6 +1158,12 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
         LOG(INFO) << "[EXPR][GP] node=" << n.name() << " output=" << out_idx
                   << " dim=" << d << " size=" << dim.size()
                   << " expr=" << ExprProtoToString(expr);
+        if (dim.size() == 1) {
+          LOG(INFO) << "[EXPR][GP][UNIT_DYNAMIC_DIM] node=" << n.name()
+                    << " op=" << n.op() << " output=" << out_idx
+                    << " dim=" << d << " size=1 expr="
+                    << ExprProtoToString(expr);
+        }
 
         auto ex = ExprFromProto(expr);
         exprs.push_back(std::move(ex));
@@ -1150,7 +1184,45 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
       node_it->second->AddAttr(kXlaInferredOutputTensorShapesAttrName,
                                inferred_output_shapes);
     }
+  }
 
+  for (const Node* node : graph.nodes()) {
+    if (node == nullptr ||
+        (node->type_string() != "Concat" && node->type_string() != "ConcatV2")) {
+      continue;
+    }
+    LOG(INFO) << "[XLA CONCAT DEBUG][GRAPH] node=" << node->name()
+              << " op=" << node->type_string()
+              << " num_inputs=" << node->num_inputs();
+    for (const Edge* edge : node->in_edges()) {
+      if (edge->IsControlEdge()) {
+        continue;
+      }
+      const Node* src = edge->src();
+      std::string inferred_shape = "<missing>";
+      if (props.HasOutputProperties(src->name())) {
+        const auto& src_outs = props.GetOutputProperties(src->name());
+        const int src_output = edge->src_output();
+        if (src_output >= 0 && src_output < src_outs.size()) {
+          inferred_shape =
+              format_graph_properties_shape(src_outs[src_output].shape());
+        }
+      }
+      LOG(INFO) << "[XLA CONCAT DEBUG][GRAPH] node=" << node->name()
+                << " input_index=" << edge->dst_input() << " src="
+                << src->name() << " src_op=" << src->type_string()
+                << " src_output=" << edge->src_output()
+                << " inferred_shape=" << inferred_shape;
+    }
+    if (props.HasOutputProperties(node->name())) {
+      const auto& outs = props.GetOutputProperties(node->name());
+      for (int out_idx = 0; out_idx < outs.size(); ++out_idx) {
+        LOG(INFO) << "[XLA CONCAT DEBUG][GRAPH] node=" << node->name()
+                  << " output_index=" << out_idx
+                  << " inferred_shape="
+                  << format_graph_properties_shape(outs[out_idx].shape());
+      }
+    }
   }
 
   VLOG(1) << "[EXPR][GP] === Found " << found
@@ -1755,6 +1827,8 @@ absl::Status MarkForCompilationPassImpl::BuildInitialClusterSet() {
         (node->IsIdentity() || node->IsConstant()) ? 0 : 1;
 
     bool has_functional_control_flow = node->IsWhileNode() || node->IsIfNode();
+    bool contains_concat =
+        node->type_string() == "Concat" || node->type_string() == "ConcatV2";
 
     std::optional<DeadnessPredicate> deadness_predicate;
     if (deadness_analysis_) {
@@ -1791,7 +1865,8 @@ absl::Status MarkForCompilationPassImpl::BuildInitialClusterSet() {
     Cluster* new_cluster = MakeNewCluster(
         /*cycles_graph_node_id=*/node->id(),
         /*effective_cluster_size=*/effective_cluster_size,
-        /*has_functional_control_flow=*/has_functional_control_flow, devices,
+        /*has_functional_control_flow=*/has_functional_control_flow,
+        /*contains_concat=*/contains_concat, devices,
         resource_op_device, resource_var_operation_node_id, deadness_predicate,
         /*is_xla_compile_attr_true=*/is_xla_compile_attr_true,
         GetXlaScope(node));
@@ -2477,6 +2552,14 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
   if (debug_options_.annotate_cluster_id && from->annotated_id() != to->annotated_id()) {
     return LogNotContractableAndReturnFalse(
         from, to, "the two nodes do not have same annotated ids");
+  }
+
+  if (from->contains_concat() && to->contains_concat()) {
+    LOG(INFO) << "Rejecting merge because both clusters contain concat ops: "
+              << "from=" << from->DebugString(*graph_) << " to="
+              << to->DebugString(*graph_);
+    return LogNotContractableAndReturnFalse(
+        from, to, "both clusters contain concat ops");
   }
 
   if (debug_options_.enable_dynamic_sizes) {

@@ -11,6 +11,7 @@ tf.disable_eager_execution()
 _BATCH_SIZE = 3
 _LEFT_SEQUENCE_WIDTH = 240
 _LEFT_EMBED_WIDTH = 4
+_LEFT_SPLIT_WIDTH = (_LEFT_SEQUENCE_WIDTH * _LEFT_EMBED_WIDTH) // 2
 _RIGHT_ACT_WIDTH = 4
 _RIGHT_ATTR_WIDTH = 20
 _RIGHT_TOTAL_WIDTH = _RIGHT_ACT_WIDTH + _RIGHT_ATTR_WIDTH
@@ -18,21 +19,43 @@ _RIGHT_TOTAL_WIDTH = _RIGHT_ACT_WIDTH + _RIGHT_ATTR_WIDTH
 
 def build_concat_debug_model():
   """Builds a reduced repro of the concat/truediv shape pattern."""
-  sparse_features_flat_a = tf.placeholder(
-      dtype=tf.float32, shape=[None], name="sparse_features_flat_a")
-  sparse_features_flat_b = tf.placeholder(
-      dtype=tf.float32, shape=[None], name="sparse_features_flat_b")
-  sequence_mask = tf.placeholder(
+  sparse_features_flat_a_input = tf.placeholder(
+      dtype=tf.float32,
+      shape=[None, _LEFT_SPLIT_WIDTH],
+      name="sparse_features_flat_a")
+  sparse_features_flat_b_input = tf.placeholder(
+      dtype=tf.float32,
+      shape=[None, _LEFT_SPLIT_WIDTH],
+      name="sparse_features_flat_b")
+  sequence_mask_input = tf.placeholder(
       dtype=tf.float32,
       shape=[None, _LEFT_SEQUENCE_WIDTH, _LEFT_EMBED_WIDTH],
       name="sequence_mask")
 
-  act_padding_flat = tf.placeholder(
-      dtype=tf.float32, shape=[None], name="act_padding_flat")
-  attr_padding_flat = tf.placeholder(
-      dtype=tf.float32, shape=[None], name="attr_padding_flat")
-  gating_input = tf.placeholder(
-      dtype=tf.float32, shape=[None, None], name="gating_input")
+  act_padding_flat_input = tf.placeholder(
+      dtype=tf.float32,
+      shape=[None, 10 * _RIGHT_ACT_WIDTH],
+      name="act_padding_flat")
+  attr_padding_flat_input = tf.placeholder(
+      dtype=tf.float32,
+      shape=[None, 10 * _RIGHT_ATTR_WIDTH],
+      name="attr_padding_flat")
+  gating_input_input = tf.placeholder(dtype=tf.float32, shape=[None, 10],
+                                      name="gating_input")
+
+  sparse_features_flat_a = tf.reshape(
+      sparse_features_flat_a_input, [-1], name="sparse_features_flat_a_dynamic")
+  sparse_features_flat_b = tf.reshape(
+      sparse_features_flat_b_input, [-1], name="sparse_features_flat_b_dynamic")
+  sequence_mask = tf.reshape(
+      sequence_mask_input,
+      [-1, _LEFT_SEQUENCE_WIDTH, _LEFT_EMBED_WIDTH],
+      name="sequence_mask_dynamic")
+  act_padding_flat = tf.reshape(
+      act_padding_flat_input, [-1], name="act_padding_flat_dynamic")
+  attr_padding_flat = tf.reshape(
+      attr_padding_flat_input, [-1], name="attr_padding_flat_dynamic")
+  gating_input = tf.reshape(gating_input_input, [-1, 10], name="gating_input_dynamic")
 
   with tf.name_scope("BuildCommonEmbInput"):
     sparse_features_concat = tf.concat(
@@ -77,23 +100,25 @@ def build_concat_debug_model():
       [left_branch, truediv_2], axis=1, name="input_emb_concat")
 
   feeds = {
-      sparse_features_flat_a: np.arange(
-          (_BATCH_SIZE * _LEFT_SEQUENCE_WIDTH * _LEFT_EMBED_WIDTH) // 2,
-          dtype=np.float32),
-      sparse_features_flat_b: (10000 + np.arange(
-          (_BATCH_SIZE * _LEFT_SEQUENCE_WIDTH * _LEFT_EMBED_WIDTH) // 2,
-          dtype=np.float32)),
-      sequence_mask: np.linspace(
+      sparse_features_flat_a_input: np.arange(
+          _BATCH_SIZE * _LEFT_SPLIT_WIDTH, dtype=np.float32).reshape(
+              _BATCH_SIZE, _LEFT_SPLIT_WIDTH),
+      sparse_features_flat_b_input: (10000 + np.arange(
+          _BATCH_SIZE * _LEFT_SPLIT_WIDTH, dtype=np.float32)).reshape(
+              _BATCH_SIZE, _LEFT_SPLIT_WIDTH),
+      sequence_mask_input: np.linspace(
           0.25,
           1.25,
           _BATCH_SIZE * _LEFT_SEQUENCE_WIDTH * _LEFT_EMBED_WIDTH,
           dtype=np.float32).reshape(
               _BATCH_SIZE, _LEFT_SEQUENCE_WIDTH, _LEFT_EMBED_WIDTH),
-      act_padding_flat: np.arange(
-          _BATCH_SIZE * 10 * _RIGHT_ACT_WIDTH, dtype=np.float32),
-      attr_padding_flat: (1000 + np.arange(
-          _BATCH_SIZE * 10 * _RIGHT_ATTR_WIDTH, dtype=np.float32)),
-      gating_input: np.array(
+      act_padding_flat_input: np.arange(
+          _BATCH_SIZE * 10 * _RIGHT_ACT_WIDTH, dtype=np.float32).reshape(
+              _BATCH_SIZE, 10 * _RIGHT_ACT_WIDTH),
+      attr_padding_flat_input: (1000 + np.arange(
+          _BATCH_SIZE * 10 * _RIGHT_ATTR_WIDTH, dtype=np.float32)).reshape(
+              _BATCH_SIZE, 10 * _RIGHT_ATTR_WIDTH),
+      gating_input_input: np.array(
           [
               np.linspace(1.0, 2.0, 10, dtype=np.float32),
               np.linspace(0.25, 1.25, 10, dtype=np.float32),
@@ -102,12 +127,12 @@ def build_concat_debug_model():
           dtype=np.float32),
   }
   inputs = {
-      "sparse_features_flat_a": sparse_features_flat_a,
-      "sparse_features_flat_b": sparse_features_flat_b,
-      "sequence_mask": sequence_mask,
-      "act_padding_flat": act_padding_flat,
-      "attr_padding_flat": attr_padding_flat,
-      "gating_input": gating_input,
+      "sparse_features_flat_a": sparse_features_flat_a_input,
+      "sparse_features_flat_b": sparse_features_flat_b_input,
+      "sequence_mask": sequence_mask_input,
+      "act_padding_flat": act_padding_flat_input,
+      "attr_padding_flat": attr_padding_flat_input,
+      "gating_input": gating_input_input,
   }
   outputs = {
       "left_branch": left_branch,

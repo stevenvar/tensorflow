@@ -8,19 +8,34 @@ import tensorflow.compat.v1 as tf
 
 tf.disable_eager_execution()
 
+_BATCH_SIZE = 3
+_TIME_STEPS = 2
+_CONCAT_WIDTH = 8
+_FINAL_CONCAT_WIDTH = 32
+
 
 def build_concat_debug_model():
-  """Builds a small dynamic-shape subgraph for concat-debug reproduction."""
+  """Builds a small subgraph for concat-debug reproduction."""
   concat_a = tf.placeholder(
-      dtype=tf.float32, shape=[None, None, 8], name="concat_a")
+      dtype=tf.float32,
+      shape=[_BATCH_SIZE, _TIME_STEPS, _CONCAT_WIDTH],
+      name="concat_a")
   concat_b = tf.placeholder(
-      dtype=tf.float32, shape=[None, None, 8], name="concat_b")
+      dtype=tf.float32,
+      shape=[_BATCH_SIZE, _TIME_STEPS, _CONCAT_WIDTH],
+      name="concat_b")
   concat_c = tf.placeholder(
-      dtype=tf.float32, shape=[None, None, 8], name="concat_c")
+      dtype=tf.float32,
+      shape=[_BATCH_SIZE, _TIME_STEPS, _CONCAT_WIDTH],
+      name="concat_c")
   expanddims_input = tf.placeholder(
-      dtype=tf.float32, shape=[None, None], name="expanddims_input")
+      dtype=tf.float32,
+      shape=[_BATCH_SIZE, _TIME_STEPS],
+      name="expanddims_input")
   final_concat_lhs = tf.placeholder(
-      dtype=tf.float32, shape=[None, 32], name="final_concat_lhs")
+      dtype=tf.float32,
+      shape=[_BATCH_SIZE, _FINAL_CONCAT_WIDTH],
+      name="final_concat_lhs")
 
   with tf.name_scope("branch"):
     concat_3d = tf.concat(
@@ -59,12 +74,20 @@ def build_concat_debug_model():
       [final_concat_lhs, branch_output], axis=1, name="final_concat")
 
   feeds = {
-      concat_a: np.arange(3 * 2 * 8, dtype=np.float32).reshape(3, 2, 8),
-      concat_b: (100 + np.arange(3 * 2 * 8, dtype=np.float32)).reshape(3, 2, 8),
-      concat_c: (200 + np.arange(3 * 2 * 8, dtype=np.float32)).reshape(3, 2, 8),
+      concat_a: np.arange(
+          _BATCH_SIZE * _TIME_STEPS * _CONCAT_WIDTH,
+          dtype=np.float32).reshape(_BATCH_SIZE, _TIME_STEPS, _CONCAT_WIDTH),
+      concat_b: (100 + np.arange(
+          _BATCH_SIZE * _TIME_STEPS * _CONCAT_WIDTH,
+          dtype=np.float32)).reshape(_BATCH_SIZE, _TIME_STEPS, _CONCAT_WIDTH),
+      concat_c: (200 + np.arange(
+          _BATCH_SIZE * _TIME_STEPS * _CONCAT_WIDTH,
+          dtype=np.float32)).reshape(_BATCH_SIZE, _TIME_STEPS, _CONCAT_WIDTH),
       expanddims_input: np.array(
           [[1.0, 0.5], [0.25, 1.5], [2.0, 1.0]], dtype=np.float32),
-      final_concat_lhs: np.arange(3 * 32, dtype=np.float32).reshape(3, 32),
+      final_concat_lhs: np.arange(
+          _BATCH_SIZE * _FINAL_CONCAT_WIDTH,
+          dtype=np.float32).reshape(_BATCH_SIZE, _FINAL_CONCAT_WIDTH),
   }
   inputs = {
       "concat_a": concat_a,

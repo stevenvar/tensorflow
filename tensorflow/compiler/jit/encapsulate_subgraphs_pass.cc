@@ -155,6 +155,11 @@ struct OutputInputTensorPairHasher {
 // everything to use it.
 static const char* const kArgOp = "_Arg";
 static const char* const kRetValOp = "_Retval";
+static const char* const kXlaArgSourceNodeNameAttr =
+    "_xla_arg_source_node_name";
+static const char* const kXlaArgSourceNodeOpAttr = "_xla_arg_source_node_op";
+static const char* const kXlaArgSourceOutputIndexAttr =
+    "_xla_arg_source_output_index";
 
 class Encapsulator {
  public:
@@ -513,6 +518,9 @@ absl::Status Encapsulator::Subgraph::RecordArg(
     DataType dtype = edge->dst()->input_type(edge->dst_input());
     builder.Attr("T", dtype);
     builder.Attr("index", arg_index);
+    builder.Attr(kXlaArgSourceNodeNameAttr, src_node->name());
+    builder.Attr(kXlaArgSourceNodeOpAttr, src_node->type_string());
+    builder.Attr(kXlaArgSourceOutputIndexAttr, src_slot);
     AttrSlice attrs = src_node->attrs();
     TensorShapeProto output_shape_proto;
     if (BuildOutputShapeProto(*src_node, src_slot, &output_shape_proto)) {

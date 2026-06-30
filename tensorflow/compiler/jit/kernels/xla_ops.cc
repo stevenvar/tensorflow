@@ -587,6 +587,9 @@ struct ConcatFunctionDebugInfo {
   absl::flat_hash_set<std::string> direct_concat_arg_names;
 };
 
+constexpr char kXlaArgSourceNodeNameAttr[] = "_xla_arg_source_node_name";
+constexpr char kXlaArgSourceNodeOpAttr[] = "_xla_arg_source_node_op";
+constexpr char kXlaArgSourceOutputIndexAttr[] = "_xla_arg_source_output_index";
 ConcatFunctionDebugInfo LogConcatFunctionDebugInfo(const FunctionDef& fdef) {
   ConcatFunctionDebugInfo info;
   absl::flat_hash_map<std::string, const NodeDef*> nodes_by_name;
@@ -782,7 +785,6 @@ xla::DExpr ReplaceDynamicSubexpression(const xla::DExpr& expr,
   return xla::DExprFromProto(proto).simplify();
 }
 
-
 absl::Status CompileToLocalExecutable(
     OpKernelContext* ctx, const NameAttrList& function, bool has_ref_vars,
     const XlaPlatformInfo& platform_info,
@@ -961,6 +963,21 @@ absl::Status CompileToLocalExecutable(
               fdef->signature().input_arg(arg_index).name();
           const bool feeds_concat_directly =
               concat_debug_info.direct_concat_arg_names.contains(node_name);
+          std::string source_node_name = "<unknown>";
+          std::string source_node_op = "<unknown>";
+          int64_t source_output_index = -1;
+          if (auto it = attr_map.find(kXlaArgSourceNodeNameAttr);
+              it != attr_map.end()) {
+            source_node_name = it->second.s();
+          }
+          if (auto it = attr_map.find(kXlaArgSourceNodeOpAttr);
+              it != attr_map.end()) {
+            source_node_op = it->second.s();
+          }
+          if (auto it = attr_map.find(kXlaArgSourceOutputIndexAttr);
+              it != attr_map.end()) {
+            source_output_index = it->second.i();
+          }
 
           auto shape_derived_attr = attr_map.find(kXlaShapeDerivedAttrName);
           if (shape_derived_attr != attr_map.end()) {
@@ -995,6 +1012,9 @@ absl::Status CompileToLocalExecutable(
             shp.set_expressions(std::move(dyn_exprs));
             LOG(INFO) << "XlaCompileOp normalized input argument: "
                       << "arg_index=" << arg_index << " node=" << node_name
+                      << " source_node=" << source_node_name
+                      << " source_op=" << source_node_op
+                      << " source_output=" << source_output_index
                       << " [XLA CONCAT DEBUG] cluster_contains_concat="
                       << concat_debug_info.contains_concat
                       << " feeds_concat_directly=" << feeds_concat_directly
@@ -1069,6 +1089,9 @@ absl::Status CompileToLocalExecutable(
           shp.set_expressions(std::move(dyn_exprs));
           LOG(INFO) << "XlaCompileOp normalized input argument: "
                     << "arg_index=" << arg_index << " node=" << node_name
+                    << " source_node=" << source_node_name
+                    << " source_op=" << source_node_op
+                    << " source_output=" << source_output_index
                     << " [XLA CONCAT DEBUG] cluster_contains_concat="
                     << concat_debug_info.contains_concat
                     << " feeds_concat_directly=" << feeds_concat_directly

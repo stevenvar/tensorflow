@@ -334,6 +334,30 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
     return;
   }
 
+  auto shape_needs_broadcast = [&bcast](const TensorShape& input_shape) {
+    const auto input_dims = input_shape.dim_sizes();
+    const auto& output_dims = bcast.output_shape();
+    if (input_dims.size() != output_dims.size()) {
+      return true;
+    }
+    for (int i = 0; i < input_dims.size(); ++i) {
+      if (input_dims[i] != output_dims[i]) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const bool lhs_needs_broadcast = shape_needs_broadcast(lhs_shape);
+  const bool rhs_needs_broadcast = shape_needs_broadcast(rhs_shape);
+  if (lhs_needs_broadcast || rhs_needs_broadcast) {
+    LOG(INFO) << "[XLA BINARY BROADCAST] op=" << type_string()
+              << " lhs_shape=" << lhs_shape.DebugString()
+              << " rhs_shape=" << rhs_shape.DebugString()
+              << " output_shape=" << TensorShape(bcast.output_shape()).DebugString()
+              << " broadcast_lhs=" << lhs_needs_broadcast
+              << " broadcast_rhs=" << rhs_needs_broadcast;
+  }
   // If the ranks of the inputs don't match, TensorFlow automatically
   // reshapes the smaller by padding with dimensions of size 1 as a
   // prefix. In other words to pad a 5-vector to a 3-dimensional

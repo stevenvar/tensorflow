@@ -9,28 +9,21 @@ import tensorflow.compat.v1 as tf
 tf.disable_eager_execution()
 
 _BATCH_SIZE = 3
-_TIME_STEPS = 2
-_CONCAT_WIDTH = 8
+_FEATURE_GROUPS = 10
+_CONCAT_WIDTH = 24
 _FINAL_CONCAT_WIDTH = 32
+_RESHAPE_DIVISOR = _FEATURE_GROUPS * _CONCAT_WIDTH
 
 
 def build_concat_debug_model():
   """Builds a small subgraph for concat-debug reproduction."""
-  concat_a = tf.placeholder(
+  reshape_input = tf.placeholder(
       dtype=tf.float32,
-      shape=[_BATCH_SIZE, _TIME_STEPS, _CONCAT_WIDTH],
-      name="concat_a")
-  concat_b = tf.placeholder(
-      dtype=tf.float32,
-      shape=[_BATCH_SIZE, _TIME_STEPS, _CONCAT_WIDTH],
-      name="concat_b")
-  concat_c = tf.placeholder(
-      dtype=tf.float32,
-      shape=[_BATCH_SIZE, _TIME_STEPS, _CONCAT_WIDTH],
-      name="concat_c")
+      shape=[_BATCH_SIZE * _RESHAPE_DIVISOR],
+      name="reshape_input")
   expanddims_input = tf.placeholder(
       dtype=tf.float32,
-      shape=[_BATCH_SIZE, _TIME_STEPS],
+      shape=[_BATCH_SIZE, _FEATURE_GROUPS],
       name="expanddims_input")
   final_concat_lhs = tf.placeholder(
       dtype=tf.float32,
@@ -38,8 +31,10 @@ def build_concat_debug_model():
       name="final_concat_lhs")
 
   with tf.name_scope("branch"):
-    concat_3d = tf.concat(
-        [concat_a, concat_b, concat_c], axis=-1, name="concat")
+    reshaped = tf.reshape(
+        reshape_input,
+        [-1, _FEATURE_GROUPS, _CONCAT_WIDTH],
+        name="reshape")
 
     expanded = tf.expand_dims(
         expanddims_input, axis=2, name="ExpandDims")
@@ -59,7 +54,7 @@ def build_concat_debug_model():
         strides=tf.constant([1, 1, 1], dtype=tf.int32, name="strides"),
         name="StridedSlice")
 
-    gated = tf.multiply(concat_3d, strided, name="mul")
+    gated = tf.multiply(reshaped, strided, name="mul")
     reduced = tf.reduce_sum(
         gated,
         axis=1,
@@ -74,25 +69,22 @@ def build_concat_debug_model():
       [final_concat_lhs, branch_output], axis=1, name="final_concat")
 
   feeds = {
-      concat_a: np.arange(
-          _BATCH_SIZE * _TIME_STEPS * _CONCAT_WIDTH,
-          dtype=np.float32).reshape(_BATCH_SIZE, _TIME_STEPS, _CONCAT_WIDTH),
-      concat_b: (100 + np.arange(
-          _BATCH_SIZE * _TIME_STEPS * _CONCAT_WIDTH,
-          dtype=np.float32)).reshape(_BATCH_SIZE, _TIME_STEPS, _CONCAT_WIDTH),
-      concat_c: (200 + np.arange(
-          _BATCH_SIZE * _TIME_STEPS * _CONCAT_WIDTH,
-          dtype=np.float32)).reshape(_BATCH_SIZE, _TIME_STEPS, _CONCAT_WIDTH),
+      reshape_input: np.arange(
+          _BATCH_SIZE * _RESHAPE_DIVISOR,
+          dtype=np.float32),
       expanddims_input: np.array(
-          [[1.0, 0.5], [0.25, 1.5], [2.0, 1.0]], dtype=np.float32),
+          [
+              np.linspace(1.0, 2.0, _FEATURE_GROUPS, dtype=np.float32),
+              np.linspace(0.25, 1.25, _FEATURE_GROUPS, dtype=np.float32),
+              np.linspace(2.0, 3.0, _FEATURE_GROUPS, dtype=np.float32),
+          ],
+          dtype=np.float32),
       final_concat_lhs: np.arange(
           _BATCH_SIZE * _FINAL_CONCAT_WIDTH,
           dtype=np.float32).reshape(_BATCH_SIZE, _FINAL_CONCAT_WIDTH),
   }
   inputs = {
-      "concat_a": concat_a,
-      "concat_b": concat_b,
-      "concat_c": concat_c,
+      "reshape_input": reshape_input,
       "expanddims_input": expanddims_input,
       "final_concat_lhs": final_concat_lhs,
   }
@@ -140,7 +132,7 @@ def parse_args():
   parser = argparse.ArgumentParser(
       description=(
           "Generate a TensorFlow v1 SavedModel for the concat_debug "
-          "subgraph (Concat -> Mul -> Sum -> Mul)."))
+          "subgraph (Reshape[-1,10,24] -> Mul -> Sum -> Mul -> Concat)."))
   parser.add_argument(
       "--save_model",
       action="store_true",

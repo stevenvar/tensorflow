@@ -11,7 +11,7 @@ tf.disable_eager_execution()
 _BATCH_SIZE = 3
 _LEFT_SEQUENCE_WIDTH = 240
 _LEFT_EMBED_WIDTH = 4
-_LEFT_SPLIT_WIDTH = (_LEFT_SEQUENCE_WIDTH * _LEFT_EMBED_WIDTH) // 2
+_LEFT_SPLIT_WIDTH = _LEFT_EMBED_WIDTH // 2
 _RIGHT_ACT_WIDTH = 4
 _RIGHT_ATTR_WIDTH = 20
 _RIGHT_TOTAL_WIDTH = _RIGHT_ACT_WIDTH + _RIGHT_ATTR_WIDTH
@@ -44,9 +44,13 @@ def build_concat_debug_model():
                                       name="gating_input")
 
   sparse_features_flat_a = tf.reshape(
-      sparse_features_flat_a_input, [-1], name="sparse_features_flat_a_dynamic")
+      sparse_features_flat_a_input,
+      [-1, _LEFT_SPLIT_WIDTH],
+      name="sparse_features_flat_a_dynamic")
   sparse_features_flat_b = tf.reshape(
-      sparse_features_flat_b_input, [-1], name="sparse_features_flat_b_dynamic")
+      sparse_features_flat_b_input,
+      [-1, _LEFT_SPLIT_WIDTH],
+      name="sparse_features_flat_b_dynamic")
   sequence_mask = tf.reshape(
       sequence_mask_input,
       [-1, _LEFT_SEQUENCE_WIDTH, _LEFT_EMBED_WIDTH],
@@ -60,7 +64,7 @@ def build_concat_debug_model():
   with tf.name_scope("BuildCommonEmbInput"):
     sparse_features_concat = tf.concat(
         [sparse_features_flat_a, sparse_features_flat_b],
-        axis=0,
+        axis=1,
         name="sparse_features_embedding_concat")
     left_reshape = tf.reshape(
         sparse_features_concat,
@@ -101,11 +105,13 @@ def build_concat_debug_model():
 
   feeds = {
       sparse_features_flat_a_input: np.arange(
-          _BATCH_SIZE * _LEFT_SPLIT_WIDTH, dtype=np.float32).reshape(
-              _BATCH_SIZE, _LEFT_SPLIT_WIDTH),
+          (_BATCH_SIZE * _LEFT_SEQUENCE_WIDTH) * _LEFT_SPLIT_WIDTH,
+          dtype=np.float32).reshape(
+              _BATCH_SIZE * _LEFT_SEQUENCE_WIDTH, _LEFT_SPLIT_WIDTH),
       sparse_features_flat_b_input: (10000 + np.arange(
-          _BATCH_SIZE * _LEFT_SPLIT_WIDTH, dtype=np.float32)).reshape(
-              _BATCH_SIZE, _LEFT_SPLIT_WIDTH),
+          (_BATCH_SIZE * _LEFT_SEQUENCE_WIDTH) * _LEFT_SPLIT_WIDTH,
+          dtype=np.float32)).reshape(
+              _BATCH_SIZE * _LEFT_SEQUENCE_WIDTH, _LEFT_SPLIT_WIDTH),
       sequence_mask_input: np.linspace(
           0.25,
           1.25,

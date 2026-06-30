@@ -1804,33 +1804,33 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
       const bool has_input_mapping = i < comp_result->input_mapping.size();
       const int mapped_input =
           has_input_mapping ? comp_result->input_mapping[i] : -1;
-      LOG(INFO) << "Inspecting XLA input shape for dynamic batch value: "
+      VLOG(1) << "Inspecting XLA input shape for dynamic batch value: "
                 << "xla_input_index=" << i
                 << " has_input_mapping=" << has_input_mapping
                 << " input_mapping=" << mapped_input
                 << " num_constant_args=" << num_constant_args
                 << " xla_shape=" << xla_shape;
       if (!xla_shape.IsArray()) {
-        LOG(INFO) << "Skipping XLA input shape because it is not an array: "
+        VLOG(1) << "Skipping XLA input shape because it is not an array: "
                   << "xla_input_index=" << i << " xla_shape=" << xla_shape;
         continue;
       }
       if (xla_shape.expressions().empty()) {
-        LOG(INFO) << "Skipping XLA input shape because it has no expressions: "
+        VLOG(1) << "Skipping XLA input shape because it has no expressions: "
                   << "xla_input_index=" << i << " xla_shape=" << xla_shape;
         continue;
       }
 
       for (int dim = 0; dim < xla_shape.expressions().size(); dim++) {
         const auto& expr = xla_shape.expressions(dim);
-        LOG(INFO) << "Inspecting XLA input shape expression: "
+        VLOG(1) << "Inspecting XLA input shape expression: "
                   << "xla_input_index=" << i << " dim=" << dim
                   << " xla_shape=" << xla_shape
                   << " expr=" << (expr ? DExprToString(expr) : "<null>");
         if (expr && expr->is_dynamic()) {
           xla::DExpr simplified_expr = expr.simplify();
           if (!has_input_mapping) {
-            LOG(INFO) << "Skipping dynamic expression because XLA input has "
+            VLOG(1) << "Skipping dynamic expression because XLA input has "
                       << "no runtime input mapping: xla_input_index=" << i
                       << " dim=" << dim << " xla_shape=" << xla_shape
                       << " expr=" << DExprToString(simplified_expr);
@@ -1838,7 +1838,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
           }
           int input_idx = mapped_input - num_constant_args;
           if (input_idx < 0 || input_idx >= ctx->num_inputs()) {
-            LOG(INFO) << "Skipping dynamic expression because runtime input "
+            VLOG(1) << "Skipping dynamic expression because runtime input "
                       << "index is out of range: xla_input_index=" << i
                       << " input_mapping=" << mapped_input
                       << " num_constant_args=" << num_constant_args
@@ -1848,7 +1848,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
                       << " expr=" << DExprToString(simplified_expr);
             continue;
           }
-          LOG(INFO) << "Dynamic expression solve candidate: "
+          VLOG(1) << "Dynamic expression solve candidate: "
                     << "xla_input_index=" << i
                     << " runtime_input_index=" << input_idx
                     << " xla_shape=" << xla_shape
@@ -1859,14 +1859,14 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
                     << RuntimeShapeSummary(ctx->input(input_idx).shape())
                     << " solving_dim=" << dim
                     << " solving_expr=" << DExprToString(simplified_expr);
-          LOG(INFO) << "Runtime input shape for dynamic expression: "
+          VLOG(1) << "Runtime input shape for dynamic expression: "
                     << "xla_input_index=" << i << " runtime_input_index="
                     << input_idx << " dim=" << dim
                     << " runtime_input_shape=" << ctx->input(input_idx).shape()
                     << " xla_shape=" << xla_shape
                     << " expr=" << DExprToString(simplified_expr);
           int64_t size = ctx->input(input_idx).shape().dim_size(dim);
-          LOG(INFO) << "Calling dynamic expression solve for runtime input "
+          VLOG(1) << "Calling dynamic expression solve for runtime input "
                     << input_idx << " dimension " << dim
                     << " xla_input_index=" << i
                     << " xla_shape=" << xla_shape
@@ -1875,7 +1875,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
           std::optional<int64_t> dyn_val =
               simplified_expr->solve(
                   size);  // TODO: check if the result is correct later.
-          LOG(INFO) << "Dynamic expression solve for runtime input "
+          VLOG(1) << "Dynamic expression solve for runtime input "
                     << input_idx << " dimension " << dim
                     << " xla_input_index=" << i
                     << " xla_shape=" << xla_shape << " returned "
@@ -1891,7 +1891,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
                 " solved_dynamic_value=", *dyn_val);
             expr_to_dyn_vals[expr_string].insert(*dyn_val);
             expr_to_contexts[expr_string].push_back(context);
-            LOG(INFO) << "Found dynamic runtime value: xla_input_index=" << i
+            VLOG(1) << "Found dynamic runtime value: xla_input_index=" << i
                       << " runtime_input_index=" << input_idx
                       << " dim=" << dim
                       << " runtime_dim_size=" << size
@@ -1903,7 +1903,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
           } else {
             xla::StringPrinter printer;
             simplified_expr->print(&printer);
-            LOG(INFO) << "Failed to solve dynamic expression: "
+            VLOG(1) << "Failed to solve dynamic expression: "
                       << "xla_input_index=" << i
                       << " runtime_input_index=" << input_idx
                       << " dim=" << dim
@@ -1913,7 +1913,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
             continue;
           }
           dyn_vals.insert(*dyn_val);
-          LOG(INFO) << "Dynamic runtime values after insert: xla_input_index="
+          VLOG(1) << "Dynamic runtime values after insert: xla_input_index="
                     << i << " runtime_input_index=" << input_idx
                     << " dim=" << dim << " dyn_vals={"
                     << absl::StrJoin(dyn_vals, ", ") << "}";

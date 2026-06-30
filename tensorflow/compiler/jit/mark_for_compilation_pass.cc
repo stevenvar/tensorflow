@@ -1950,7 +1950,9 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
 
     if (flags->tf_xla_concat_only_clustering_debug &&
         node->type_string() != "Concat" &&
-        node->type_string() != "ConcatV2") {
+        node->type_string() != "ConcatV2" &&
+        node->type_string() != "Mul" &&
+        node->type_string() != "Sum") {
       VLOG(1) << "Rejecting " << node->name()
               << ": tf_xla_concat_only_clustering_debug is enabled";
       continue;

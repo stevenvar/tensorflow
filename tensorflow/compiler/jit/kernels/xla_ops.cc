@@ -498,6 +498,24 @@ std::string TensorInputsSummary(absl::Span<const Tensor* const> inputs) {
   return absl::StrCat("[", absl::StrJoin(input_summaries, ", "), "]");
 }
 
+void LogClusterOutputs(OpKernelContext* ctx, absl::string_view cluster_name) {
+  std::vector<std::string> output_summaries;
+  output_summaries.reserve(ctx->num_outputs());
+  for (int i = 0; i < ctx->num_outputs(); ++i) {
+    const Tensor* output = ctx->mutable_output(i);
+    if (output == nullptr) {
+      output_summaries.push_back(absl::StrCat("output", i, "=<null>"));
+      continue;
+    }
+    output_summaries.push_back(absl::StrCat(
+        "output", i, "{dtype=", DataTypeString(output->dtype()),
+        ", shape=", output->shape().DebugString(),
+        ", dims=", RuntimeShapeSummary(output->shape()), "}"));
+  }
+  LOG(INFO) << "[XLA BOUNDARY DEBUG] cluster_outputs cluster=" << cluster_name
+            << " outputs=[" << absl::StrJoin(output_summaries, ", ") << "]";
+}
+
 std::string TensorShapeExpressionsSummary(const TensorShape& tensor_shape) {
   std::vector<std::string> dim_summaries;
   dim_summaries.reserve(tensor_shape.dims());
@@ -1369,8 +1387,10 @@ void XlaLocalLaunchBase::ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
   OP_REQUIRES_OK_ASYNC(ctx, status, done);
 
   // Continuation of the execution, may be run in a different thread.
+  const std::string cluster_name = function_.name();
   auto run_xla_cluster = [ctx, client, executable, compilation_result, done,
-                          inputs, resources = resources_]() {
+                          inputs, resources = resources_,
+                          cluster_name]() {
     // Separate scope so that VariableInfo locks are released before done is
     // called.
     {
@@ -1432,6 +1452,7 @@ void XlaLocalLaunchBase::ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
               /*missing_ctx_input_prefix=*/0, absl::MakeSpan(variable_infos),
               input_output_alias, resource_var_ptrs),
           done);
+      LogClusterOutputs(ctx, cluster_name);
       VLOG(1) << "Done";
     }
     done();
@@ -2009,6 +2030,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
           /*missing_ctx_input_prefix=*/closure.num_constant_args(),
           absl::MakeSpan(*variable_infos), input_output_alias, snapshot_ptrs,
           &run_options));
+  LogClusterOutputs(ctx, def().name());
 }
 
 XlaMergeOp::XlaMergeOp(OpKernelConstruction* ctx) : OpKernel(ctx) {}

@@ -30,6 +30,14 @@ limitations under the License.
 
 namespace tensorflow {
 
+inline bool ShouldLogDynamicDebugNode(const std::string& node_name) {
+  return node_name.find("de_iic/") != std::string::npos ||
+         node_name.find("iC_iic/") != std::string::npos ||
+         node_name.find("iR_iic/") != std::string::npos ||
+         node_name.find("iF_iic/") != std::string::npos ||
+         node_name.find("MMoE_input_emb_concat") != std::string::npos;
+}
+
 // Note that this op is subclassed for QuantizedReshapeOp.
 class ReshapeOp : public OpKernel {
  public:
@@ -110,6 +118,13 @@ class ReshapeOp : public OpKernel {
     Tensor output(input.dtype());
     CHECK(output.CopyFrom(input, shape));
     context->set_output(0, std::move(output));
+    if (ShouldLogDynamicDebugNode(name())) {
+      LOG(INFO) << "[TF DYNAMIC DEBUG] op=Reshape node=" << name()
+                << " input_shape=" << input.shape().DebugString()
+                << " sizes_shape=" << sizes.shape().DebugString()
+                << " output_shape="
+                << context->output(0)->shape().DebugString();
+    }
   }
 
   bool IsExpensive() override { return false; }

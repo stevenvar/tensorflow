@@ -2123,6 +2123,13 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
       continue;
     }
 
+    if (node->type_string() == "StridedSlice") {
+      LOG(INFO) << "Rejecting " << node->name()
+                << " from XLA clustering: StridedSlice is explicitly kept in "
+                   "TensorFlow for dynamic-size debugging.";
+      continue;
+    }
+
     RecursiveCompilabilityChecker::OperationFilter filter =
         CreateOperationFilter(*registration);
     filter.require_always_compilable = true;

@@ -505,6 +505,14 @@ void LogClusterRuntimeInputs(absl::string_view cluster_name,
             << " op=" << op_name << " inputs=" << TensorInputsSummary(inputs);
 }
 
+std::string ClusterNameFromRunOpName(absl::string_view op_name) {
+  const size_t slash_pos = op_name.rfind('/');
+  if (slash_pos == absl::string_view::npos) {
+    return std::string(op_name);
+  }
+  return std::string(op_name.substr(0, slash_pos));
+}
+
 void LogClusterOutputs(OpKernelContext* ctx, absl::string_view cluster_name) {
   std::vector<std::string> output_summaries;
   output_summaries.reserve(ctx->num_outputs());
@@ -1721,7 +1729,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
               platform_info_.device_type());
 
   if (use_pjrt) {
-    const std::string cluster_name = function_.name();
+    const std::string cluster_name = ClusterNameFromRunOpName(def().name());
     const PjRtExecutableClosureStore::KeyT& key = key_tensor.flat<tstring>()(0);
     PjRtExecutableClosure closure =
         PjRtExecutableClosureStore::Global()->Consume(key);
@@ -1759,7 +1767,7 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
   }
 
   const XlaExecutableClosureStore::KeyT& key = key_tensor.flat<tstring>()(0);
-  const std::string cluster_name = function_.name();
+  const std::string cluster_name = ClusterNameFromRunOpName(def().name());
 
   XlaExecutableClosure closure =
       XlaExecutableClosureStore::Global()->Consume(key);

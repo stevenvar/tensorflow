@@ -39,6 +39,10 @@ namespace tensorflow {
 
 namespace {
 
+bool ShouldLogDynamicDebugTruedivCompileNode(const std::string& node_name) {
+  return node_name.find("/truediv") != std::string::npos;
+}
+
 bool IsSymbolicContentType(DataType type) {
   type = BaseType(type);
   return type == DT_INT32 || type == DT_INT64;
@@ -213,6 +217,14 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
   TensorShape rhs_shape = ctx->InputShape(1);
   xla::Shape lhs_xla_shape = ctx->InputXlaShape(0).value();
   xla::Shape rhs_xla_shape = ctx->InputXlaShape(1).value();
+  if (ShouldLogDynamicDebugTruedivCompileNode(name())) {
+    LOG(INFO) << "[TF2XLA TRUEDIV DEBUG] stage=inputs op=" << type_string()
+              << " node=" << name()
+              << " lhs_tf_shape=" << lhs_shape.DebugString()
+              << " rhs_tf_shape=" << rhs_shape.DebugString()
+              << " lhs_xla_shape=" << lhs_xla_shape.ToString(true)
+              << " rhs_xla_shape=" << rhs_xla_shape.ToString(true);
+  }
   // Fetch the expressions containing the input tensors.
   auto lhs_handle = ctx->Input(0);
   auto rhs_handle = ctx->Input(1);
@@ -453,6 +465,24 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
       Computation(ctx, lhs_handle, lhs_shape.dim_sizes(), rhs_handle,
                   rhs_shape.dim_sizes(), bcast,
                   broadcast_output_exprs, extend_dimension);
+  if (ShouldLogDynamicDebugTruedivCompileNode(name())) {
+    auto output_shape_or = ctx->builder()->GetShape(output);
+    if (output_shape_or.ok()) {
+      LOG(INFO) << "[TF2XLA TRUEDIV DEBUG] stage=output op="
+                << type_string() << " node=" << name()
+                << " output_tf_shape="
+                << TensorShape(bcast.output_shape()).DebugString()
+                << " output_xla_shape="
+                << output_shape_or.value().ToString(true);
+    } else {
+      LOG(INFO) << "[TF2XLA TRUEDIV DEBUG] stage=output op="
+                << type_string() << " node=" << name()
+                << " output_tf_shape="
+                << TensorShape(bcast.output_shape()).DebugString()
+                << " output_xla_shape=<error: "
+                << output_shape_or.status().ToString() << ">";
+    }
+  }
 
   // The TensorFlow helper computed the post-broadcast shape in
   // output_shape: we rely on subclassed Computations to implement the

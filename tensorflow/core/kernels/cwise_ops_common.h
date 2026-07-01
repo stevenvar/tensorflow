@@ -45,6 +45,10 @@ inline bool ShouldLogDynamicDebugBinaryNode(const std::string& node_name) {
          node_name.find("MMoE_input_emb_concat") != std::string::npos;
 }
 
+inline bool ShouldLogDynamicDebugTruedivNode(const std::string& node_name) {
+  return node_name.find("/truediv") != std::string::npos;
+}
+
 typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
 
@@ -109,6 +113,13 @@ class BinaryOp : public BinaryOpShared {
     auto maybe_log_output = [&](const Tensor& out) {
       if (ShouldLogDynamicDebugBinaryNode(name())) {
         LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                  << " node=" << name()
+                  << " input0_shape=" << input_0.shape().DebugString()
+                  << " input1_shape=" << input_1.shape().DebugString()
+                  << " output_shape=" << out.shape().DebugString();
+      }
+      if (ShouldLogDynamicDebugTruedivNode(name())) {
+        LOG(INFO) << "[TF TRUEDIV DEBUG] op=" << type_string()
                   << " node=" << name()
                   << " input0_shape=" << input_0.shape().DebugString()
                   << " input1_shape=" << input_1.shape().DebugString()

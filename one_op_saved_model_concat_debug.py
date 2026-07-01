@@ -34,13 +34,13 @@ def build_concat_debug_model():
 
   act_padding_flat_input = tf.placeholder(
       dtype=tf.float32,
-      shape=[None, 10 * _RIGHT_ACT_WIDTH],
+      shape=[None, _RIGHT_ACT_WIDTH],
       name="act_padding_flat")
   attr_padding_flat_input = tf.placeholder(
       dtype=tf.float32,
-      shape=[None, 10 * _RIGHT_ATTR_WIDTH],
+      shape=[None, _RIGHT_ATTR_WIDTH],
       name="attr_padding_flat")
-  gating_input_input = tf.placeholder(dtype=tf.float32, shape=[None, 10],
+  gating_input_input = tf.placeholder(dtype=tf.float32, shape=[None],
                                       name="gating_input")
 
   sparse_features_flat_a = tf.reshape(
@@ -59,7 +59,7 @@ def build_concat_debug_model():
       act_padding_flat_input, [-1], name="act_padding_flat_dynamic")
   attr_padding_flat = tf.reshape(
       attr_padding_flat_input, [-1], name="attr_padding_flat_dynamic")
-  gating_input = tf.reshape(gating_input_input, [-1, 10], name="gating_input_dynamic")
+  gating_input = tf.reshape(gating_input_input, [-1], name="gating_input_dynamic")
 
   with tf.name_scope("BuildCommonEmbInput"):
     sparse_features_concat = tf.concat(
@@ -75,12 +75,18 @@ def build_concat_debug_model():
 
   with tf.name_scope("sequence_branch"):
     act_padding_session = tf.reshape(
-        act_padding_flat, [-1, 10, _RIGHT_ACT_WIDTH], name="Reshape_5")
+        act_padding_flat,
+        [-1, _LEFT_SEQUENCE_WIDTH, _RIGHT_ACT_WIDTH],
+        name="Reshape_5")
     attr_padding_session = tf.reshape(
-        attr_padding_flat, [-1, 10, _RIGHT_ATTR_WIDTH], name="Reshape_6")
+        attr_padding_flat,
+        [-1, _LEFT_SEQUENCE_WIDTH, _RIGHT_ATTR_WIDTH],
+        name="Reshape_6")
     concat_4 = tf.concat(
         [act_padding_session, attr_padding_session], axis=2, name="concat_4")
-    expanded = tf.expand_dims(gating_input, axis=2, name="ExpandDims")
+    expanded = tf.reshape(
+        gating_input, [-1, _LEFT_SEQUENCE_WIDTH], name="Reshape_7")
+    expanded = tf.expand_dims(expanded, axis=2, name="ExpandDims")
     slice_end = tf.stack(
         [
             tf.shape(expanded)[0],
@@ -98,7 +104,9 @@ def build_concat_debug_model():
     mul_1 = tf.multiply(concat_4, gating_slice, name="mul_1")
     sum_1 = tf.reduce_sum(mul_1, axis=1, keepdims=False, name="Sum_1")
     truediv_2 = tf.multiply(
-        sum_1, tf.constant(1.0 / 10.0, dtype=tf.float32), name="truediv_2")
+        sum_1,
+        tf.constant(1.0 / float(_LEFT_SEQUENCE_WIDTH), dtype=tf.float32),
+        name="truediv_2")
 
   final_concat = tf.concat(
       [left_branch, truediv_2], axis=1, name="input_emb_concat")
@@ -119,17 +127,20 @@ def build_concat_debug_model():
           dtype=np.float32).reshape(
               _BATCH_SIZE, _LEFT_SEQUENCE_WIDTH, _LEFT_EMBED_WIDTH),
       act_padding_flat_input: np.arange(
-          _BATCH_SIZE * 10 * _RIGHT_ACT_WIDTH, dtype=np.float32).reshape(
-              _BATCH_SIZE, 10 * _RIGHT_ACT_WIDTH),
+          _BATCH_SIZE * _LEFT_SEQUENCE_WIDTH * _RIGHT_ACT_WIDTH,
+          dtype=np.float32).reshape(
+              _BATCH_SIZE * _LEFT_SEQUENCE_WIDTH, _RIGHT_ACT_WIDTH),
       attr_padding_flat_input: (1000 + np.arange(
-          _BATCH_SIZE * 10 * _RIGHT_ATTR_WIDTH, dtype=np.float32)).reshape(
-              _BATCH_SIZE, 10 * _RIGHT_ATTR_WIDTH),
+          _BATCH_SIZE * _LEFT_SEQUENCE_WIDTH * _RIGHT_ATTR_WIDTH,
+          dtype=np.float32)).reshape(
+              _BATCH_SIZE * _LEFT_SEQUENCE_WIDTH, _RIGHT_ATTR_WIDTH),
       gating_input_input: np.array(
-          [
-              np.linspace(1.0, 2.0, 10, dtype=np.float32),
-              np.linspace(0.25, 1.25, 10, dtype=np.float32),
-              np.linspace(2.0, 3.0, 10, dtype=np.float32),
+          np.concatenate([
+              np.linspace(1.0, 2.0, _LEFT_SEQUENCE_WIDTH, dtype=np.float32),
+              np.linspace(0.25, 1.25, _LEFT_SEQUENCE_WIDTH, dtype=np.float32),
+              np.linspace(2.0, 3.0, _LEFT_SEQUENCE_WIDTH, dtype=np.float32),
           ],
+                         axis=0),
           dtype=np.float32),
   }
   inputs = {
@@ -142,6 +153,8 @@ def build_concat_debug_model():
   }
   outputs = {
       "left_branch": left_branch,
+      "concat_4": concat_4,
+      "sum_1": sum_1,
       "truediv_2": truediv_2,
       "input_emb_concat": final_concat,
   }
@@ -185,7 +198,8 @@ def parse_args():
   parser = argparse.ArgumentParser(
       description=(
           "Generate a TensorFlow v1 SavedModel for a reduced concat debug "
-          "subgraph based on BuildCommonEmbInput/Reshape_2 and truediv_2."))
+          "subgraph where both concat inputs should carry the same A/240 "
+          "dynamic size through reshape and truediv paths."))
   parser.add_argument(
       "--save_model",
       action="store_true",
@@ -211,6 +225,8 @@ def main():
       else:
         fetched = sess.run(outputs, feed_dict=feeds)
         print("left_branch shape:", fetched["left_branch"].shape)
+        print("concat_4 shape:", fetched["concat_4"].shape)
+        print("sum_1 shape:", fetched["sum_1"].shape)
         print("truediv_2 shape:", fetched["truediv_2"].shape)
         print("input_emb_concat shape:", fetched["input_emb_concat"].shape)
 

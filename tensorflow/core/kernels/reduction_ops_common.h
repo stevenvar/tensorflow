@@ -38,6 +38,14 @@ limitations under the License.
 
 namespace tensorflow {
 
+inline bool ShouldLogDynamicDebugReductionNode(const std::string& node_name) {
+  return node_name.find("de_iic/") != std::string::npos ||
+         node_name.find("iC_iic/") != std::string::npos ||
+         node_name.find("iR_iic/") != std::string::npos ||
+         node_name.find("iF_iic/") != std::string::npos ||
+         node_name.find("MMoE_input_emb_concat") != std::string::npos;
+}
+
 typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
 
@@ -242,6 +250,13 @@ class ReductionOp : public OpKernel {
     Tensor out;
     OP_REQUIRES(ctx, out.CopyFrom(tmp_out, helper.out_shape()),
                 errors::Internal("Error during reduction copy."));
+    if (type_string() == "Sum" && ShouldLogDynamicDebugReductionNode(name())) {
+      LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                << " node=" << name()
+                << " input_shape=" << data.shape().DebugString()
+                << " axes=" << axes.SummarizeValue(10)
+                << " output_shape=" << out.shape().DebugString();
+    }
     ctx->set_output(0, out);
   }
 

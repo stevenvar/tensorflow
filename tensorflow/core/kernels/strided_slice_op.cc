@@ -53,6 +53,14 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
+bool ShouldLogDynamicDebugNode(const std::string& node_name) {
+  return node_name.find("de_iic/") != std::string::npos ||
+         node_name.find("iC_iic/") != std::string::npos ||
+         node_name.find("iR_iic/") != std::string::npos ||
+         node_name.find("iF_iic/") != std::string::npos ||
+         node_name.find("MMoE_input_emb_concat") != std::string::npos;
+}
+
 template <typename T>
 struct MemCpyFunctor {
   // Returns true if the copy was made with memcpy, false otherwise.
@@ -116,6 +124,14 @@ class StridedSliceOp : public OpKernel {
                      &processing_shape, &final_shape, &is_identity,
                      &is_simple_slice, &slice_dim0, &begin, &end, &strides));
     const Tensor& input = context->input(0);
+    auto log_output_shape = [&](const TensorShape& output_shape) {
+      if (ShouldLogDynamicDebugNode(name())) {
+        LOG(INFO) << "[TF DYNAMIC DEBUG] op=StridedSlice node=" << name()
+                  << " input_shape=" << input.shape().DebugString()
+                  << " processing_shape=" << processing_shape.DebugString()
+                  << " output_shape=" << output_shape.DebugString();
+      }
+    };
 
     // Optimization #1, slice is a no-op plus reshape
     if (is_identity) {
@@ -124,6 +140,7 @@ class StridedSliceOp : public OpKernel {
       OP_REQUIRES(context, tmp.CopyFrom(input, final_shape),
                   errors::Internal("Copy failed"));
       context->set_output(0, tmp);
+      log_output_shape(final_shape);
       return;
     }
 
@@ -140,6 +157,7 @@ class StridedSliceOp : public OpKernel {
       OP_REQUIRES(context, tmp.CopyFrom(slice, final_shape),
                   errors::Internal("Copy failed"));
       context->set_output(0, tmp);
+      log_output_shape(final_shape);
       return;
     }
 
@@ -160,6 +178,7 @@ class StridedSliceOp : public OpKernel {
           final_shape.dims() == 2 && new_axis_mask == 0) {
         MemCpyFunctor<T> functor;
         if (functor.Copy(input, begin, end, result)) {
+          log_output_shape(result->shape());
           return;
         }
       }
@@ -169,6 +188,7 @@ class StridedSliceOp : public OpKernel {
     HandleStridedSliceCase<Device, T, NDIM>(context, begin, end, strides,      \
                                             processing_shape, is_simple_slice, \
                                             result);                           \
+    log_output_shape(result->shape());                                         \
     return;                                                                    \
   }
 

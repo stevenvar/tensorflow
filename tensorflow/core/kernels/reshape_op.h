@@ -122,8 +122,7 @@ class ReshapeOp : public OpKernel {
       LOG(INFO) << "[TF DYNAMIC DEBUG] op=Reshape node=" << name()
                 << " input_shape=" << input.shape().DebugString()
                 << " sizes_shape=" << sizes.shape().DebugString()
-                << " output_shape="
-                << context->output(0)->shape().DebugString();
+                << " output_shape=" << shape.DebugString();
     }
   }
 

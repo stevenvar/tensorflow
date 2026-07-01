@@ -229,7 +229,7 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
   auto lhs_handle = ctx->Input(0);
   auto rhs_handle = ctx->Input(1);
   if (lhs_shape.dims() == rhs_shape.dims()) {
-    auto reconcile_tensor_mismatched_dims = [ctx](
+    auto reconcile_tensor_mismatched_dims = [ctx, this](
                                                 xla::XlaOp lhs, xla::XlaOp rhs,
                                                 const xla::Shape& lhs_xla_shape,
                                                 const xla::Shape& rhs_xla_shape,
@@ -291,6 +291,12 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
             //
             // However, XLA only does degenerate broadcasts for non-dynamic
             // dimensions of size 1.
+            LOG(INFO) << "[TF2XLA SINGLETON RECONCILE] stage=before"
+                      << " op=" << type_string() << " node=" << name()
+                      << " dim=" << i
+                      << " lhs_tf_shape=" << lhs_tensor_shape->DebugString()
+                      << " lhs_xla_shape=" << lhs_xla_shape.ToString(true)
+                      << " rhs_xla_shape=" << rhs_xla_shape.ToString(true);
 
             // Get the original size.
             auto size = xla::GetDimensionSize(lhs, i);
@@ -327,6 +333,14 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
                 i, (lhs_tensor_shape->get_filled_expression(i) *
                     rhs_xla_shape.expressions(i))
                        .simplify());
+            LOG(INFO) << "[TF2XLA SINGLETON RECONCILE] stage=after"
+                      << " op=" << type_string() << " node=" << name()
+                      << " dim=" << i
+                      << " reconciled_tf_shape="
+                      << lhs_tensor_shape->DebugString()
+                      << " rhs_xla_shape=" << rhs_xla_shape.ToString(true)
+                      << " reconciled_expr="
+                      << lhs_tensor_shape->get_filled_expression(i);
           }
         }
       }

@@ -1229,6 +1229,52 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
           << " expressions via GraphProperties ===";
 }
 
+std::string FormatTensorShapeProtoWithExpressions(
+    const TensorShapeProto& tensor_shape_proto) {
+  if (tensor_shape_proto.unknown_rank()) {
+    return "<unknown-rank>";
+  }
+  std::vector<std::string> dim_summaries;
+  dim_summaries.reserve(tensor_shape_proto.dim_size());
+  for (int dim = 0; dim < tensor_shape_proto.dim_size(); ++dim) {
+    std::string expr_summary = "<none>";
+    if (dim < tensor_shape_proto.expressions_size()) {
+      const auto& expr_proto = tensor_shape_proto.expressions(dim);
+      if (expr_proto.node_type_case() != ExpressionProto::NODE_TYPE_NOT_SET) {
+        expr_summary = ExprProtoToString(expr_proto);
+      } else {
+        expr_summary = std::to_string(tensor_shape_proto.dim(dim).size());
+      }
+    }
+    dim_summaries.push_back(absl::StrCat(
+        "dim", dim, "{size=", tensor_shape_proto.dim(dim).size(),
+        ", expr=", expr_summary, "}"));
+  }
+  return absl::StrCat("[", absl::StrJoin(dim_summaries, ", "), "]");
+}
+
+std::string NodeOutputShapeSummary(const Node& node) {
+  const AttrValue* output_shapes_attr =
+      node.attrs().Find(kXlaInferredOutputTensorShapesAttrName);
+  if (output_shapes_attr == nullptr) {
+    output_shapes_attr = node.attrs().Find(kXlaInferredOutputShapesAttrName);
+  }
+  if (output_shapes_attr == nullptr) {
+    return "<missing>";
+  }
+
+  std::vector<std::string> output_summaries;
+  output_summaries.reserve(output_shapes_attr->list().shape_size());
+  for (int out_idx = 0; out_idx < output_shapes_attr->list().shape_size();
+       ++out_idx) {
+    output_summaries.push_back(absl::StrCat(
+        "output", out_idx, "=",
+        FormatTensorShapeProtoWithExpressions(
+            output_shapes_attr->list().shape(out_idx))));
+  }
+  return absl::StrCat("[", absl::StrJoin(output_summaries, ", "), "]");
+}
+
 absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
   TF_RET_CHECK(!initialized_ && !edges_contracted_ && !clusters_created_);
   initialized_ = true;
@@ -1662,6 +1708,7 @@ absl::Status MarkForCompilationPassImpl::CreateClusters() {
   // * have more than debug_options_.xla_min_cluster_size elements (applicable
   //   only if compilation is enabled, otherwise there will be no such
   //   candidates).
+  std::map<string, std::vector<Node*>> nodes_by_cluster_name;
   for (Node* n : compilation_candidates_) {
     Cluster* cluster = GetClusterForNode(n);
     TF_ASSIGN_OR_RETURN(bool should_compile_cluster,
@@ -1696,7 +1743,21 @@ absl::Status MarkForCompilationPassImpl::CreateClusters() {
 
       n->AddAttr(kXlaClusterAttr, name);
       n->AddAttr(kXlaAlreadyClustered, true);
+      nodes_by_cluster_name[name].push_back(n);
       VLOG(3) << "Assigning node " << n->name() << " to cluster " << name;
+    }
+  }
+
+  for (auto& [cluster_name, nodes] : nodes_by_cluster_name) {
+    absl::c_sort(nodes, [](const Node* lhs, const Node* rhs) {
+      return lhs->name() < rhs->name();
+    });
+    LOG(INFO) << "[XLA CLUSTER CREATED] cluster=" << cluster_name
+              << " num_ops=" << nodes.size();
+    for (const Node* node : nodes) {
+      LOG(INFO) << "[XLA CLUSTER CREATED] cluster=" << cluster_name
+                << " node=" << node->name() << " op=" << node->type_string()
+                << " outputs=" << NodeOutputShapeSummary(*node);
     }
   }
 

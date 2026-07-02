@@ -910,6 +910,18 @@ xla::DExpr FindSmallestCoveringSubexpression(const xla::DExpr& expr) {
   return *best_it;
 }
 
+std::set<int> CollectDynamicVariableIds(absl::Span<const xla::DExpr> exprs) {
+  std::set<int> ids;
+  for (const xla::DExpr& expr : exprs) {
+    if (!expr || !expr->is_dynamic()) {
+      continue;
+    }
+    const std::set<int> expr_ids = expr->get_all_ids();
+    ids.insert(expr_ids.begin(), expr_ids.end());
+  }
+  return ids;
+}
+
 std::optional<std::string>
 MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
     absl::Span<const xla::DExpr> exprs) {
@@ -2412,6 +2424,8 @@ absl::Status MarkForCompilationPassImpl::AssignDimVars(void) {
 
 bool MarkForCompilationPassImpl::LogNotContractableAndReturnFalse(
     Cluster* from, Cluster* to, absl::string_view reason) {
+  LOG(INFO) << "Rejecting cluster merge from " << from->DebugString(*graph_)
+            << " to " << to->DebugString(*graph_) << ": " << reason;
   VLOG(3) << EdgeContractionFailureMsg(from, to, reason);
   return false;
 }
@@ -2636,6 +2650,9 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
         from, to, "the two nodes do not have same annotated ids");
   }
 
+  LOG(INFO) << "Considering cluster merge from " << from->DebugString(*graph_)
+            << " to " << to->DebugString(*graph_);
+
   if (from->contains_concat() && to->contains_concat()) {
     LOG(INFO) << "Rejecting merge because both clusters contain concat ops: "
               << "from=" << from->DebugString(*graph_) << " to="
@@ -2656,6 +2673,16 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
                 << to->DebugString(*graph_) << " with from_exprs=["
                 << DExprListToString(from_exprs) << "] to_exprs=["
                 << DExprListToString(to_exprs) << "]";
+    }
+    const std::set<int> combined_ids = CollectDynamicVariableIds(combined_exprs);
+    if (combined_ids.size() > 1) {
+      const std::string reason = absl::StrCat(
+          "merged cluster would contain more than one dynamic variable id: {",
+          absl::StrJoin(combined_ids, ", "), "}");
+      LOG(INFO) << "Dynamic clustering merge failed from "
+                << from->DebugString(*graph_) << " to "
+                << to->DebugString(*graph_) << ": " << reason;
+      return LogNotContractableAndReturnFalse(from, to, reason);
     }
     std::optional<std::string> incompatibility =
         CheckDynamicExpressionCompatibility(combined_exprs);
@@ -2726,6 +2753,8 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
     }
   }
 
+  LOG(INFO) << "Merging clusters from " << from->DebugString(*graph_) << " to "
+            << to->DebugString(*graph_);
   return MergeClusters(from, to);
 }
 

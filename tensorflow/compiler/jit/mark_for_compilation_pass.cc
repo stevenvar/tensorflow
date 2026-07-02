@@ -2167,6 +2167,22 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
       continue;
     }
 
+    if (node->type_string() == "ConcatV2" &&
+        (absl::StrContains(node->name(), "concat_4") ||
+         absl::StrContains(node->name(), "concat_5"))) {
+      LOG(INFO) << "Rejecting " << node->name()
+                << " from XLA clustering: keeping concat_4/concat_5 in TF "
+                   "for dynamic-size debugging.";
+      continue;
+    }
+
+    if (node->type_string() == "Pack") {
+      LOG(INFO) << "Rejecting " << node->name()
+                << " from XLA clustering: keeping Pack in TF for dynamic-size "
+                   "debugging.";
+      continue;
+    }
+
     if (debug_options_.enable_dynamic_sizes) {
       std::string reason;
       if (!DynamicNodeExpressionsAreCompatible(*node, &reason)) {

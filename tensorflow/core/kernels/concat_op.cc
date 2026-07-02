@@ -189,6 +189,15 @@ class ConcatBaseOp : public OpKernel {
     if (ShouldLogDynamicDebugNode(name())) {
       LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
                 << " node=" << name() << " axis=" << axis
+                << " num_inputs=" << N;
+      for (int i = 0; i < N; ++i) {
+        const auto& in = c->input(values_input_start_index_ + i);
+        LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                  << " node=" << name() << " input_index=" << i
+                  << " input_shape=" << in.shape().DebugString();
+      }
+      LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                << " node=" << name()
                 << " output_shape=" << output->shape().DebugString();
     }
   }

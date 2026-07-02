@@ -35,6 +35,18 @@ typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
+namespace {
+
+bool ShouldLogDynamicDebugPackNode(const std::string& node_name) {
+  return node_name.find("de_iic/") != std::string::npos ||
+         node_name.find("iC_iic/") != std::string::npos ||
+         node_name.find("iR_iic/") != std::string::npos ||
+         node_name.find("iF_iic/") != std::string::npos ||
+         node_name.find("MMoE_input_emb_concat") != std::string::npos;
+}
+
+}  // namespace
+
 #if !defined(PLUGGABLE_DEVICE_SUPPORTED_MACOS) && defined(__APPLE__) && \
     !defined(ANDROID) && !defined(__ANDROID__) &&                       \
     (!defined(TARGET_OS_IOS) || !TARGET_OS_IOS)
@@ -73,6 +85,13 @@ class PackOp : public OpKernel {
       Tensor output;
       CHECK(output.CopyFrom(first_input, output_shape));
       c->set_output(0, output);
+      if (ShouldLogDynamicDebugPackNode(name())) {
+        LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                  << " node=" << name() << " axis=" << axis
+                  << " num_inputs=" << num << " input_index=0 input_shape="
+                  << first_input.shape().DebugString() << " output_shape="
+                  << output.shape().DebugString();
+      }
       return;
     }
 
@@ -114,10 +133,36 @@ class PackOp : public OpKernel {
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
       if (std::is_same<Device, GPUDevice>::value) {
         ConcatGPU<T>(c, inputs_flat, output, &output_flat);
+        if (ShouldLogDynamicDebugPackNode(name())) {
+          LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                    << " node=" << name() << " axis=" << axis
+                    << " num_inputs=" << num;
+          for (int i = 0; i < num; ++i) {
+            LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                      << " node=" << name() << " input_index=" << i
+                      << " input_shape=" << c->input(i).shape().DebugString();
+          }
+          LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                    << " node=" << name()
+                    << " output_shape=" << output->shape().DebugString();
+        }
         return;
       }
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
       ConcatCPU<T>(c->device(), inputs_flat, &output_flat);
+    }
+    if (ShouldLogDynamicDebugPackNode(name())) {
+      LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                << " node=" << name() << " axis=" << axis
+                << " num_inputs=" << num;
+      for (int i = 0; i < num; ++i) {
+        LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                  << " node=" << name() << " input_index=" << i
+                  << " input_shape=" << c->input(i).shape().DebugString();
+      }
+      LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                << " node=" << name()
+                << " output_shape=" << output->shape().DebugString();
     }
   }
 

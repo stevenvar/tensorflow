@@ -34,6 +34,18 @@ typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
 typedef Eigen::DenseIndex IndexType;
 
+namespace {
+
+bool ShouldLogDynamicDebugGatherNode(const std::string& node_name) {
+  return node_name.find("de_iic/") != std::string::npos ||
+         node_name.find("iC_iic/") != std::string::npos ||
+         node_name.find("iR_iic/") != std::string::npos ||
+         node_name.find("iF_iic/") != std::string::npos ||
+         node_name.find("MMoE_input_emb_concat") != std::string::npos;
+}
+
+}  // namespace
+
 template <typename Device, typename T, typename Index>
 class GatherOp : public OpKernel {
  public:
@@ -185,6 +197,15 @@ class GatherOp : public OpKernel {
         errors::InvalidArgument(
             "indices", SliceDebugString(indices.shape(), bad_i), " = ",
             indices_flat(bad_i), " is not in [0, ", gather_dim_size, ")"));
+
+    if (ShouldLogDynamicDebugGatherNode(name())) {
+      LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                << " node=" << name() << " params_shape="
+                << params.shape().DebugString() << " indices_shape="
+                << indices.shape().DebugString() << " axis=" << axis
+                << " batch_dims=" << batch_dims << " output_shape="
+                << out->shape().DebugString();
+    }
   }
 
  private:

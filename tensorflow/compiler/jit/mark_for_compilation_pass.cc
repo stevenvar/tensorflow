@@ -2174,13 +2174,6 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
       continue;
     }
 
-    if (node->type_string() == "Tile") {
-      LOG(INFO) << "Rejecting " << node->name()
-                << " from XLA clustering: keeping Tile in TF for dynamic-size "
-                   "debugging.";
-      continue;
-    }
-
     if (debug_options_.enable_dynamic_sizes) {
       std::string reason;
       if (!DynamicNodeExpressionsAreCompatible(*node, &reason)) {

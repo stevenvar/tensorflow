@@ -9,238 +9,528 @@ import tensorflow.compat.v1 as tf
 tf.disable_eager_execution()
 
 _BATCH_SIZE = 3
-_SEQ_LEN = 240
-
-_COMMON_EMBED_WIDTH = 4
-_COMMON_SPLIT_WIDTH = _COMMON_EMBED_WIDTH // 2
-
-_ACT_WIDTH = 4
-_ATTR_WIDTH = 20
-_CONCAT_WIDTH = _ACT_WIDTH + _ATTR_WIDTH
-
-_MLP_IN_WIDTH = 8
-_DE_BEHAVIOR_ZERO_ROWS = 1
-_DE_ATTR_ZERO_ROWS = 1
+_WIDTH = 24
 
 
-def build_concat_debug_model():
-  """Builds a repro that resembles the de_iic/truediv_1 branch."""
-  common_flat_a_input = tf.placeholder(
-      dtype=tf.float32,
-      shape=[None, _COMMON_SPLIT_WIDTH],
-      name="common_flat_a")
-  common_flat_b_input = tf.placeholder(
-      dtype=tf.float32,
-      shape=[None, _COMMON_SPLIT_WIDTH],
-      name="common_flat_b")
-  sequence_mask_input = tf.placeholder(
-      dtype=tf.float32,
-      shape=[None, _COMMON_EMBED_WIDTH],
-      name="sequence_mask")
+def _float_input():
+  return tf.placeholder(tf.float32, shape=[None, _WIDTH], name="input")
 
-  de_behavior_flat_input = tf.placeholder(
-      dtype=tf.float32,
-      shape=[None, _ACT_WIDTH],
-      name="de_behavior_flat")
-  de_attr_flat_input = tf.placeholder(
-      dtype=tf.float32,
-      shape=[None, _ATTR_WIDTH],
-      name="de_attr_flat")
-  mlp_input_input = tf.placeholder(
-      dtype=tf.float32,
-      shape=[None, _MLP_IN_WIDTH],
-      name="mlp_input")
 
-  common_flat_a = tf.reshape(
-      common_flat_a_input, [-1, _COMMON_SPLIT_WIDTH], name="common_flat_a_dynamic")
-  common_flat_b = tf.reshape(
-      common_flat_b_input, [-1, _COMMON_SPLIT_WIDTH], name="common_flat_b_dynamic")
-  sequence_mask = tf.reshape(
-      sequence_mask_input, [-1, _COMMON_EMBED_WIDTH], name="sequence_mask_dynamic")
-  de_behavior_flat = tf.reshape(
-      de_behavior_flat_input, [-1, _ACT_WIDTH], name="de_behavior_flat_dynamic")
-  de_attr_flat = tf.reshape(
-      de_attr_flat_input, [-1, _ATTR_WIDTH], name="de_attr_flat_dynamic")
-  mlp_input = tf.reshape(
-      mlp_input_input, [-1, _MLP_IN_WIDTH], name="mlp_input_dynamic")
+def _batch_dim(tensor):
+  return tf.shape(tensor, out_type=tf.int32)[0]
 
-  with tf.name_scope("BuildCommonEmbInput"):
-    common_flat_count = tf.shape(common_flat_a, out_type=tf.int32)[0]
-    common_batch_size = tf.math.floordiv(
-        common_flat_count, _SEQ_LEN, name="common_batch_size")
-    sparse_features_concat = tf.concat(
-        [common_flat_a, common_flat_b],
-        axis=1,
-        name="sparse_features_embedding_concat")
-    common_shape = tf.stack(
-        [common_batch_size, tf.constant(_SEQ_LEN, dtype=tf.int32),
-         tf.constant(_COMMON_EMBED_WIDTH, dtype=tf.int32)],
-        axis=0,
-        name="common_reshape_shape")
-    common_reshape = tf.reshape(
-        sparse_features_concat, common_shape, name="Reshape")
-    sequence_mask_reshape = tf.reshape(
-        sequence_mask, common_shape, name="sequence_mask_reshape")
-    common_mul = tf.multiply(common_reshape, sequence_mask_reshape, name="mul")
-    left_branch = tf.reshape(common_mul, [-1, _SEQ_LEN * _COMMON_EMBED_WIDTH],
-                             name="Reshape_2")
 
-  with tf.name_scope("de"):
-    de_behavior_zeros = tf.zeros(
-        [_DE_BEHAVIOR_ZERO_ROWS, _ACT_WIDTH],
-        dtype=tf.float32,
-        name="de_behavior_emb_lookup/zeros")
-    de_attr_zeros = tf.zeros(
-        [_DE_ATTR_ZERO_ROWS, _ATTR_WIDTH],
-        dtype=tf.float32,
-        name="de_attr_emb_lookup/zeros")
+def _float_feed(offset=0.0):
+  values = np.arange(_BATCH_SIZE * _WIDTH, dtype=np.float32)
+  return values.reshape(_BATCH_SIZE, _WIDTH) + offset
 
-    de_behavior_concat = tf.concat(
-        [de_behavior_flat, de_behavior_zeros],
-        axis=0,
-        name="de_behavior_emb_lookup/concat")
-    de_attr_concat = tf.concat(
-        [de_attr_flat, de_attr_zeros],
-        axis=0,
-        name="de_attr_emb_lookup/concat")
 
-    de_behavior_reshape = tf.reshape(
-        de_behavior_concat, [-1, _ACT_WIDTH], name="Reshape")
-    de_attr_reshape = tf.reshape(
-        de_attr_concat, [-1, _ATTR_WIDTH], name="Reshape_1")
+def _int_feed(offset=0):
+  values = np.arange(_BATCH_SIZE * _WIDTH, dtype=np.int32)
+  return values.reshape(_BATCH_SIZE, _WIDTH) + offset
 
-  with tf.name_scope("de_iic"):
-    zeros = tf.zeros([1, _ACT_WIDTH], dtype=tf.float32, name="zeros")
-    zeros_1 = tf.zeros([1, _ATTR_WIDTH], dtype=tf.float32, name="zeros_1")
 
-    concat = tf.concat([zeros, de_behavior_reshape], axis=0, name="concat")
-    concat_1 = tf.concat([zeros_1, de_attr_reshape], axis=0, name="concat_1")
+def _positive_int_tensor(x):
+  return tf.cast(tf.abs(x), tf.int32) + 1
 
-    dynamic_flat_count = tf.shape(de_behavior_flat, out_type=tf.int32)[0]
-    session_indices = tf.range(
-        1, dynamic_flat_count + 1, dtype=tf.int32, name="session_indices")
 
-    act_padding_session = tf.gather(
-        concat, session_indices, axis=0, name="act_padding_session")
-    attr_padding_session = tf.gather(
-        concat_1, session_indices, axis=0, name="attr_padding_session")
+def _const_row_f32(start=0.0):
+  return tf.constant(
+      np.linspace(start, start + _WIDTH - 1, _WIDTH, dtype=np.float32)
+      .reshape(1, _WIDTH),
+      dtype=tf.float32)
 
-    # Mirror the real graph: reshapes are driven by packed shape tensors that
-    # reuse the dynamic flattened session length and introduce the sequence
-    # width explicitly.
-    flat_shape = tf.shape(act_padding_session, out_type=tf.int32, name="flat_shape")
-    flat_count = tf.strided_slice(
-        flat_shape,
-        begin=[0],
-        end=[1],
-        strides=[1],
-        name="strided_slice_1")
-    batch_size = tf.math.floordiv(flat_count[0], _SEQ_LEN, name="batch_size")
 
-    reshape_shape = tf.stack(
-        [batch_size, tf.constant(_SEQ_LEN, dtype=tf.int32),
-         tf.constant(_ACT_WIDTH, dtype=tf.int32)],
-        axis=0,
-        name="Reshape_2/shape")
-    reshape_1_shape = tf.stack(
-        [batch_size, tf.constant(_SEQ_LEN, dtype=tf.int32),
-         tf.constant(_ATTR_WIDTH, dtype=tf.int32)],
-        axis=0,
-        name="Reshape_1/shape")
+def _const_row_i32(start=1):
+  return tf.constant(
+      np.arange(start, start + _WIDTH, dtype=np.int32).reshape(1, _WIDTH),
+      dtype=tf.int32)
 
-    reshape = tf.reshape(act_padding_session, reshape_shape, name="Reshape")
-    reshape_1 = tf.reshape(attr_padding_session, reshape_1_shape, name="Reshape_1")
-    concat_4 = tf.concat([reshape, reshape_1], axis=2, name="concat_4")
 
-    mlp_weight = tf.constant(
-        np.linspace(
-            0.05, 0.95, _MLP_IN_WIDTH * _SEQ_LEN, dtype=np.float32).reshape(
-                _MLP_IN_WIDTH, _SEQ_LEN),
-        dtype=tf.float32,
-        name="de_iic_weight_MLP_dense_0/MatMul/fused_weight")
-    mlp_bias = tf.constant(
-        np.linspace(-0.2, 0.2, _SEQ_LEN, dtype=np.float32),
-        dtype=tf.float32,
-        name="de_iic_weight_MLP_dense_0/add/fused_bias")
+def _build_binary_addv2():
+  x = _float_input()
+  y = tf.add(x, _const_row_f32(1.0), name="AddV2")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
 
-    mlp_matmul = tf.matmul(
-        mlp_input, mlp_weight, name="de_iic_weight_MLP/de_iic_weight_MLP_dense_0/MatMul")
-    mlp_add = tf.add(
-        mlp_matmul,
-        mlp_bias,
-        name="de_iic_weight_MLP/de_iic_weight_MLP_dense_0/add")
-    mlp_sigmoid = tf.sigmoid(
-        mlp_add,
-        name="de_iic_weight_MLP/de_iic_weight_MLP_dense_0/sigmoid/Sigmoid")
 
-    expanded = tf.expand_dims(mlp_sigmoid, axis=2, name="ExpandDims")
-    slice_end = tf.stack(
-        [batch_size, tf.constant(_SEQ_LEN, dtype=tf.int32),
-         tf.constant(1, dtype=tf.int32)],
-        axis=0,
-        name="strided_slice_3/stack_1")
-    gating_slice = tf.strided_slice(
-        expanded,
-        begin=tf.constant([0, 0, 0], dtype=tf.int32),
-        end=slice_end,
-        strides=tf.constant([1, 1, 1], dtype=tf.int32),
-        name="strided_slice_3")
+def _build_binary_sub():
+  x = _float_input()
+  y = tf.subtract(x, _const_row_f32(2.0), name="Sub")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
 
-    mul = tf.multiply(concat_4, gating_slice, name="mul")
-    sum_1 = tf.reduce_sum(mul, axis=1, keepdims=False, name="Sum_1")
 
-    recip = tf.constant(
-        1.0 / float(_SEQ_LEN), dtype=tf.float32, name="truediv_1_recip")
-    truediv_1 = tf.multiply(sum_1, recip, name="truediv_1")
+def _build_binary_mul():
+  x = _float_input()
+  y = tf.multiply(x, _const_row_f32(1.0), name="Mul")
+  return {"input": x}, {"output": y}, {x: _float_feed(1.0)}
 
-  input_emb_concat = tf.concat(
-      [left_branch, truediv_1], axis=1, name="input_emb_concat")
 
-  flat_count_value = _BATCH_SIZE * _SEQ_LEN
-  feeds = {
-      common_flat_a_input: np.arange(
-          flat_count_value * _COMMON_SPLIT_WIDTH,
-          dtype=np.float32).reshape(flat_count_value, _COMMON_SPLIT_WIDTH),
-      common_flat_b_input: (10000 + np.arange(
-          flat_count_value * _COMMON_SPLIT_WIDTH,
-          dtype=np.float32)).reshape(flat_count_value, _COMMON_SPLIT_WIDTH),
-      sequence_mask_input: np.linspace(
-          0.25,
-          1.25,
-          flat_count_value * _COMMON_EMBED_WIDTH,
-          dtype=np.float32).reshape(flat_count_value, _COMMON_EMBED_WIDTH),
-      de_behavior_flat_input: np.arange(
-          flat_count_value * _ACT_WIDTH,
-          dtype=np.float32).reshape(flat_count_value, _ACT_WIDTH),
-      de_attr_flat_input: (1000 + np.arange(
-          flat_count_value * _ATTR_WIDTH,
-          dtype=np.float32)).reshape(flat_count_value, _ATTR_WIDTH),
-      mlp_input_input: np.linspace(
-          -1.0,
-          1.0,
-          _BATCH_SIZE * _MLP_IN_WIDTH,
-          dtype=np.float32).reshape(_BATCH_SIZE, _MLP_IN_WIDTH),
-  }
-  inputs = {
-      "common_flat_a": common_flat_a_input,
-      "common_flat_b": common_flat_b_input,
-      "sequence_mask": sequence_mask_input,
-      "de_behavior_flat": de_behavior_flat_input,
-      "de_attr_flat": de_attr_flat_input,
-      "mlp_input": mlp_input_input,
-  }
+def _build_binary_equal():
+  x = _float_input()
+  y = tf.equal(x, _const_row_f32(0.0), name="Equal")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_binary_not_equal():
+  x = _float_input()
+  y = tf.not_equal(x, _const_row_f32(0.0), name="NotEqual")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_binary_greater():
+  x = _float_input()
+  y = tf.greater(x, _const_row_f32(12.0), name="Greater")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_binary_maximum():
+  x = _float_input()
+  y = tf.maximum(x, _const_row_f32(8.0), name="Maximum")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_binary_minimum():
+  x = _float_input()
+  y = tf.minimum(x, _const_row_f32(8.0), name="Minimum")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_binary_floordiv():
+  x = _float_input()
+  xi = _positive_int_tensor(x)
+  y = tf.math.floordiv(xi, _const_row_i32(2), name="FloorDiv")
+  return {"input": x}, {"output": y}, {x: _float_feed(1.0)}
+
+
+def _build_binary_floormod():
+  x = _float_input()
+  xi = _positive_int_tensor(x)
+  y = tf.math.floormod(xi, _const_row_i32(2), name="FloorMod")
+  return {"input": x}, {"output": y}, {x: _float_feed(1.0)}
+
+
+def _build_unary_exp():
+  x = _float_input()
+  y = tf.exp(x / 16.0, name="Exp")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_unary_rsqrt():
+  x = _float_input()
+  y = tf.math.rsqrt(tf.abs(x) + 1.0, name="Rsqrt")
+  return {"input": x}, {"output": y}, {x: _float_feed(1.0)}
+
+
+def _build_unary_sigmoid():
+  x = _float_input()
+  y = tf.sigmoid(x / 16.0, name="Sigmoid")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_unary_round():
+  x = _float_input()
+  y = tf.round(x / 3.0, name="Round")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_cast():
+  x = _float_input()
+  y = tf.cast(x, tf.int32, name="Cast")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_concatv2():
+  x = _float_input()
+  y = tf.concat([x, x], axis=1, name="ConcatV2")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_fill():
+  x = _float_input()
+  shape = tf.stack([_batch_dim(x), tf.constant(_WIDTH, dtype=tf.int32)],
+                   axis=0,
+                   name="fill_shape")
+  y = tf.fill(shape, tf.constant(7.0, dtype=tf.float32), name="Fill")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_range():
+  x = _float_input()
+  batch = _batch_dim(x)
+  y = tf.range(0, batch * _WIDTH, _WIDTH, dtype=tf.int32, name="Range")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_shape():
+  x = _float_input()
+  y = tf.shape(x, out_type=tf.int32, name="Shape")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_rank():
+  x = _float_input()
+  y = tf.rank(x, name="Rank")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_size():
+  x = _float_input()
+  y = tf.size(x, out_type=tf.int32, name="Size")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_reshape():
+  x = _float_input()
+  shape = tf.stack([_batch_dim(x), tf.constant(6, dtype=tf.int32),
+                    tf.constant(4, dtype=tf.int32)],
+                   axis=0,
+                   name="reshape_shape")
+  y = tf.reshape(x, shape, name="Reshape")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_expanddims():
+  x = _float_input()
+  y = tf.expand_dims(x, axis=1, name="ExpandDims")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_squeeze():
+  x = _float_input()
+  expanded = tf.expand_dims(x, axis=1, name="expand_for_squeeze")
+  y = tf.squeeze(expanded, axis=[1], name="Squeeze")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_sparse_reshape():
+  x = _float_input()
+  indices = tf.where(tf.greater(x, 0.0), name="where_indices")
+  values = tf.gather_nd(x, indices, name="gather_values")
+  sparse = tf.SparseTensor(
+      indices=tf.cast(indices, tf.int64),
+      values=values,
+      dense_shape=tf.cast(tf.shape(x, out_type=tf.int32), tf.int64))
+  new_shape = tf.stack([
+      tf.cast(_batch_dim(x) * 2, tf.int64),
+      tf.constant(12, dtype=tf.int64)
+  ], axis=0, name="sparse_new_shape")
+  reshaped = tf.sparse.reshape(sparse, new_shape, name="SparseReshape")
   outputs = {
-      "de_behavior_reshape": de_behavior_reshape,
-      "de_attr_reshape": de_attr_reshape,
-      "reshape": reshape,
-      "reshape_1": reshape_1,
-      "concat_4": concat_4,
-      "gating_slice": gating_slice,
-      "sum_1": sum_1,
-      "truediv_1": truediv_1,
-      "input_emb_concat": input_emb_concat,
+      "indices": reshaped.indices,
+      "values": reshaped.values,
+      "dense_shape": reshaped.dense_shape,
   }
-  return inputs, outputs, feeds
+  return {"input": x}, outputs, {x: _float_feed(1.0)}
+
+
+def _build_zeroslike():
+  x = _float_input()
+  y = tf.zeros_like(x, name="ZerosLike")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_pack():
+  x = _float_input()
+  y = tf.stack([x, x], axis=1, name="Pack")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_transpose():
+  x = _float_input()
+  reshaped = tf.reshape(
+      x,
+      tf.stack([_batch_dim(x), tf.constant(6, dtype=tf.int32),
+                tf.constant(4, dtype=tf.int32)],
+               axis=0),
+      name="reshape_before_transpose")
+  y = tf.transpose(reshaped, perm=[0, 2, 1], name="Transpose")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_stridedslice():
+  x = _float_input()
+  y = tf.strided_slice(
+      x,
+      begin=[0, 0],
+      end=[_batch_dim(x), 12],
+      strides=[1, 1],
+      name="StridedSlice")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_tile():
+  x = _float_input()
+  y = tf.tile(x, [1, 2], name="Tile")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_select():
+  x = _float_input()
+  cond = tf.greater(x, 12.0, name="select_cond")
+  y = tf.raw_ops.Select(condition=cond, t=x, e=-x, name="Select")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_where():
+  x = _float_input()
+  cond = tf.greater(x, 12.0, name="where_cond")
+  y = tf.where(cond, name="Where")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_reduce_sum():
+  x = _float_input()
+  reshaped = tf.reshape(
+      x,
+      tf.stack([_batch_dim(x), tf.constant(6, dtype=tf.int32),
+                tf.constant(4, dtype=tf.int32)],
+               axis=0))
+  y = tf.reduce_sum(reshaped, axis=1, name="Sum")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_reduce_prod():
+  x = _float_input()
+  reshaped = tf.reshape(
+      tf.abs(x) + 1.0,
+      tf.stack([_batch_dim(x), tf.constant(6, dtype=tf.int32),
+                tf.constant(4, dtype=tf.int32)],
+               axis=0))
+  y = tf.reduce_prod(reshaped, axis=1, name="Prod")
+  return {"input": x}, {"output": y}, {x: _float_feed(1.0)}
+
+
+def _build_reduce_max():
+  x = _float_input()
+  reshaped = tf.reshape(
+      x,
+      tf.stack([_batch_dim(x), tf.constant(6, dtype=tf.int32),
+                tf.constant(4, dtype=tf.int32)],
+               axis=0))
+  y = tf.reduce_max(reshaped, axis=1, name="Max")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_matmul():
+  x = _float_input()
+  weight = tf.constant(
+      np.arange(_WIDTH * 8, dtype=np.float32).reshape(_WIDTH, 8),
+      dtype=tf.float32,
+      name="matmul_weight")
+  y = tf.matmul(x, weight, name="MatMul")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_batch_matmulv2():
+  x = _float_input()
+  batch = _batch_dim(x)
+  lhs = tf.reshape(
+      x,
+      tf.stack([batch, tf.constant(2, dtype=tf.int32),
+                tf.constant(12, dtype=tf.int32)],
+               axis=0),
+      name="lhs")
+  rhs_base = tf.constant(
+      np.arange(12 * 5, dtype=np.float32).reshape(1, 12, 5),
+      dtype=tf.float32,
+      name="rhs_base")
+  rhs = tf.tile(rhs_base, [batch, 1, 1], name="rhs")
+  y = tf.matmul(lhs, rhs, name="BatchMatMulV2")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_einsum():
+  x = _float_input()
+  weight = tf.constant(
+      np.arange(_WIDTH * 8, dtype=np.float32).reshape(_WIDTH, 8),
+      dtype=tf.float32,
+      name="einsum_weight")
+  y = tf.einsum("bi,ij->bj", x, weight, name="Einsum")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_softmax():
+  x = _float_input()
+  y = tf.nn.softmax(x, axis=1, name="Softmax")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_gatherv2():
+  x = _float_input()
+  y = tf.gather(x, [0, 3, 7, 11], axis=1, name="GatherV2")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_gathernd():
+  x = _float_input()
+  batch = _batch_dim(x)
+  row_ids = tf.range(batch, dtype=tf.int32)
+  col_ids = tf.math.mod(row_ids * 3, _WIDTH)
+  indices = tf.stack([row_ids, col_ids], axis=1, name="gathernd_indices")
+  y = tf.gather_nd(x, indices, name="GatherNd")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_scatternd():
+  x = _float_input()
+  batch = _batch_dim(x)
+  indices = tf.expand_dims(tf.range(batch, dtype=tf.int32), axis=1,
+                           name="scatter_indices")
+  updates = tf.gather(x, [0], axis=1)
+  shape = tf.stack([batch], axis=0, name="scatter_shape")
+  y = tf.scatter_nd(indices, tf.reshape(updates, [-1]), shape, name="ScatterNd")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_dynamicpartition():
+  x = _float_input()
+  batch = _batch_dim(x)
+  row_partitions = tf.math.mod(tf.range(batch, dtype=tf.int32), 2)
+  tiled = tf.tile(tf.expand_dims(row_partitions, axis=1), [1, _WIDTH],
+                  name="partition_map")
+  parts = tf.dynamic_partition(x, tiled, 2, name="DynamicPartition")
+  outputs = {"part0": parts[0], "part1": parts[1]}
+  return {"input": x}, outputs, {x: _float_feed()}
+
+
+def _build_parallel_dynamic_stitch():
+  x = _float_input()
+  flat = tf.reshape(x, [-1], name="flat")
+  size = tf.size(flat, out_type=tf.int32)
+  idx0 = tf.range(0, size, 2, dtype=tf.int32, name="idx0")
+  idx1 = tf.range(1, size, 2, dtype=tf.int32, name="idx1")
+  data0 = tf.gather(flat, idx0, name="data0")
+  data1 = tf.gather(flat, idx1, name="data1")
+  y = tf.parallel_dynamic_stitch([idx0, idx1], [data0, data1],
+                                 name="ParallelDynamicStitch")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_sparse_segment_mean():
+  x = _float_input()
+  batch = _batch_dim(x)
+  indices = tf.range(batch, dtype=tf.int32, name="indices")
+  segment_ids = tf.zeros([batch], dtype=tf.int32, name="segment_ids")
+  y = tf.sparse_segment_mean(x, indices, segment_ids, name="SparseSegmentMean")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_sparse_segment_sum():
+  x = _float_input()
+  batch = _batch_dim(x)
+  indices = tf.range(batch, dtype=tf.int32, name="indices")
+  segment_ids = tf.zeros([batch], dtype=tf.int32, name="segment_ids")
+  y = tf.sparse_segment_sum(x, indices, segment_ids, name="SparseSegmentSum")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_unique():
+  x = _float_input()
+  values = tf.cast(tf.math.mod(tf.round(x[:, 0]), 7), tf.int32, name="values")
+  unique_values, unique_ids = tf.unique(values, name="Unique")
+  outputs = {
+      "values": unique_values,
+      "ids": unique_ids,
+  }
+  return {"input": x}, outputs, {x: _float_feed()}
+
+
+def _build_identity():
+  x = _float_input()
+  y = tf.identity(x, name="Identity")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_print():
+  x = _float_input()
+  y = tf.Print(x, [tf.shape(x)], message="[BESPOKE] Print shape=", name="Print")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_asstring():
+  x = _float_input()
+  y = tf.as_string(tf.cast(x[:, 0], tf.int32), name="AsString")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_stringjoin():
+  x = _float_input()
+  left = tf.as_string(tf.cast(x[:, 0], tf.int32), name="left")
+  suffix = tf.fill(tf.shape(left), tf.constant("_suffix"), name="suffix")
+  y = tf.string_join([left, suffix], name="StringJoin")
+  return {"input": x}, {"output": y}, {x: _float_feed()}
+
+
+def _build_variable_read():
+  x = _float_input()
+  bias = tf.get_variable(
+      "bias",
+      initializer=np.arange(_WIDTH, dtype=np.float32),
+      use_resource=True)
+  read = tf.raw_ops.ReadVariableOp(
+      resource=bias.handle, dtype=tf.float32, name="ReadVariableOp")
+  y = tf.add(x, read, name="AddV2")
+  outputs = {
+      "read": read,
+      "output": y,
+  }
+  return {"input": x}, outputs, {x: _float_feed()}
+
+
+MODEL_BUILDERS = [
+    ("addv2", _build_binary_addv2),
+    ("sub", _build_binary_sub),
+    ("mul", _build_binary_mul),
+    ("equal", _build_binary_equal),
+    ("not_equal", _build_binary_not_equal),
+    ("greater", _build_binary_greater),
+    ("maximum", _build_binary_maximum),
+    ("minimum", _build_binary_minimum),
+    ("floordiv", _build_binary_floordiv),
+    ("floormod", _build_binary_floormod),
+    ("exp", _build_unary_exp),
+    ("rsqrt", _build_unary_rsqrt),
+    ("sigmoid", _build_unary_sigmoid),
+    ("round", _build_unary_round),
+    ("cast", _build_cast),
+    ("concatv2", _build_concatv2),
+    ("fill", _build_fill),
+    ("range", _build_range),
+    ("shape", _build_shape),
+    ("rank", _build_rank),
+    ("size", _build_size),
+    ("reshape", _build_reshape),
+    ("expanddims", _build_expanddims),
+    ("squeeze", _build_squeeze),
+    ("sparse_reshape", _build_sparse_reshape),
+    ("zeroslike", _build_zeroslike),
+    ("pack", _build_pack),
+    ("transpose", _build_transpose),
+    ("stridedslice", _build_stridedslice),
+    ("tile", _build_tile),
+    ("select", _build_select),
+    ("where", _build_where),
+    ("sum", _build_reduce_sum),
+    ("prod", _build_reduce_prod),
+    ("max", _build_reduce_max),
+    ("matmul", _build_matmul),
+    ("batchmatmulv2", _build_batch_matmulv2),
+    ("einsum", _build_einsum),
+    ("softmax", _build_softmax),
+    ("gatherv2", _build_gatherv2),
+    ("gathernd", _build_gathernd),
+    ("scatternd", _build_scatternd),
+    ("dynamicpartition", _build_dynamicpartition),
+    ("paralleldynamicstitch", _build_parallel_dynamic_stitch),
+    ("sparse_segment_mean", _build_sparse_segment_mean),
+    ("sparse_segment_sum", _build_sparse_segment_sum),
+    ("unique", _build_unique),
+    ("identity", _build_identity),
+    ("print", _build_print),
+    ("asstring", _build_asstring),
+    ("stringjoin", _build_stringjoin),
+    ("variable_read", _build_variable_read),
+]
 
 
 def build_signature(inputs, outputs):
@@ -279,43 +569,54 @@ def save_model(sess, export_dir, signature):
 def parse_args():
   parser = argparse.ArgumentParser(
       description=(
-          "Generate a TensorFlow v1 SavedModel for a concat debug subgraph "
-          "that more closely mirrors the de_iic/truediv_1 path."))
+          "Generate a suite of small TensorFlow v1 SavedModels under "
+          "bespoke_tests/, one per op family, all driven by an input with "
+          "shape [None, 24]."))
   parser.add_argument(
-      "--save_model",
+      "--output_root",
+      default="bespoke_tests",
+      help="Root directory where the SavedModels will be written.")
+  parser.add_argument(
+      "--models",
+      nargs="*",
+      default=None,
+      help="Optional subset of model names to build.")
+  parser.add_argument(
+      "--run_only",
       action="store_true",
-      help="Save the model instead of executing it.")
-  parser.add_argument(
-      "--export_dir",
-      default=os.path.join("model_BESPOKE2", "1"),
-      help="SavedModel export directory.")
+      help="Execute each graph once instead of exporting SavedModels.")
   return parser.parse_args()
 
 
 def main():
   args = parse_args()
+  selected = set(args.models) if args.models else None
+  built = []
 
-  with tf.Graph().as_default():
-    inputs, outputs, feeds = build_concat_debug_model()
-    signature = build_signature(inputs, outputs)
+  for model_name, builder_fn in MODEL_BUILDERS:
+    if selected and model_name not in selected:
+      continue
 
-    with tf.Session() as sess:
-      if args.save_model:
-        save_model(sess, args.export_dir, signature)
-        print("Saved model to {}".format(args.export_dir))
-      else:
-        fetched = sess.run(outputs, feed_dict=feeds)
-        print("de_behavior_reshape shape:", fetched["de_behavior_reshape"].shape)
-        print("de_attr_reshape shape:", fetched["de_attr_reshape"].shape)
-        print("reshape shape:", fetched["reshape"].shape)
-        print("reshape_1 shape:", fetched["reshape_1"].shape)
-        print("concat_4 shape:", fetched["concat_4"].shape)
-        print("gating_slice shape:", fetched["gating_slice"].shape)
-        print("sum_1 shape:", fetched["sum_1"].shape)
-        print("truediv_1 shape:", fetched["truediv_1"].shape)
-        print("input_emb_concat shape:", fetched["input_emb_concat"].shape)
+    with tf.Graph().as_default():
+      inputs, outputs, feeds = builder_fn()
+      signature = build_signature(inputs, outputs)
 
-  print("Done")
+      with tf.Session() as sess:
+        sess.run(tf.global_variables_initializer())
+        sess.run(tf.tables_initializer())
+        if args.run_only:
+          fetched = sess.run(outputs, feed_dict=feeds)
+          print("Executed {} with outputs {}".format(
+              model_name,
+              {key: np.shape(value) for key, value in fetched.items()}))
+        else:
+          export_dir = os.path.join(args.output_root, "model_{}".format(model_name),
+                                    "1")
+          save_model(sess, export_dir, signature)
+          print("Saved {} to {}".format(model_name, export_dir))
+    built.append(model_name)
+
+  print("Built {} bespoke models".format(len(built)))
 
 
 if __name__ == "__main__":

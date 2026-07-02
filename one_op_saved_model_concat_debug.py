@@ -267,7 +267,7 @@ def _build_tile():
 def _build_select():
   x = _float_input()
   cond = tf.greater(x, 12.0, name="select_cond")
-  y = tf.raw_ops.Select(condition=cond, t=x, e=-x, name="Select")
+  y = tf.raw_ops.Select(condition=cond, x=x, y=-x, name="Select")
   return {"input": x}, {"output": y}, {x: _float_feed()}
 
 

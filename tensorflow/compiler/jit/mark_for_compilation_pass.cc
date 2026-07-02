@@ -2123,10 +2123,17 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
       continue;
     }
 
-    if (node->type_string() == "StridedSlice") {
+    const string& op_type = node->type_string();
+    const bool reject_for_debugging =
+        op_type == "Reshape" || op_type == "StridedSlice" ||
+        op_type == "Sum" || op_type == "ExpandDims" || op_type == "Gather" ||
+        op_type == "GatherV2" || op_type == "Pack" ||
+        (op_type == "Mul" && node->name().find("truediv") != string::npos);
+    if (reject_for_debugging) {
       LOG(INFO) << "Rejecting " << node->name()
-                << " from XLA clustering: StridedSlice is explicitly kept in "
-                   "TensorFlow for dynamic-size debugging.";
+                << " from XLA clustering: op " << op_type
+                << " is explicitly kept in TensorFlow for dynamic-size "
+                   "debugging.";
       continue;
     }
 

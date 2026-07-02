@@ -593,7 +593,7 @@ def main():
   selected = set(args.models) if args.models else None
   built = []
 
-  for model_name, builder_fn in MODEL_BUILDERS:
+  for index, (model_name, builder_fn) in enumerate(MODEL_BUILDERS, start=1):
     if selected and model_name not in selected:
       continue
 
@@ -610,8 +610,10 @@ def main():
               model_name,
               {key: np.shape(value) for key, value in fetched.items()}))
         else:
-          export_dir = os.path.join(args.output_root, "model_{}".format(model_name),
-                                    "1")
+          export_dir = os.path.join(
+              args.output_root,
+              "{:02d}_model_{}".format(index, model_name),
+              "1")
           save_model(sess, export_dir, signature)
           print("Saved {} to {}".format(model_name, export_dir))
     built.append(model_name)

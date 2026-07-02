@@ -401,8 +401,8 @@ def _build_parallel_dynamic_stitch():
   idx1 = tf.range(1, size, 2, dtype=tf.int32, name="idx1")
   data0 = tf.gather(flat, idx0, name="data0")
   data1 = tf.gather(flat, idx1, name="data1")
-  y = tf.parallel_dynamic_stitch([idx0, idx1], [data0, data1],
-                                 name="ParallelDynamicStitch")
+  y = tf.dynamic_stitch([idx0, idx1], [data0, data1],
+                        name="ParallelDynamicStitch")
   return {"input": x}, {"output": y}, {x: _float_feed()}
 
 

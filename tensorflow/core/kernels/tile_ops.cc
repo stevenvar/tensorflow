@@ -42,6 +42,18 @@ namespace tensorflow {
 typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
 
+namespace {
+
+bool ShouldLogDynamicDebugTileNode(const std::string& node_name) {
+  return node_name.find("de_iic/") != std::string::npos ||
+         node_name.find("iC_iic/") != std::string::npos ||
+         node_name.find("iR_iic/") != std::string::npos ||
+         node_name.find("iF_iic/") != std::string::npos ||
+         node_name.find("MMoE_input_emb_concat") != std::string::npos;
+}
+
+}  // namespace
+
 // Forward declarations of functors that will be defined in tile_ops_impl.h
 namespace functor {
 template <typename Device, typename T, typename Tmultiple>
@@ -179,6 +191,14 @@ class TileOp : public OpKernel {
     // Eigen doesn't support scalars on the GPU, so handle 0-D specially
     if (input_dims == 0) {
       context->set_output(0, input);
+      if (ShouldLogDynamicDebugTileNode(name())) {
+        LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                  << " node=" << name() << " input_shape="
+                  << input.shape().DebugString() << " multiples_shape="
+                  << multiples.shape().DebugString() << " multiples="
+                  << multiples.SummarizeValue(10) << " output_shape="
+                  << input.shape().DebugString();
+      }
       return;
     }
 
@@ -195,6 +215,14 @@ class TileOp : public OpKernel {
     }
     if (output_shape == input.shape()) {
       context->set_output(0, input);
+      if (ShouldLogDynamicDebugTileNode(name())) {
+        LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                  << " node=" << name() << " input_shape="
+                  << input.shape().DebugString() << " multiples_shape="
+                  << multiples.shape().DebugString() << " multiples="
+                  << multiples.SummarizeValue(10) << " output_shape="
+                  << input.shape().DebugString();
+      }
       return;
     }
     Tensor* result = nullptr;
@@ -206,6 +234,14 @@ class TileOp : public OpKernel {
 #define HANDLE_TYPE(DT)                               \
   if (context->input(0).dtype() == DT) {              \
     HandleCase<DT>(context, multiples_array, result); \
+    if (ShouldLogDynamicDebugTileNode(name())) {      \
+      LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string() \
+                << " node=" << name() << " input_shape=" \
+                << input.shape().DebugString() << " multiples_shape=" \
+                << multiples.shape().DebugString() << " multiples=" \
+                << multiples.SummarizeValue(10) << " output_shape=" \
+                << result->shape().DebugString();     \
+    }                                                 \
     return;                                           \
   }
 

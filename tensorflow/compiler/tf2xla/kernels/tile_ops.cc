@@ -16,13 +16,16 @@ limitations under the License.
 // XLA-specific Tile Op.
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "absl/algorithm/container.h"
+#include "absl/strings/str_join.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/lib/broadcast.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
+#include "xla/printer.h"
 #include "xla/hlo/builder/value_inference.h"
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/xla_data.pb.h"
@@ -33,6 +36,15 @@ limitations under the License.
 
 namespace tensorflow {
 namespace {
+
+std::string DExprToString(const xla::DExpr& expr) {
+  if (!expr) {
+    return "_";
+  }
+  xla::StringPrinter printer;
+  expr.simplify()->print(&printer);
+  return std::move(printer).ToString();
+}
 
 // --------------------------------------------------------------------------
 class TileOp : public XlaOpKernel {
@@ -52,6 +64,9 @@ class TileOp : public XlaOpKernel {
                     "Expected multiples argument to be a vector of length ",
                     input_shape.dims(), " but got length ",
                     multiples_shape.dim_size(0)));
+    LOG(INFO) << "[TF2XLA TILE DEBUG] stage=request node=" << name()
+              << " input_shape=" << input_shape.DebugString()
+              << " multiples_shape=" << multiples_shape.DebugString();
     const int input_dims = input_shape.dims();
     auto input = ctx->Input(0);
     // If input is a scalar then multiples has 0 elements and this is
@@ -70,6 +85,11 @@ class TileOp : public XlaOpKernel {
     std::vector<xla::DExpr> output_exprs(input_shape.dims());
 
     auto expr_sizes = input_shape.get_filled_expressions();
+    std::vector<std::string> input_expr_strings;
+    input_expr_strings.reserve(expr_sizes.size());
+    for (const auto& expr : expr_sizes) {
+      input_expr_strings.push_back(DExprToString(expr));
+    }
 
     for (int64_t i = 0; i < input_shape.dims(); ++i) {
       OP_REQUIRES(ctx, multiples_bounds[i] >= 0,
@@ -79,11 +99,30 @@ class TileOp : public XlaOpKernel {
       output_exprs[i] =
           expr_sizes[i] * xla::DExpr::Const(multiples_bounds[i]);
     }
+    std::vector<std::string> output_expr_strings;
+    output_expr_strings.reserve(output_exprs.size());
+    for (const auto& expr : output_exprs) {
+      output_expr_strings.push_back(DExprToString(expr));
+    }
+    LOG(INFO) << "[TF2XLA TILE DEBUG] stage=static_inference node=" << name()
+              << " multiples_bounds=[" << absl::StrJoin(multiples_bounds, ",")
+              << "] input_exprs=[" << absl::StrJoin(input_expr_strings, ", ")
+              << "] output_dims=[" << absl::StrJoin(output_dims, ",")
+              << "] output_exprs=[" << absl::StrJoin(output_expr_strings, ", ")
+              << "]";
 
     std::vector<bool> multiples_are_dynamic;
 
     OP_REQUIRES_OK(ctx, ctx->ResolveInputDynamismIntoPredVector(
                             1, &multiples_are_dynamic));
+    std::vector<std::string> multiples_dynamic_strings;
+    multiples_dynamic_strings.reserve(multiples_are_dynamic.size());
+    for (bool is_dynamic : multiples_are_dynamic) {
+      multiples_dynamic_strings.push_back(is_dynamic ? "true" : "false");
+    }
+    LOG(INFO) << "[TF2XLA TILE DEBUG] stage=input_dynamism node=" << name()
+              << " multiples_are_dynamic=["
+              << absl::StrJoin(multiples_dynamic_strings, ",") << "]";
 
     bool all_multiples_are_static = absl::c_all_of(
         multiples_are_dynamic, [](bool dynamic) { return !dynamic; });
@@ -114,6 +153,10 @@ class TileOp : public XlaOpKernel {
             xla::Slice(ctx->Input("multiples"), {i}, {i + 1}, {1});
         dynamic_dim_size = xla::Reshape(dynamic_dim_size, {});
         dynamic_dim_size = xla::ConvertElementType(dynamic_dim_size, xla::S32);
+        LOG(INFO) << "[TF2XLA TILE DEBUG] stage=set_dimension_size node="
+                  << name() << " dim=" << i
+                  << " static_bound=" << output_dims[i]
+                  << " static_expr=" << DExprToString(output_exprs[i]);
         result = xla::SetDimensionSize(result, dynamic_dim_size, i);
       }
     }

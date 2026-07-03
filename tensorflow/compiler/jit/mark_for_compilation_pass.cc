@@ -1649,6 +1649,26 @@ absl::Status MarkForCompilationPassImpl::DeclusterNodes() {
       }
     }
 
+    if (n->op_def().name() == "Tile") {
+      bool multiples_is_const = false;
+      for (const Edge* edge : n->in_edges()) {
+        if (edge->IsControlEdge() || edge->dst_input() != 1) {
+          continue;
+        }
+        multiples_is_const = edge->src()->IsConstant();
+        if (!multiples_is_const) {
+          LOG(INFO) << "Declustering Tile node " << n->name()
+                    << " because multiples input is not a Const. producer="
+                    << edge->src()->name() << " producer_op="
+                    << edge->src()->type_string();
+        }
+        break;
+      }
+      if (!multiples_is_const) {
+        declustered_nodes_.insert(n);
+      }
+    }
+
     // De-cluster Fill ops that are
     //  - used at least once outside the cluster, and
     //  - not used inside the cluster.

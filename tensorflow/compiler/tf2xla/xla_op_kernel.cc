@@ -524,28 +524,6 @@ absl::Status XlaOpKernelContext::ConstantInputList(
 absl::StatusOr<Tensor> XlaOpKernelContext::ConstantInputTensor(
     int index, xla::ValueInferenceMode mode) {
   XlaExpression e = InputExpression(index);
-  absl::StatusOr<Tensor> dynamism_or_status = e.ResolveDynamism();
-  if (dynamism_or_status.ok()) {
-    auto flat = dynamism_or_status.value().flat<bool>();
-    for (int64_t i = 0; i < flat.size(); ++i) {
-      if (flat(i)) {
-        return errors::InvalidArgument(
-            "Input ", index, " to node `", context_->op_kernel().name(),
-            "` with op ", context_->op_kernel().type_string(),
-            " must be a compile-time constant, but its value is dynamic.");
-      }
-    }
-  }
-  const auto& contents = e.contents();
-  for (const auto& expr : contents) {
-    if (expr && expr->is_dynamic()) {
-      return errors::InvalidArgument(
-          "Input ", index, " to node `", context_->op_kernel().name(),
-          "` with op ", context_->op_kernel().type_string(),
-          " must be a compile-time constant, but its symbolic contents are "
-          "dynamic.");
-    }
-  }
   auto* client = compiler() ? compiler()->client() : nullptr;
   absl::StatusOr<std::optional<Tensor>> constant_or_status =
       e.ResolveConstant(client, dynamic_dimension_is_minus_one_, mode);

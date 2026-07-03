@@ -2167,40 +2167,42 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
     const OpDef* op_def;
     TF_RETURN_IF_ERROR(
         graph_->op_registry()->LookUpOpDef(node->type_string(), &op_def));
-    TF_ASSIGN_OR_RETURN(std::vector<int> compile_time_constant_input_indices,
-                        XlaOpRegistry::CompileTimeConstantInputs(node->def(),
-                                                                 *op_def));
-    bool rejected_for_nonconst_compile_time_input = false;
-    for (int input_index : compile_time_constant_input_indices) {
-      bool found_input_edge = false;
-      for (const Edge* edge : node->in_edges()) {
-        if (edge->IsControlEdge() || edge->dst_input() != input_index) {
-          continue;
+    if (debug_options_.enable_dynamic_sizes) {
+      TF_ASSIGN_OR_RETURN(std::vector<int> compile_time_constant_input_indices,
+                          XlaOpRegistry::CompileTimeConstantInputs(node->def(),
+                                                                   *op_def));
+      bool rejected_for_nonconst_compile_time_input = false;
+      for (int input_index : compile_time_constant_input_indices) {
+        bool found_input_edge = false;
+        for (const Edge* edge : node->in_edges()) {
+          if (edge->IsControlEdge() || edge->dst_input() != input_index) {
+            continue;
+          }
+          found_input_edge = true;
+          if (!edge->src()->IsConstant()) {
+            LOG(INFO) << "Rejecting " << node->name()
+                      << " from XLA clustering: compile-time constant input "
+                      << input_index << " is not fed by a Const. producer="
+                      << edge->src()->name() << " producer_op="
+                      << edge->src()->type_string();
+            rejected_for_nonconst_compile_time_input = true;
+          }
+          break;
         }
-        found_input_edge = true;
-        if (!edge->src()->IsConstant()) {
+        if (!found_input_edge) {
           LOG(INFO) << "Rejecting " << node->name()
-                    << " from XLA clustering: compile-time constant input "
-                    << input_index << " is not fed by a Const. producer="
-                    << edge->src()->name() << " producer_op="
-                    << edge->src()->type_string();
+                    << " from XLA clustering: missing data edge for "
+                       "compile-time constant input "
+                    << input_index;
           rejected_for_nonconst_compile_time_input = true;
         }
-        break;
-      }
-      if (!found_input_edge) {
-        LOG(INFO) << "Rejecting " << node->name()
-                  << " from XLA clustering: missing data edge for compile-time "
-                     "constant input "
-                  << input_index;
-        rejected_for_nonconst_compile_time_input = true;
+        if (rejected_for_nonconst_compile_time_input) {
+          break;
+        }
       }
       if (rejected_for_nonconst_compile_time_input) {
-        break;
+        continue;
       }
-    }
-    if (rejected_for_nonconst_compile_time_input) {
-      continue;
     }
 
     if (node->type_string() == "Const") {

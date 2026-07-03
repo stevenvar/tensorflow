@@ -418,6 +418,9 @@ absl::Status PartiallyDeclusterGraph(Graph* graph) {
 
 absl::Status PartiallyDeclusterPass::Run(
     const GraphOptimizationPassOptions& options) {
+  LOG(INFO) << "PartiallyDeclusterPass disabled for debugging.";
+  return absl::OkStatus();
+
   // NB!  In this pass we assume the only XLA-auto-clusterable operations that
   // may have side effects are resource variable operations so we don't cluster
   // those.  The pass will have to be updated if this assumption becomes

@@ -74,9 +74,9 @@ def build_graph():
     tiled_row = tf.tile(base_row, tile_multiples, name="Tile_3")
 
     reshape_shape = tf.stack(
-        [first_dim, 24], axis=0, name="reshape_shape")
+        [first_dim_times_24, 40], axis=0, name="reshape_shape")
     reshaped_from_flat = tf.reshape(
-        common_flat, reshape_shape, name="debug_reshape")
+        common_reshape_2, reshape_shape, name="debug_reshape")
 
     filled = tf.fill(
         reshape_shape, tf.constant(7.0, dtype=tf.float32), name="debug_fill")

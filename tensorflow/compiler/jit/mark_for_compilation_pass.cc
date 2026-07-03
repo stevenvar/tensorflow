@@ -2149,31 +2149,6 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
       continue;
     }
 
-    if (op_type == "Tile") {
-      bool found_multiples_input = false;
-      bool multiples_is_const = false;
-      string multiples_producer_name = "<missing>";
-      string multiples_producer_op = "<missing>";
-      for (const Edge* edge : node->in_edges()) {
-        if (edge->IsControlEdge() || edge->dst_input() != 1) {
-          continue;
-        }
-        found_multiples_input = true;
-        multiples_is_const = edge->src()->IsConstant();
-        multiples_producer_name = edge->src()->name();
-        multiples_producer_op = edge->src()->type_string();
-        break;
-      }
-      if (!found_multiples_input || !multiples_is_const) {
-        LOG(INFO) << "Rejecting " << node->name()
-                  << " from XLA clustering: Tile multiples input must be a "
-                     "Const for now. producer="
-                  << multiples_producer_name
-                  << " producer_op=" << multiples_producer_op;
-        continue;
-      }
-    }
-
     RecursiveCompilabilityChecker::OperationFilter filter =
         CreateOperationFilter(*registration);
     filter.require_always_compilable = true;

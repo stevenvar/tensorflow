@@ -72,8 +72,9 @@ def build_graph():
     base_row = tf.reshape(
         tf.linspace(1.0, 24.0, 24), [1, 24], name="base_row")
     tiled_row = tf.tile(base_row, tile_multiples, name="Tile_3")
-    post_tile_bias = tf.multiply(
-        tiled_row, tf.constant(2.0, dtype=tf.float32), name="post_tile_bias")
+    with tf.xla.experimental.jit_scope(compile_ops=False):
+      post_tile_bias = tf.multiply(
+          tiled_row, tf.constant(2.0, dtype=tf.float32), name="post_tile_bias")
 
     reshape_shape = tf.stack(
         [first_dim_times_24, 40], axis=0, name="reshape_shape")

@@ -42,75 +42,59 @@ def _save_model(sess, export_dir, signature):
 
 def build_graph():
   with tf.name_scope("model"):
-    # This placeholder carries the dynamic dimension A directly.
+    # A is carried by the first dimension of this input.
     common_flat = tf.placeholder(
         tf.float32, shape=[None, 4], name="common_flat")
 
-    # These placeholders stay within the "one dynamic dimension per leaf" rule.
-    domain_lookup = tf.placeholder(
-        tf.float32, shape=[None, 4], name="domain_lookup")
-    branch_concat_4 = tf.placeholder(
-        tf.float32, shape=[None, 240, 24], name="branch_concat_4")
-    branch_weights = tf.placeholder(
-        tf.float32, shape=[None, 240, 1], name="branch_weights")
-    branch_single = tf.placeholder(
-        tf.float32, shape=[1, 240, 24], name="branch_single")
-
-    reciprocal = tf.constant(1.0 / 240.0, dtype=tf.float32,
-                             name="model/iR_iic/truediv_1_recip")
-
-    # BuildCommonEmbInput path: flat A x 4 -> [A / 240, 240, 4] -> [A / 240, 960]
+    # Mimic BuildCommonEmbInput/Reshape -> mul -> Reshape_2.
     common_reshape = tf.reshape(
         common_flat, [-1, 240, 4], name="BuildCommonEmbInput/Reshape")
-    common_scale = tf.reshape(
-        tf.linspace(1.0, 4.0, 4), [1, 1, 4], name="Reshape")
+    common_scale = tf.reshape(tf.linspace(1.0, 4.0, 4), [1, 1, 4], name="Reshape")
     common_mul = tf.multiply(
         common_reshape, common_scale, name="BuildCommonEmbInput/mul")
     common_reshape_2 = tf.reshape(
         common_mul, [-1, 960], name="BuildCommonEmbInput/Reshape_2")
-    common_reshape_3 = tf.reshape(
-        domain_lookup, [-1, 24], name="BuildCommonEmbInput/Reshape_3")
 
-    # Shared Tile multiples: Shape(Reshape_2) -> StridedSlice -> Pack.
+    # Core shape-to-value chain we want to stress.
     common_shape = tf.shape(common_reshape_2, out_type=tf.int32, name="Shape")
-    first_dim = tf.strided_slice(
+    first_dim_vec = tf.strided_slice(
         common_shape, [0], [1], [1], name="strided_slice_1")
+    first_dim = tf.squeeze(first_dim_vec, axis=0, name="first_dim")
     tile_multiples = tf.stack(
-        [tf.squeeze(first_dim, axis=0), 1], axis=0, name="Tile/multiples")
+        [first_dim, 1], axis=0, name="Tile/multiples")
 
-    # Tile-side path, shaped to mirror truediv_1 -> Tile_3.
-    truediv_1_input = tf.reduce_sum(
-        branch_single, axis=1, name="iR_iic/Sum")
-    iR_truediv_1 = tf.multiply(
-        reciprocal, truediv_1_input, name="iR_iic/truediv_1")
-    tile_3 = tf.tile(iR_truediv_1, tile_multiples, name="Tile_3")
+    # A small arithmetic chain on the dynamic dimension value itself.
+    first_dim_plus_one = tf.add(first_dim, 1, name="first_dim_plus_one")
+    first_dim_times_24 = tf.multiply(
+        first_dim, 24, name="first_dim_times_24")
 
-    # truediv_2-side path, shaped to mirror concat_4 -> mul_1 -> Sum_1 -> truediv_2.
-    iR_concat_4 = tf.identity(branch_concat_4, name="iR_iic/concat_4")
-    iR_mul_1 = tf.multiply(iR_concat_4, branch_weights, name="iR_iic/mul_1")
-    iR_sum_1 = tf.reduce_sum(iR_mul_1, axis=1, name="iR_iic/Sum_1")
-    iR_truediv_2 = tf.multiply(
-        reciprocal, iR_sum_1, name="iR_iic/truediv_2")
+    # Use the shape-derived value in a couple of consumers.
+    base_row = tf.reshape(
+        tf.linspace(1.0, 24.0, 24), [1, 24], name="base_row")
+    tiled_row = tf.tile(base_row, tile_multiples, name="Tile_3")
 
-    # Two-input version of the big concat, keeping the real op name.
-    big_concat = tf.concat(
-        [tile_3, iR_truediv_2], axis=1, name="MMoE_input_emb_concat")
+    reshape_shape = tf.stack(
+        [first_dim, 24], axis=0, name="reshape_shape")
+    reshaped_from_flat = tf.reshape(
+        common_flat, reshape_shape, name="debug_reshape")
+
+    filled = tf.fill(
+        reshape_shape, tf.constant(7.0, dtype=tf.float32), name="debug_fill")
 
   inputs = {
       "common_flat": common_flat,
-      "domain_lookup": domain_lookup,
-      "branch_concat_4": branch_concat_4,
-      "branch_weights": branch_weights,
-      "branch_single": branch_single,
   }
   outputs = {
-      "buildcommon_reshape_2": common_reshape_2,
-      "buildcommon_reshape_3": common_reshape_3,
+      "common_reshape_2": common_reshape_2,
+      "common_shape": common_shape,
+      "first_dim_vec": first_dim_vec,
+      "first_dim": first_dim,
+      "first_dim_plus_one": first_dim_plus_one,
+      "first_dim_times_24": first_dim_times_24,
       "tile_multiples": tile_multiples,
-      "iR_truediv_1": iR_truediv_1,
-      "tile_3": tile_3,
-      "iR_truediv_2": iR_truediv_2,
-      "output": big_concat,
+      "tiled_row": tiled_row,
+      "reshaped_from_flat": reshaped_from_flat,
+      "filled": filled,
   }
   return inputs, outputs
 
@@ -119,56 +103,59 @@ def make_feeds(a_value):
   if a_value % 240 != 0:
     raise ValueError("A must be divisible by 240, got {}".format(a_value))
 
-  groups = a_value // 240
-
   common_flat = [
       [float(row * 4 + col) for col in range(4)] for row in range(a_value)
   ]
-  domain_lookup = [
-      [float(row * 24 + col) + 0.5 for col in range(24)]
-      for row in range(groups)
-  ]
-  branch_concat_4 = []
-  for group in range(groups):
-    group_rows = []
-    for row in range(240):
-      values = []
-      for col in range(24):
-        flat_index = ((group * 240 + row) * 24) + col
-        values.append(float(flat_index) / 100.0)
-      group_rows.append(values)
-    branch_concat_4.append(group_rows)
-
-  branch_weights = []
-  total_weights = max(groups * 240 - 1, 1)
-  for group in range(groups):
-    group_rows = []
-    for row in range(240):
-      flat_index = group * 240 + row
-      value = 0.25 + (float(flat_index) / float(total_weights))
-      group_rows.append([value])
-    branch_weights.append(group_rows)
-
-  branch_single = [[
-      [float(row * 24 + col) / 50.0 for col in range(24)]
-      for row in range(240)
-  ]]
-
   return {
       "common_flat": common_flat,
-      "domain_lookup": domain_lookup,
-      "branch_concat_4": branch_concat_4,
-      "branch_weights": branch_weights,
-      "branch_single": branch_single,
   }
+
+
+def _summarize_fetches(fetched):
+  keys = [
+      "common_reshape_2",
+      "common_shape",
+      "first_dim_vec",
+      "first_dim",
+      "first_dim_plus_one",
+      "first_dim_times_24",
+      "tile_multiples",
+      "tiled_row",
+      "reshaped_from_flat",
+      "filled",
+  ]
+  parts = []
+  for name in keys:
+    value = fetched[name]
+    shape = tuple(value.shape) if hasattr(value, "shape") else ()
+    parts.append("{}={}".format(name, shape))
+  return ", ".join(parts)
+
+
+def _run_once(sess, inputs, outputs, a_value):
+  feeds = make_feeds(a_value)
+  feed_dict = {inputs[name]: value for name, value in feeds.items()}
+  fetched = sess.run(outputs, feed_dict=feed_dict)
+  print("Executed graph with A={}: {}".format(
+      a_value, _summarize_fetches(fetched)))
+  print("  common_shape={}".format(fetched["common_shape"].tolist()))
+  print("  first_dim_vec={}".format(fetched["first_dim_vec"].tolist()))
+  print("  first_dim={}".format(int(fetched["first_dim"])))
+  print("  first_dim_plus_one={}".format(int(fetched["first_dim_plus_one"])))
+  print("  first_dim_times_24={}".format(int(fetched["first_dim_times_24"])))
+  print("  tile_multiples={}".format(fetched["tile_multiples"].tolist()))
+  print("  tiled_row_rows={}".format(fetched["tiled_row"].shape[0]))
+  print("  reshaped_from_flat_rows={}".format(fetched["reshaped_from_flat"].shape[0]))
+  print("  filled_rows={}".format(fetched["filled"].shape[0]))
+  return fetched
 
 
 def parse_args():
   parser = argparse.ArgumentParser(
       description=(
-          "Build a small SavedModel that mimics the cluster_2 concat pattern "
-          "with one Tile input and one truediv input feeding "
-          "model/MMoE_input_emb_concat."))
+          "Build a tiny SavedModel focused on the cluster_2 shape-to-value "
+          "chain: reshape -> shape -> stridedslice -> arithmetic -> "
+          "pack -> tile/reshape/fill."))
   parser.add_argument(
       "--output_dir",
       default="model_BESPOKE3/1",
@@ -178,6 +165,12 @@ def parse_args():
       type=int,
       default=720,
       help="Concrete feed value for the symbolic dimension A. Must be divisible by 240.")
+  parser.add_argument(
+      "--sequence_a_values",
+      default="",
+      help=(
+          "Optional comma-separated list of A values to run sequentially in "
+          "the same session, for example '240,720'."))
   parser.add_argument(
       "--run_only",
       action="store_true",
@@ -189,15 +182,22 @@ def main():
   args = parse_args()
   inputs, outputs = build_graph()
   signature = _build_signature(inputs, outputs)
-  feeds = make_feeds(args.a_value)
+  sequence_values = []
+  if args.sequence_a_values:
+    sequence_values = [
+        int(value.strip()) for value in args.sequence_a_values.split(",")
+        if value.strip()
+    ]
 
   with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
-    feed_dict = {inputs[name]: value for name, value in feeds.items()}
-    fetched = sess.run(outputs, feed_dict=feed_dict)
-    print("Executed graph with A={} -> {}".format(
-        args.a_value,
-        {name: tuple(value.shape) for name, value in fetched.items()}))
+    if sequence_values:
+      for index, a_value in enumerate(sequence_values):
+        if index:
+          print("---")
+        _run_once(sess, inputs, outputs, a_value)
+    else:
+      _run_once(sess, inputs, outputs, args.a_value)
 
     if not args.run_only:
       _save_model(sess, args.output_dir, signature)

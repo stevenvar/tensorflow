@@ -72,6 +72,8 @@ def build_graph():
     base_row = tf.reshape(
         tf.linspace(1.0, 24.0, 24), [1, 24], name="base_row")
     tiled_row = tf.tile(base_row, tile_multiples, name="Tile_3")
+    post_tile_bias = tf.add(
+        tiled_row, tf.constant(0.5, dtype=tf.float32), name="post_tile_bias")
 
     reshape_shape = tf.stack(
         [first_dim_times_24, 40], axis=0, name="reshape_shape")
@@ -93,6 +95,7 @@ def build_graph():
       "first_dim_times_24": first_dim_times_24,
       "tile_multiples": tile_multiples,
       "tiled_row": tiled_row,
+      "post_tile_bias": post_tile_bias,
       "reshaped_from_flat": reshaped_from_flat,
       "filled": filled,
   }
@@ -121,6 +124,7 @@ def _summarize_fetches(fetched):
       "first_dim_times_24",
       "tile_multiples",
       "tiled_row",
+      "post_tile_bias",
       "reshaped_from_flat",
       "filled",
   ]
@@ -145,6 +149,7 @@ def _run_once(sess, inputs, outputs, a_value):
   print("  first_dim_times_24={}".format(int(fetched["first_dim_times_24"])))
   print("  tile_multiples={}".format(fetched["tile_multiples"].tolist()))
   print("  tiled_row_rows={}".format(fetched["tiled_row"].shape[0]))
+  print("  post_tile_bias_rows={}".format(fetched["post_tile_bias"].shape[0]))
   print("  reshaped_from_flat_rows={}".format(fetched["reshaped_from_flat"].shape[0]))
   print("  filled_rows={}".format(fetched["filled"].shape[0]))
   return fetched

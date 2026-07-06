@@ -936,9 +936,9 @@ MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
     return std::nullopt;
   }
 
-  LOG(INFO) << "Checking dynamic expression compatibility for "
-            << dynamic_exprs.size() << " expressions: ["
-            << DExprListToString(dynamic_exprs) << "]";
+  VLOG(1) << "Checking dynamic expression compatibility for "
+          << dynamic_exprs.size() << " expressions: ["
+          << DExprListToString(dynamic_exprs) << "]";
 
   const xla::DExpr anchor_source = dynamic_exprs.front();
   const std::set<int> expected_ids = anchor_source->get_all_ids();
@@ -968,9 +968,9 @@ MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
 
   for (const xla::DExpr& expr : dynamic_exprs) {
     const std::set<int> expr_ids = expr->get_all_ids();
-    LOG(INFO) << "Dynamic clustering id-set check expr="
-              << DExprToString(expr) << " ids={"
-              << absl::StrJoin(expr_ids, ", ") << "}";
+    VLOG(1) << "Dynamic clustering id-set check expr="
+            << DExprToString(expr) << " ids={"
+            << absl::StrJoin(expr_ids, ", ") << "}";
     if (expr_ids != expected_ids) {
       return absl::StrCat(
           "dynamic expressions do not share the same variable ids: "
@@ -983,14 +983,14 @@ MarkForCompilationPassImpl::CheckDynamicExpressionCompatibility(
 
   const xla::DExpr expected_core =
       FindSmallestCoveringSubexpression(anchor_source);
-  LOG(INFO) << "Using dynamic clustering core from source="
-            << DExprToString(anchor_source) << " core="
-            << DExprToString(expected_core);
+  VLOG(1) << "Using dynamic clustering core from source="
+          << DExprToString(anchor_source) << " core="
+          << DExprToString(expected_core);
 
   for (const xla::DExpr& expr : dynamic_exprs) {
     const xla::DExpr core = FindSmallestCoveringSubexpression(expr);
-    LOG(INFO) << "Dynamic clustering core check expr="
-              << DExprToString(expr) << " core=" << DExprToString(core);
+    VLOG(1) << "Dynamic clustering core check expr="
+            << DExprToString(expr) << " core=" << DExprToString(core);
     if (!(core == expected_core)) {
       return absl::StrCat(
           "dynamic expressions do not share the same clusterable core: "
@@ -1053,24 +1053,24 @@ bool MarkForCompilationPassImpl::DynamicNodeExpressionsAreCompatible(
   }
 
   if (!node_exprs.empty()) {
-    LOG(INFO) << "Node " << node.name()
-              << " dynamic input/output expressions: ["
-              << DExprListToString(node_exprs) << "]";
+    VLOG(1) << "Node " << node.name()
+            << " dynamic input/output expressions: ["
+            << DExprListToString(node_exprs) << "]";
   } else {
-    LOG(INFO) << "Node " << node.name()
-              << " has no dynamic input/output expressions";
+    VLOG(1) << "Node " << node.name()
+            << " has no dynamic input/output expressions";
   }
 
   std::optional<std::string> incompatibility =
       CheckDynamicExpressionCompatibility(node_exprs);
   if (!incompatibility.has_value()) {
-    LOG(INFO) << "Node " << node.name()
-              << " passed dynamic expression compatibility";
+    VLOG(1) << "Node " << node.name()
+            << " passed dynamic expression compatibility";
     return true;
   }
-  LOG(INFO) << "Node " << node.name()
-            << " failed dynamic expression compatibility: "
-            << *incompatibility;
+  VLOG(1) << "Node " << node.name()
+          << " failed dynamic expression compatibility: "
+          << *incompatibility;
   *reason = *incompatibility;
   return false;
 }
@@ -1167,14 +1167,14 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
         if (expr.node_type_case() == ExpressionProto::NODE_TYPE_NOT_SET)
           continue;
 
-        LOG(INFO) << "[EXPR][GP] node=" << n.name() << " output=" << out_idx
-                  << " dim=" << d << " size=" << dim.size()
-                  << " expr=" << ExprProtoToString(expr);
+        VLOG(1) << "[EXPR][GP] node=" << n.name() << " output=" << out_idx
+                << " dim=" << d << " size=" << dim.size()
+                << " expr=" << ExprProtoToString(expr);
         if (dim.size() == 1) {
-          LOG(INFO) << "[EXPR][GP][UNIT_DYNAMIC_DIM] node=" << n.name()
-                    << " op=" << n.op() << " output=" << out_idx
-                    << " dim=" << d << " size=1 expr="
-                    << ExprProtoToString(expr);
+          VLOG(1) << "[EXPR][GP][UNIT_DYNAMIC_DIM] node=" << n.name()
+                  << " op=" << n.op() << " output=" << out_idx
+                  << " dim=" << d << " size=1 expr="
+                  << ExprProtoToString(expr);
         }
 
         auto ex = ExprFromProto(expr);
@@ -1203,9 +1203,9 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
         (node->type_string() != "Concat" && node->type_string() != "ConcatV2")) {
       continue;
     }
-    LOG(INFO) << "[XLA CONCAT DEBUG][GRAPH] node=" << node->name()
-              << " op=" << node->type_string()
-              << " num_inputs=" << node->num_inputs();
+    VLOG(1) << "[XLA CONCAT DEBUG][GRAPH] node=" << node->name()
+            << " op=" << node->type_string()
+            << " num_inputs=" << node->num_inputs();
     for (const Edge* edge : node->in_edges()) {
       if (edge->IsControlEdge()) {
         continue;
@@ -1220,19 +1220,19 @@ void LogExpressionsViaGraphProperties(tensorflow::Graph& graph) {
               format_graph_properties_shape(src_outs[src_output].shape());
         }
       }
-      LOG(INFO) << "[XLA CONCAT DEBUG][GRAPH] node=" << node->name()
-                << " input_index=" << edge->dst_input() << " src="
-                << src->name() << " src_op=" << src->type_string()
-                << " src_output=" << edge->src_output()
-                << " inferred_shape=" << inferred_shape;
+      VLOG(1) << "[XLA CONCAT DEBUG][GRAPH] node=" << node->name()
+              << " input_index=" << edge->dst_input() << " src="
+              << src->name() << " src_op=" << src->type_string()
+              << " src_output=" << edge->src_output()
+              << " inferred_shape=" << inferred_shape;
     }
     if (props.HasOutputProperties(node->name())) {
       const auto& outs = props.GetOutputProperties(node->name());
       for (int out_idx = 0; out_idx < outs.size(); ++out_idx) {
-        LOG(INFO) << "[XLA CONCAT DEBUG][GRAPH] node=" << node->name()
-                  << " output_index=" << out_idx
-                  << " inferred_shape="
-                  << format_graph_properties_shape(outs[out_idx].shape());
+        VLOG(1) << "[XLA CONCAT DEBUG][GRAPH] node=" << node->name()
+                << " output_index=" << out_idx
+                << " inferred_shape="
+                << format_graph_properties_shape(outs[out_idx].shape());
       }
     }
   }
@@ -1764,12 +1764,12 @@ absl::Status MarkForCompilationPassImpl::CreateClusters() {
     absl::c_sort(nodes, [](const Node* lhs, const Node* rhs) {
       return lhs->name() < rhs->name();
     });
-    LOG(INFO) << "[XLA CLUSTER CREATED] cluster=" << cluster_name
-              << " num_ops=" << nodes.size();
+    VLOG(1) << "[XLA CLUSTER CREATED] cluster=" << cluster_name
+            << " num_ops=" << nodes.size();
     for (const Node* node : nodes) {
-      LOG(INFO) << "[XLA CLUSTER CREATED] cluster=" << cluster_name
-                << " node=" << node->name() << " op=" << node->type_string()
-                << " outputs=" << NodeOutputShapeSummary(*node);
+      VLOG(1) << "[XLA CLUSTER CREATED] cluster=" << cluster_name
+              << " node=" << node->name() << " op=" << node->type_string()
+              << " outputs=" << NodeOutputShapeSummary(*node);
     }
   }
 
@@ -2142,10 +2142,10 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
         op_type == "GatherV2" || op_type == "Pack" ||
         (op_type == "Mul" && node->name().find("truediv") != string::npos);
     if (reject_for_debugging) {
-      LOG(INFO) << "Rejecting " << node->name()
-                << " from XLA clustering: op " << op_type
-                << " is explicitly kept in TensorFlow for dynamic-size "
-                   "debugging.";
+      VLOG(1) << "Rejecting " << node->name()
+              << " from XLA clustering: op " << op_type
+              << " is explicitly kept in TensorFlow for dynamic-size "
+                 "debugging.";
       continue;
     }
 
@@ -2180,20 +2180,20 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
           }
           found_input_edge = true;
           if (!edge->src()->IsConstant()) {
-            LOG(INFO) << "Rejecting " << node->name()
-                      << " from XLA clustering: compile-time constant input "
-                      << input_index << " is not fed by a Const. producer="
-                      << edge->src()->name() << " producer_op="
-                      << edge->src()->type_string();
+            VLOG(1) << "Rejecting " << node->name()
+                    << " from XLA clustering: compile-time constant input "
+                    << input_index << " is not fed by a Const. producer="
+                    << edge->src()->name() << " producer_op="
+                    << edge->src()->type_string();
             rejected_for_nonconst_compile_time_input = true;
           }
           break;
         }
         if (!found_input_edge) {
-          LOG(INFO) << "Rejecting " << node->name()
-                    << " from XLA clustering: missing data edge for "
-                       "compile-time constant input "
-                    << input_index;
+          VLOG(1) << "Rejecting " << node->name()
+                  << " from XLA clustering: missing data edge for "
+                     "compile-time constant input "
+                  << input_index;
           rejected_for_nonconst_compile_time_input = true;
         }
         if (rejected_for_nonconst_compile_time_input) {
@@ -2221,17 +2221,17 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
     }
 
     if (node->type_string() == "Pack") {
-      LOG(INFO) << "Rejecting " << node->name()
-                << " from XLA clustering: keeping Pack in TF for dynamic-size "
-                   "debugging.";
+      VLOG(1) << "Rejecting " << node->name()
+              << " from XLA clustering: keeping Pack in TF for dynamic-size "
+                 "debugging.";
       continue;
     }
 
     if (debug_options_.enable_dynamic_sizes) {
       std::string reason;
       if (!DynamicNodeExpressionsAreCompatible(*node, &reason)) {
-        LOG(INFO) << "Rejecting " << node->name()
-                  << " from XLA clustering: " << reason;
+        VLOG(1) << "Rejecting " << node->name()
+                << " from XLA clustering: " << reason;
         continue;
       }
     }
@@ -2411,7 +2411,8 @@ absl::Status MarkForCompilationPassImpl::AssignDimVars(void) {
 
       auto output_index = edge->src_output(); // Output index of the source node
       if (output_index >= (it->second).size()) {
-        LOG(INFO) << "Warning: Output index " << output_index << " is out of bounds for node " << input->name();
+        VLOG(1) << "Warning: Output index " << output_index
+                << " is out of bounds for node " << input->name();
         continue;
       }
       for (auto& pDim: (it->second)[output_index]) {
@@ -2462,8 +2463,8 @@ absl::Status MarkForCompilationPassImpl::AssignDimVars(void) {
 
 bool MarkForCompilationPassImpl::LogNotContractableAndReturnFalse(
     Cluster* from, Cluster* to, absl::string_view reason) {
-  LOG(INFO) << "Rejecting cluster merge from " << from->DebugString(*graph_)
-            << " to " << to->DebugString(*graph_) << ": " << reason;
+  VLOG(1) << "Rejecting cluster merge from " << from->DebugString(*graph_)
+          << " to " << to->DebugString(*graph_) << ": " << reason;
   VLOG(3) << EdgeContractionFailureMsg(from, to, reason);
   return false;
 }
@@ -2688,13 +2689,13 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
         from, to, "the two nodes do not have same annotated ids");
   }
 
-  LOG(INFO) << "Considering cluster merge from " << from->DebugString(*graph_)
-            << " to " << to->DebugString(*graph_);
+  VLOG(1) << "Considering cluster merge from " << from->DebugString(*graph_)
+          << " to " << to->DebugString(*graph_);
 
   if (from->contains_concat() && to->contains_concat()) {
-    LOG(INFO) << "Rejecting merge because both clusters contain concat ops: "
-              << "from=" << from->DebugString(*graph_) << " to="
-              << to->DebugString(*graph_);
+    VLOG(1) << "Rejecting merge because both clusters contain concat ops: "
+            << "from=" << from->DebugString(*graph_) << " to="
+            << to->DebugString(*graph_);
     return LogNotContractableAndReturnFalse(
         from, to, "both clusters contain concat ops");
   }
@@ -2706,35 +2707,35 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
     combined_exprs.insert(combined_exprs.end(), to->dim_exprs().begin(),
                           to->dim_exprs().end());
     if (!combined_exprs.empty()) {
-      LOG(INFO) << "Checking dynamic clustering merge from "
-                << from->DebugString(*graph_) << " to "
-                << to->DebugString(*graph_) << " with from_exprs=["
-                << DExprListToString(from_exprs) << "] to_exprs=["
-                << DExprListToString(to_exprs) << "]";
+      VLOG(1) << "Checking dynamic clustering merge from "
+              << from->DebugString(*graph_) << " to "
+              << to->DebugString(*graph_) << " with from_exprs=["
+              << DExprListToString(from_exprs) << "] to_exprs=["
+              << DExprListToString(to_exprs) << "]";
     }
     const std::set<int> combined_ids = CollectDynamicVariableIds(combined_exprs);
     if (combined_ids.size() > 1) {
       const std::string reason = absl::StrCat(
           "merged cluster would contain more than one dynamic variable id: {",
           absl::StrJoin(combined_ids, ", "), "}");
-      LOG(INFO) << "Dynamic clustering merge failed from "
-                << from->DebugString(*graph_) << " to "
-                << to->DebugString(*graph_) << ": " << reason;
+      VLOG(1) << "Dynamic clustering merge failed from "
+              << from->DebugString(*graph_) << " to "
+              << to->DebugString(*graph_) << ": " << reason;
       return LogNotContractableAndReturnFalse(from, to, reason);
     }
     std::optional<std::string> incompatibility =
         CheckDynamicExpressionCompatibility(combined_exprs);
     if (incompatibility.has_value()) {
-      LOG(INFO) << "Dynamic clustering merge failed from "
-                << from->DebugString(*graph_) << " to "
-                << to->DebugString(*graph_) << ": " << *incompatibility;
+      VLOG(1) << "Dynamic clustering merge failed from "
+              << from->DebugString(*graph_) << " to "
+              << to->DebugString(*graph_) << ": " << *incompatibility;
       return LogNotContractableAndReturnFalse(
           from, to, *incompatibility);
     }
     if (!combined_exprs.empty()) {
-      LOG(INFO) << "Dynamic clustering merge passed from "
-                << from->DebugString(*graph_) << " to "
-                << to->DebugString(*graph_);
+      VLOG(1) << "Dynamic clustering merge passed from "
+              << from->DebugString(*graph_) << " to "
+              << to->DebugString(*graph_);
     }
   }
 
@@ -2791,8 +2792,8 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::TryToContractEdge(
     }
   }
 
-  LOG(INFO) << "Merging clusters from " << from->DebugString(*graph_) << " to "
-            << to->DebugString(*graph_);
+  VLOG(1) << "Merging clusters from " << from->DebugString(*graph_) << " to "
+          << to->DebugString(*graph_);
   return MergeClusters(from, to);
 }
 

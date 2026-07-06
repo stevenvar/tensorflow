@@ -217,14 +217,6 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
   TensorShape rhs_shape = ctx->InputShape(1);
   xla::Shape lhs_xla_shape = ctx->InputXlaShape(0).value();
   xla::Shape rhs_xla_shape = ctx->InputXlaShape(1).value();
-  if (ShouldLogDynamicDebugTruedivCompileNode(name())) {
-    LOG(INFO) << "[TF2XLA TRUEDIV DEBUG] stage=inputs op=" << type_string()
-              << " node=" << name()
-              << " lhs_tf_shape=" << lhs_shape.DebugString()
-              << " rhs_tf_shape=" << rhs_shape.DebugString()
-              << " lhs_xla_shape=" << lhs_xla_shape.ToString(true)
-              << " rhs_xla_shape=" << rhs_xla_shape.ToString(true);
-  }
   // Fetch the expressions containing the input tensors.
   auto lhs_handle = ctx->Input(0);
   auto rhs_handle = ctx->Input(1);
@@ -291,13 +283,6 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
             //
             // However, XLA only does degenerate broadcasts for non-dynamic
             // dimensions of size 1.
-            LOG(INFO) << "[TF2XLA SINGLETON RECONCILE] stage=before"
-                      << " op=" << type_string() << " node=" << name()
-                      << " dim=" << i
-                      << " lhs_tf_shape=" << lhs_tensor_shape->DebugString()
-                      << " lhs_xla_shape=" << lhs_xla_shape.ToString(true)
-                      << " rhs_xla_shape=" << rhs_xla_shape.ToString(true);
-
             // Get the original size.
             auto size = xla::GetDimensionSize(lhs, i);
 
@@ -333,14 +318,6 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
                 i, (lhs_tensor_shape->get_filled_expression(i) *
                     rhs_xla_shape.expressions(i))
                        .simplify());
-            LOG(INFO) << "[TF2XLA SINGLETON RECONCILE] stage=after"
-                      << " op=" << type_string() << " node=" << name()
-                      << " dim=" << i
-                      << " reconciled_tf_shape="
-                      << lhs_tensor_shape->DebugString()
-                      << " rhs_xla_shape=" << rhs_xla_shape.ToString(true)
-                      << " reconciled_expr="
-                      << lhs_tensor_shape->get_filled_expression(i);
           }
         }
       }
@@ -443,15 +420,6 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
 
   const bool lhs_needs_broadcast = shape_needs_broadcast(lhs_shape);
   const bool rhs_needs_broadcast = shape_needs_broadcast(rhs_shape);
-  if (lhs_needs_broadcast || rhs_needs_broadcast) {
-    LOG(INFO) << "[XLA BINARY BROADCAST] op=" << type_string()
-              << " lhs_shape=" << lhs_shape.DebugString()
-              << " rhs_shape=" << rhs_shape.DebugString()
-              << " output_shape=" << TensorShape(bcast.output_shape()).DebugString()
-              << " broadcast_lhs=" << lhs_needs_broadcast
-              << " broadcast_rhs=" << rhs_needs_broadcast;
-  }
-
   // If the ranks of the inputs don't match, TensorFlow automatically
   // reshapes the smaller by padding with dimensions of size 1 as a
   // prefix. In other words to pad a 5-vector to a 3-dimensional
@@ -479,24 +447,6 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
       Computation(ctx, lhs_handle, lhs_shape.dim_sizes(), rhs_handle,
                   rhs_shape.dim_sizes(), bcast,
                   broadcast_output_exprs, extend_dimension);
-  if (ShouldLogDynamicDebugTruedivCompileNode(name())) {
-    auto output_shape_or = ctx->builder()->GetShape(output);
-    if (output_shape_or.ok()) {
-      LOG(INFO) << "[TF2XLA TRUEDIV DEBUG] stage=output op="
-                << type_string() << " node=" << name()
-                << " output_tf_shape="
-                << TensorShape(bcast.output_shape()).DebugString()
-                << " output_xla_shape="
-                << output_shape_or.value().ToString(true);
-    } else {
-      LOG(INFO) << "[TF2XLA TRUEDIV DEBUG] stage=output op="
-                << type_string() << " node=" << name()
-                << " output_tf_shape="
-                << TensorShape(bcast.output_shape()).DebugString()
-                << " output_xla_shape=<error: "
-                << output_shape_or.status().ToString() << ">";
-    }
-  }
 
   // The TensorFlow helper computed the post-broadcast shape in
   // output_shape: we rely on subclassed Computations to implement the

@@ -179,12 +179,6 @@ class TileOp : public OpKernel {
     // Eigen doesn't support scalars on the GPU, so handle 0-D specially
     if (input_dims == 0) {
       context->set_output(0, input);
-      LOG(INFO) << "[TF TILE DEBUG] op=" << type_string()
-                << " node=" << name() << " input_shape="
-                << input.shape().DebugString() << " multiples_shape="
-                << multiples.shape().DebugString() << " multiples="
-                << multiples.SummarizeValue(10) << " output_shape="
-                << input.shape().DebugString();
       return;
     }
 
@@ -201,12 +195,6 @@ class TileOp : public OpKernel {
     }
     if (output_shape == input.shape()) {
       context->set_output(0, input);
-      LOG(INFO) << "[TF TILE DEBUG] op=" << type_string()
-                << " node=" << name() << " input_shape="
-                << input.shape().DebugString() << " multiples_shape="
-                << multiples.shape().DebugString() << " multiples="
-                << multiples.SummarizeValue(10) << " output_shape="
-                << input.shape().DebugString();
       return;
     }
     Tensor* result = nullptr;
@@ -218,12 +206,6 @@ class TileOp : public OpKernel {
 #define HANDLE_TYPE(DT)                               \
   if (context->input(0).dtype() == DT) {              \
     HandleCase<DT>(context, multiples_array, result); \
-    LOG(INFO) << "[TF TILE DEBUG] op=" << type_string() \
-              << " node=" << name() << " input_shape=" \
-              << input.shape().DebugString() << " multiples_shape=" \
-              << multiples.shape().DebugString() << " multiples=" \
-              << multiples.SummarizeValue(10) << " output_shape=" \
-              << result->shape().DebugString();       \
     return;                                           \
   }
 

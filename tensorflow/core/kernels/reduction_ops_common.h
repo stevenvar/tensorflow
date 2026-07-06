@@ -149,13 +149,6 @@ class ReductionOp : public OpKernel {
   void Compute(OpKernelContext* ctx) override {
     const Tensor& data = ctx->input(0);
     const Tensor& axes = ctx->input(1);
-    if (type_string() == "Sum" && ShouldLogDynamicDebugReductionNode(name())) {
-      LOG(INFO) << "[TF SUM DEBUG] phase=before"
-                << " node=" << name()
-                << " input_shape=" << data.shape().DebugString()
-                << " axes_shape=" << axes.shape().DebugString()
-                << " axes=" << axes.SummarizeValue(10);
-    }
     VLOG(1) << "data shape: " << data.shape().DebugString();
     VLOG(1) << "axes      : " << axes.SummarizeValue(10);
 
@@ -257,14 +250,6 @@ class ReductionOp : public OpKernel {
     Tensor out;
     OP_REQUIRES(ctx, out.CopyFrom(tmp_out, helper.out_shape()),
                 errors::Internal("Error during reduction copy."));
-    if (type_string() == "Sum" && ShouldLogDynamicDebugReductionNode(name())) {
-      LOG(INFO) << "[TF SUM DEBUG] phase=after"
-                << " node=" << name()
-                << " input_shape=" << data.shape().DebugString()
-                << " axes_shape=" << axes.shape().DebugString()
-                << " axes=" << axes.SummarizeValue(10)
-                << " output_shape=" << out.shape().DebugString();
-    }
     ctx->set_output(0, out);
   }
 

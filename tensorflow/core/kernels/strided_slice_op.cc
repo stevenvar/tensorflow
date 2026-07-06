@@ -124,14 +124,7 @@ class StridedSliceOp : public OpKernel {
                      &processing_shape, &final_shape, &is_identity,
                      &is_simple_slice, &slice_dim0, &begin, &end, &strides));
     const Tensor& input = context->input(0);
-    auto log_output_shape = [&](const TensorShape& output_shape) {
-      if (ShouldLogDynamicDebugNode(name())) {
-        LOG(INFO) << "[TF DYNAMIC DEBUG] op=StridedSlice node=" << name()
-                  << " input_shape=" << input.shape().DebugString()
-                  << " processing_shape=" << processing_shape.DebugString()
-                  << " output_shape=" << output_shape.DebugString();
-      }
-    };
+    auto log_output_shape = [&](const TensorShape& output_shape) {};
 
     // Optimization #1, slice is a no-op plus reshape
     if (is_identity) {

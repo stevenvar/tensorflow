@@ -100,12 +100,6 @@ class ReshapeOp : public XlaOpKernel {
     OP_REQUIRES_OK(ctx,
                    ctx->ConstantInputAsIntVector(
                        1, &shape_input, xla::ValueInferenceMode::kUpperBound));
-    LOG(INFO) << "[TF2XLA RESHAPE DEBUG] stage=request"
-              << " node=" << name()
-              << " input_tf_shape=" << input_shape.DebugString()
-              << " input_tf_exprs=" << FormatTensorShapeExprs(input_shape)
-              << " input_xla_shape=" << input_xla_shape->ToString(true)
-              << " requested_shape=" << FormatInt64Vector(shape_input);
     // Compute the output shape.  Determine product of specified
     // dimensions, and find the index of the unspecified one if there
     // is one.
@@ -241,10 +235,6 @@ class ReshapeOp : public XlaOpKernel {
             << shape.DebugString() << ", unknown_index=" << unknown_index;
 
     if (input_xla_shape->is_static()) {
-      LOG(INFO) << "[TF2XLA RESHAPE DEBUG] stage=static_output"
-                << " node=" << name()
-                << " output_tf_shape=" << shape.DebugString()
-                << " output_tf_exprs=" << FormatTensorShapeExprs(shape);
       ctx->SetOutput(
           0, xla::Reshape(input, shape.dim_sizes(), shape.get_filled_expressions()));
       return;
@@ -265,12 +255,6 @@ class ReshapeOp : public XlaOpKernel {
         ctx, ctx->ResolveInputDynamismIntoPredVector(1, &dims_are_dynamic));
     if (unknown_index == -1) {
       // No unknown index.
-      LOG(INFO) << "[TF2XLA RESHAPE DEBUG] stage=dynamic_output"
-                << " node=" << name()
-                << " output_bound_dims=" << FormatInt64Vector(shape.dim_sizes())
-                << " output_tf_exprs=" << FormatTensorShapeExprs(shape)
-                << " dims_are_dynamic=" << FormatBoolVector(dims_are_dynamic)
-                << " output_dim_exprs=" << FormatDExprVector(output_dim_exprs);
       ctx->SetOutput(
           0, xla::DynamicReshape(input, output_dim_sizes, shape.dim_sizes(),
                                  dims_are_dynamic, output_dim_exprs));
@@ -320,16 +304,6 @@ class ReshapeOp : public XlaOpKernel {
         dims_are_dynamic[unknown_index] = input_is_dynamic;
         output_dim_sizes[unknown_index] = unknown_dim_size;
 
-        LOG(INFO) << "[TF2XLA RESHAPE DEBUG] stage=dynamic_output_unknown"
-                  << " node=" << name()
-                  << " output_bound_dims="
-                  << FormatInt64Vector(shape.dim_sizes())
-                  << " output_tf_exprs=" << FormatTensorShapeExprs(shape)
-                  << " dims_are_dynamic="
-                  << FormatBoolVector(dims_are_dynamic)
-                  << " output_dim_exprs="
-                  << FormatDExprVector(output_dim_exprs)
-                  << " unknown_index=" << unknown_index;
         ctx->SetOutput(
             0, xla::DynamicReshape(input, output_dim_sizes, shape.dim_sizes(),
                                    dims_are_dynamic, output_dim_exprs));

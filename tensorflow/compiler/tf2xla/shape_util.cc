@@ -129,10 +129,6 @@ absl::Status XLAShapeToTensorShape(const xla::Shape& shape,
                                    shape.expressions().end());
     tensor_shape->set_expressions(std::move(dexprs));
   }
-  if (flags->tf_xla_enable_dynamic_sizes && XlaShapeHasExpressions(shape)) {
-    LOG(INFO) << "[XLA BOUNDARY DEBUG] XLAShapeToTensorShape xla_shape="
-              << shape << " tensor_shape=" << tensor_shape->DebugString();
-  }
   return absl::OkStatus();
 }
 
@@ -224,11 +220,6 @@ xla::Shape TensorShapeToXLAShape(xla::PrimitiveType type,
   if (flags->tf_xla_enable_dynamic_sizes) {
     result.set_expressions(expressions);
   }
-  if (flags->tf_xla_enable_dynamic_sizes &&
-      TensorShapeHasExpressions(tensor_shape)) {
-    LOG(INFO) << "[XLA BOUNDARY DEBUG] TensorShapeToXLAShape partial_tensor_shape="
-              << tensor_shape.DebugString() << " xla_shape=" << result;
-  }
   return result;
 }
 
@@ -276,11 +267,6 @@ xla::Shape TensorShapeToXLAShape(xla::PrimitiveType type,
       xla::ShapeUtil::MakeShapeWithDenseLayout(type, dimensions, layout);
   if (flags->tf_xla_enable_dynamic_sizes) {
     shape.set_expressions(expressions);
-  }
-  if (flags->tf_xla_enable_dynamic_sizes &&
-      TensorShapeHasExpressions(tensor_shape)) {
-    LOG(INFO) << "[XLA BOUNDARY DEBUG] TensorShapeToXLAShape tensor_shape="
-              << tensor_shape.DebugString() << " xla_shape=" << shape;
   }
   return shape;
 }

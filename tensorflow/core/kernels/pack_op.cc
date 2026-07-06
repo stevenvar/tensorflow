@@ -85,13 +85,6 @@ class PackOp : public OpKernel {
       Tensor output;
       CHECK(output.CopyFrom(first_input, output_shape));
       c->set_output(0, output);
-      if (ShouldLogDynamicDebugPackNode(name())) {
-        LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
-                  << " node=" << name() << " axis=" << axis
-                  << " num_inputs=" << num << " input_index=0 input_shape="
-                  << first_input.shape().DebugString() << " output_shape="
-                  << output.shape().DebugString();
-      }
       return;
     }
 
@@ -133,36 +126,10 @@ class PackOp : public OpKernel {
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
       if (std::is_same<Device, GPUDevice>::value) {
         ConcatGPU<T>(c, inputs_flat, output, &output_flat);
-        if (ShouldLogDynamicDebugPackNode(name())) {
-          LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
-                    << " node=" << name() << " axis=" << axis
-                    << " num_inputs=" << num;
-          for (int i = 0; i < num; ++i) {
-            LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
-                      << " node=" << name() << " input_index=" << i
-                      << " input_shape=" << c->input(i).shape().DebugString();
-          }
-          LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
-                    << " node=" << name()
-                    << " output_shape=" << output->shape().DebugString();
-        }
         return;
       }
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
       ConcatCPU<T>(c->device(), inputs_flat, &output_flat);
-    }
-    if (ShouldLogDynamicDebugPackNode(name())) {
-      LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
-                << " node=" << name() << " axis=" << axis
-                << " num_inputs=" << num;
-      for (int i = 0; i < num; ++i) {
-        LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
-                  << " node=" << name() << " input_index=" << i
-                  << " input_shape=" << c->input(i).shape().DebugString();
-      }
-      LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
-                << " node=" << name()
-                << " output_shape=" << output->shape().DebugString();
     }
   }
 

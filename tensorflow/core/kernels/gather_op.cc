@@ -198,14 +198,6 @@ class GatherOp : public OpKernel {
             "indices", SliceDebugString(indices.shape(), bad_i), " = ",
             indices_flat(bad_i), " is not in [0, ", gather_dim_size, ")"));
 
-    if (ShouldLogDynamicDebugGatherNode(name())) {
-      LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
-                << " node=" << name() << " params_shape="
-                << params.shape().DebugString() << " indices_shape="
-                << indices.shape().DebugString() << " axis=" << axis
-                << " batch_dims=" << batch_dims << " output_shape="
-                << out->shape().DebugString();
-    }
   }
 
  private:

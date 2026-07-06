@@ -501,8 +501,8 @@ std::string TensorInputsSummary(absl::Span<const Tensor* const> inputs) {
 void LogClusterRuntimeInputs(absl::string_view cluster_name,
                              absl::string_view op_name,
                              absl::Span<const Tensor* const> inputs) {
-  LOG(INFO) << "[XLA CLUSTER RUNTIME INPUTS] cluster=" << cluster_name
-            << " op=" << op_name << " inputs=" << TensorInputsSummary(inputs);
+  VLOG(1) << "[XLA CLUSTER RUNTIME INPUTS] cluster=" << cluster_name
+          << " op=" << op_name << " inputs=" << TensorInputsSummary(inputs);
 }
 
 std::string ClusterNameFromRunOpName(absl::string_view op_name) {
@@ -527,8 +527,8 @@ void LogClusterOutputs(OpKernelContext* ctx, absl::string_view cluster_name) {
         ", shape=", output->shape().DebugString(),
         ", dims=", RuntimeShapeSummary(output->shape()), "}"));
   }
-  LOG(INFO) << "[XLA BOUNDARY DEBUG] cluster_outputs cluster=" << cluster_name
-            << " outputs=[" << absl::StrJoin(output_summaries, ", ") << "]";
+  VLOG(1) << "[XLA BOUNDARY DEBUG] cluster_outputs cluster=" << cluster_name
+          << " outputs=[" << absl::StrJoin(output_summaries, ", ") << "]";
 }
 
 std::string TensorShapeExpressionsSummary(const TensorShape& tensor_shape) {
@@ -1027,17 +1027,17 @@ absl::Status CompileToLocalExecutable(
             }
             dyn_exprs[idx] = dyn_dim_expr;
             shp.set_expressions(std::move(dyn_exprs));
-            LOG(INFO) << "XlaCompileOp normalized input argument: "
-                      << "arg_index=" << arg_index << " node=" << node_name
-                      << " source_node=" << source_node_name
-                      << " source_op=" << source_node_op
-                      << " source_output=" << source_output_index
-                      << " [XLA CONCAT DEBUG] cluster_contains_concat="
-                      << concat_debug_info.contains_concat
-                      << " feeds_concat_directly=" << feeds_concat_directly
-                      << " source=dynamic_dim_attr"
-                      << " tensor_shape=" << shp.DebugString()
-                      << " exprs=" << TensorShapeExpressionsSummary(shp);
+            VLOG(1) << "XlaCompileOp normalized input argument: "
+                     << "arg_index=" << arg_index << " node=" << node_name
+                     << " source_node=" << source_node_name
+                     << " source_op=" << source_node_op
+                     << " source_output=" << source_output_index
+                     << " [XLA CONCAT DEBUG] cluster_contains_concat="
+                     << concat_debug_info.contains_concat
+                     << " feeds_concat_directly=" << feeds_concat_directly
+                     << " source=dynamic_dim_attr"
+                     << " tensor_shape=" << shp.DebugString()
+                     << " exprs=" << TensorShapeExpressionsSummary(shp);
             continue;
           }
           auto it = attr_map.find(kXlaInferredOutputShapesAttrName);
@@ -1104,17 +1104,17 @@ absl::Status CompileToLocalExecutable(
             }
           }
           shp.set_expressions(std::move(dyn_exprs));
-          LOG(INFO) << "XlaCompileOp normalized input argument: "
-                    << "arg_index=" << arg_index << " node=" << node_name
-                    << " source_node=" << source_node_name
-                    << " source_op=" << source_node_op
-                    << " source_output=" << source_output_index
-                    << " [XLA CONCAT DEBUG] cluster_contains_concat="
-                    << concat_debug_info.contains_concat
-                    << " feeds_concat_directly=" << feeds_concat_directly
-                    << " source=inferred_output_shape"
-                    << " tensor_shape=" << shp.DebugString()
-                    << " exprs=" << TensorShapeExpressionsSummary(shp);
+          VLOG(1) << "XlaCompileOp normalized input argument: "
+                   << "arg_index=" << arg_index << " node=" << node_name
+                   << " source_node=" << source_node_name
+                   << " source_op=" << source_node_op
+                   << " source_output=" << source_output_index
+                   << " [XLA CONCAT DEBUG] cluster_contains_concat="
+                   << concat_debug_info.contains_concat
+                   << " feeds_concat_directly=" << feeds_concat_directly
+                   << " source=inferred_output_shape"
+                   << " tensor_shape=" << shp.DebugString()
+                   << " exprs=" << TensorShapeExpressionsSummary(shp);
         }
       }
     }

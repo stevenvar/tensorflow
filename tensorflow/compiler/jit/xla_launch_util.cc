@@ -536,9 +536,9 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
         }
       }
       if (has_dynamic) {
-        LOG(INFO) << "[XLA BOUNDARY DEBUG] PopulateOutputs dynamic output_index="
-                  << i << " xla_subshape=" << subshape
-                  << " final_tensor_shape=" << shape.DebugString();
+        VLOG(1) << "[XLA BOUNDARY DEBUG] PopulateOutputs dynamic output_index="
+                << i << " xla_subshape=" << subshape
+                << " final_tensor_shape=" << shape.DebugString();
       }
       if (has_dynamic) {
         output_tensor_shapes.push_back(shape);

@@ -4492,7 +4492,7 @@ TEST_F(HloParserTest, ParseShapeStringUnbounded) {
   std::string shape_string = "f32[?,784]";
   TF_ASSERT_OK_AND_ASSIGN(Shape actual, ParseShape(shape_string));
   Shape expected =
-      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, 784}, {true, false});
+      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, 784}, std::vector<bool>{true, false}, {});
   ASSERT_TRUE(ShapeUtil::Equal(expected, actual))
       << "expected: " << ShapeUtil::HumanString(expected)
       << "actual:   " << ShapeUtil::HumanString(actual);
@@ -4681,7 +4681,7 @@ TEST_F(HloParserTest, ParseInvalidShapeString) {
 TEST_F(HloParserTest, ParseDynamicArray) {
   std::string shape_string = "f32[123,<=456]";
   TF_ASSERT_OK_AND_ASSIGN(Shape actual, ParseShape(shape_string));
-  Shape expected = ShapeUtil::MakeShape(F32, {123, 456}, {false, true});
+  Shape expected = ShapeUtil::MakeShape(F32, {123, 456}, std::vector<bool>{false, true}, {});
   ASSERT_TRUE(ShapeUtil::Equal(expected, actual))
       << "expected: " << ShapeUtil::HumanString(expected)
       << "actual:   " << ShapeUtil::HumanString(actual);
@@ -4692,7 +4692,7 @@ TEST_F(HloParserTest, ParseDynamicTuple) {
   TF_ASSERT_OK_AND_ASSIGN(Shape actual, ParseShape(shape_string));
   Shape expected = ShapeUtil::MakeTupleShape(
       {ShapeUtil::MakeShape(F32, {42}),
-       ShapeUtil::MakeShape(U32, {123, 456}, {true, true})});
+       ShapeUtil::MakeShape(U32, {123, 456}, std::vector<bool>{true, true}, {})});
   ASSERT_TRUE(ShapeUtil::Equal(expected, actual))
       << "expected: " << ShapeUtil::HumanString(expected)
       << "actual:   " << ShapeUtil::HumanString(actual);
@@ -4877,7 +4877,8 @@ ENTRY InferDotShape {
   TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(text));
   EXPECT_TRUE(ShapeUtil::Equal(
       module->entry_computation()->ComputeProgramShape().result(),
-      ShapeUtil::MakeShape(F32, {2}, {0})));
+      ShapeUtil::MakeShape(F32, {2},
+                           std::vector<DExpr>{DExpr::Const(0)})));
 }
 
 TEST_F(HloParserTest, InferSparseDotShape) {
@@ -4892,7 +4893,8 @@ ENTRY InferSparseDotShape {
   TF_ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(text));
   EXPECT_TRUE(ShapeUtil::Equal(
       module->entry_computation()->ComputeProgramShape().result(),
-      ShapeUtil::MakeShape(F32, {2}, {0})));
+      ShapeUtil::MakeShape(F32, {2},
+                           std::vector<DExpr>{DExpr::Const(0)})));
 }
 
 TEST_F(HloParserTest, InferTupleShape) {

@@ -1074,7 +1074,7 @@ TEST_F(LiteralUtilTest, ToBoundedDynamicR2) {
   // F32[2, 1]
   auto original = LiteralUtil::CreateR2<float>({{1}, {4}});
   // F32[2, <=3] (2, 1)
-  auto dynamic_shape = ShapeUtil::MakeShape(F32, {2, 3}, {false, true});
+  auto dynamic_shape = ShapeUtil::MakeShape(F32, {2, 3}, std::vector<bool>{false, true}, {});
   auto dynamic_literal = original.ToBoundedDynamic(dynamic_shape);
   EXPECT_EQ(dynamic_literal.shape(), dynamic_shape);
 

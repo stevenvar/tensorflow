@@ -183,8 +183,8 @@ class UniqueOpBase : public XlaOpKernel {
       sort_keys.push_back(xla::Reshape(slice, {leading_size}, {leading_expr}));
       sort_types.push_back(input_shape.element_type());
     }
-    xla::Shape iota_shape =
-        xla::ShapeUtil::MakeShape(xla::S32, {leading_size}, {leading_expr});
+    xla::Shape iota_shape = xla::ShapeUtil::MakeShape(
+        xla::S32, {leading_size}, std::vector<xla::DExpr>{leading_expr});
     iota_shape.set_expression(0, leading_expr);
     auto iota = xla::Iota(ctx->builder(), iota_shape, 0);
     sort_keys.push_back(iota);

@@ -211,22 +211,22 @@ TEST(ShapeUtilTest, UnequalIgnoringElementType) {
 
 TEST(ShapeUtilTest, EqualDynamicShapes) {
   EXPECT_TRUE(
-      ShapeUtil::Equal(ShapeUtil::MakeShape(F32, {4, 3}, {true, false}),
-                       ShapeUtil::MakeShape(F32, {4, 3}, {true, false})));
+      ShapeUtil::Equal(ShapeUtil::MakeShape(F32, {4, 3}, std::vector<bool>{true, false}, {}),
+                       ShapeUtil::MakeShape(F32, {4, 3}, std::vector<bool>{true, false}, {})));
   EXPECT_FALSE(
-      ShapeUtil::Equal(ShapeUtil::MakeShape(F32, {4, 3}, {true, false}),
-                       ShapeUtil::MakeShape(F32, {4, 3}, {false, false})));
+      ShapeUtil::Equal(ShapeUtil::MakeShape(F32, {4, 3}, std::vector<bool>{true, false}, {}),
+                       ShapeUtil::MakeShape(F32, {4, 3}, std::vector<bool>{false, false}, {})));
   EXPECT_FALSE(ShapeUtil::Equal(
-      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize}, {true}),
-      ShapeUtil::MakeShape(F32, {2}, {true})));
+      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize}, std::vector<bool>{true}, {}),
+      ShapeUtil::MakeShape(F32, {2}, std::vector<bool>{true}, {})));
 }
 
 TEST(ShapeUtilTest, CompatibleDynamicShapes) {
-  Shape shape_a = ShapeUtil::MakeShape(F32, {4, 3}, {true, false});
+  Shape shape_a = ShapeUtil::MakeShape(F32, {4, 3}, std::vector<bool>{true, false}, {});
   *shape_a.mutable_layout() = Layout({1, 0});
-  Shape shape_b = ShapeUtil::MakeShape(F32, {4, 3}, {true, false});
+  Shape shape_b = ShapeUtil::MakeShape(F32, {4, 3}, std::vector<bool>{true, false}, {});
   *shape_b.mutable_layout() = Layout({0, 1});
-  Shape shape_c = ShapeUtil::MakeShape(F32, {4, 3}, {false, true});
+  Shape shape_c = ShapeUtil::MakeShape(F32, {4, 3}, std::vector<bool>{false, true}, {});
   *shape_c.mutable_layout() = Layout({0, 1});
 
   EXPECT_TRUE(ShapeUtil::Compatible(shape_a, shape_a));
@@ -1141,14 +1141,12 @@ TEST(ShapeUtilTest, MakeShapeWithDescendingLayoutAndSamePhysicalLayout) {
 TEST(ShapeUtilTest,
      MakeShapeWithDescendingLayoutAndSamePhysicalLayoutWithDynamicDims) {
   Shape shape =
-      ShapeUtil::MakeShape(F32, {128, 24, Shape::kUnboundedSize, 48, 48},
-                           {false, false, true, false, false});
+      ShapeUtil::MakeShape(F32, {128, 24, Shape::kUnboundedSize, 48, 48}, std::vector<bool>{false, false, true, false, false}, {});
   *shape.mutable_layout() = LayoutUtil::MakeLayout({2, 4, 3, 1, 0});
   Shape new_shape =
       ShapeUtil::MakeShapeWithDescendingLayoutAndSamePhysicalLayout(shape);
   Shape expected_shape =
-      ShapeUtil::MakeShape(F32, {128, 24, 48, 48, Shape::kUnboundedSize},
-                           {false, false, false, false, true});
+      ShapeUtil::MakeShape(F32, {128, 24, 48, 48, Shape::kUnboundedSize}, std::vector<bool>{false, false, false, false, true}, {});
   *expected_shape.mutable_layout() = LayoutUtil::MakeLayout({4, 3, 2, 1, 0});
   EXPECT_EQ(new_shape, expected_shape);
 }

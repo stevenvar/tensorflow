@@ -105,7 +105,7 @@ XLA_TEST_F(CopyOpTest, CopyDynamicR1S1310720U32Dynamic0) {
     GTEST_SKIP();
   }
   Shape bounded_shape =
-      ShapeUtil::MakeShape(PrimitiveType::F32, {1310720}, {true});
+      ShapeUtil::MakeShape(PrimitiveType::F32, {1310720}, std::vector<bool>{true}, {});
   TestDynamicCopyOp(LiteralUtil::CreateRandomLiteral<PrimitiveType::F32>(
                         ShapeUtil::MakeShape(PrimitiveType::F32, {0}), 0, 1)
                         .value(),
@@ -118,7 +118,7 @@ XLA_TEST_F(CopyOpTest, CopyDynamicR1S1310720U32Dynamic106632) {
     GTEST_SKIP();
   }
   Shape bounded_shape =
-      ShapeUtil::MakeShape(PrimitiveType::F32, {1310720}, {true});
+      ShapeUtil::MakeShape(PrimitiveType::F32, {1310720}, std::vector<bool>{true}, {});
   TestDynamicCopyOp(
       LiteralUtil::CreateRandomLiteral<PrimitiveType::F32>(
           ShapeUtil::MakeShape(PrimitiveType::F32, {106632}), 0, 1)
@@ -132,7 +132,7 @@ XLA_TEST_F(CopyOpTest, CopyDynamicR1S1310720U32Dynamic1310720) {
     GTEST_SKIP();
   }
   Shape bounded_shape =
-      ShapeUtil::MakeShape(PrimitiveType::F32, {1310720}, {true});
+      ShapeUtil::MakeShape(PrimitiveType::F32, {1310720}, std::vector<bool>{true}, {});
   TestDynamicCopyOp(
       LiteralUtil::CreateRandomLiteral<PrimitiveType::F32>(
           ShapeUtil::MakeShape(PrimitiveType::F32, {1310720}), 0, 1)
@@ -145,7 +145,7 @@ XLA_TEST_F(CopyOpTest, CopyDynamicR1S512U32Dynamic64) {
   if (test_runner().HasProperty(HloRunnerPropertyTag::kCpu)) {
     GTEST_SKIP();
   }
-  Shape bounded_shape = ShapeUtil::MakeShape(PrimitiveType::F32, {512}, {true});
+  Shape bounded_shape = ShapeUtil::MakeShape(PrimitiveType::F32, {512}, std::vector<bool>{true}, {});
   TestDynamicCopyOp(LiteralUtil::CreateRandomLiteral<PrimitiveType::F32>(
                         ShapeUtil::MakeShape(PrimitiveType::F32, {64}), 0, 1)
                         .value(),

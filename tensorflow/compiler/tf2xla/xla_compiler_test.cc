@@ -274,7 +274,8 @@ TEST_F(XlaCompilerTest, SimpleDynamicShapeParameter) {
   args[0].type = DT_INT32;
   args[0].shape =
       xla::ShapeUtil::MakeShape(/*element_type=*/xla::S32, /*dimensions=*/{2},
-                                /*dynamic_dimensions=*/{true});
+                                /*dynamic_dimensions=*/std::vector<bool>{true},
+                                /*expressions=*/{});
   args[1].kind = XlaCompiler::Argument::kParameter;
   args[1].type = DT_INT32;
   args[1].shape = TensorShape(/*dimensions=*/{2});

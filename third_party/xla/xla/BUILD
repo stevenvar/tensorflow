@@ -548,6 +548,7 @@ xla_cc_test(
     srcs = ["shape_util_test.cc"],
     deps = [
         ":shape_util",
+        ":shape_util_proto_cc_impl",
         ":util",
         ":xla_data_proto_cc",
         "//xla/hlo/testlib:test",

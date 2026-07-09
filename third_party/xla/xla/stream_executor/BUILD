@@ -363,6 +363,7 @@ cc_library(
 tf_proto_library(
     name = "blas_proto",
     srcs = ["blas.proto"],
+    make_default_target_header_only = True,
 )
 
 cc_library(

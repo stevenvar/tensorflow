@@ -217,7 +217,7 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
   auto lhs_handle = ctx->Input(0);
   auto rhs_handle = ctx->Input(1);
   if (lhs_shape.dims() == rhs_shape.dims()) {
-    auto reconcile_tensor_mismatched_dims = [ctx](
+    auto reconcile_tensor_mismatched_dims = [ctx, this](
                                                 xla::XlaOp lhs, xla::XlaOp rhs,
                                                 const xla::Shape& lhs_xla_shape,
                                                 const xla::Shape& rhs_xla_shape,
@@ -277,7 +277,6 @@ void XlaBinaryOp::Compile(XlaOpKernelContext* ctx) {
             //
             // However, XLA only does degenerate broadcasts for non-dynamic
             // dimensions of size 1.
-
             // Get the original size.
             auto size = xla::GetDimensionSize(lhs, i);
 

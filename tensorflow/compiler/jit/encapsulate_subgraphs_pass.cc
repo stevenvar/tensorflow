@@ -155,7 +155,6 @@ struct OutputInputTensorPairHasher {
 // everything to use it.
 static const char* const kArgOp = "_Arg";
 static const char* const kRetValOp = "_Retval";
-
 class Encapsulator {
  public:
   Encapsulator(string group_attribute, Graph const* graph_in)

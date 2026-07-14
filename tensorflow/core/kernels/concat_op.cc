@@ -34,6 +34,18 @@ limitations under the License.
 
 namespace tensorflow {
 
+namespace {
+
+bool ShouldLogDynamicDebugNode(const std::string& node_name) {
+  return node_name.find("de_iic/") != std::string::npos ||
+         node_name.find("iC_iic/") != std::string::npos ||
+         node_name.find("iR_iic/") != std::string::npos ||
+         node_name.find("iF_iic/") != std::string::npos ||
+         node_name.find("MMoE_input_emb_concat") != std::string::npos;
+}
+
+}  // namespace
+
 typedef Eigen::ThreadPoolDevice CPUDevice;
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 typedef Eigen::GpuDevice GPUDevice;
@@ -173,6 +185,20 @@ class ConcatBaseOp : public OpKernel {
       }
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
       ConcatCPU<T>(c->device(), inputs_flat, &output_flat);
+    }
+    if (ShouldLogDynamicDebugNode(name())) {
+      LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                << " node=" << name() << " axis=" << axis
+                << " num_inputs=" << N;
+      for (int i = 0; i < N; ++i) {
+        const auto& in = c->input(values_input_start_index_ + i);
+        LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                  << " node=" << name() << " input_index=" << i
+                  << " input_shape=" << in.shape().DebugString();
+      }
+      LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                << " node=" << name()
+                << " output_shape=" << output->shape().DebugString();
     }
   }
 

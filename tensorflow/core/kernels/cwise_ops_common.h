@@ -37,6 +37,18 @@ limitations under the License.
 
 namespace tensorflow {
 
+inline bool ShouldLogDynamicDebugBinaryNode(const std::string& node_name) {
+  return node_name.find("de_iic/") != std::string::npos ||
+         node_name.find("iC_iic/") != std::string::npos ||
+         node_name.find("iR_iic/") != std::string::npos ||
+         node_name.find("iF_iic/") != std::string::npos ||
+         node_name.find("MMoE_input_emb_concat") != std::string::npos;
+}
+
+inline bool ShouldLogDynamicDebugTruedivNode(const std::string& node_name) {
+  return node_name.find("/truediv") != std::string::npos;
+}
+
 typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
 
@@ -98,6 +110,22 @@ class BinaryOp : public BinaryOpShared {
                     "Expected tensor of type ",
                     DataTypeString(DataTypeToEnum<Tin>::v()), " but got type ",
                     DataTypeString(input_1.dtype())));
+    auto maybe_log_output = [&](const Tensor& out) {
+      if (ShouldLogDynamicDebugBinaryNode(name())) {
+        LOG(INFO) << "[TF DYNAMIC DEBUG] op=" << type_string()
+                  << " node=" << name()
+                  << " input0_shape=" << input_0.shape().DebugString()
+                  << " input1_shape=" << input_1.shape().DebugString()
+                  << " output_shape=" << out.shape().DebugString();
+      }
+      if (ShouldLogDynamicDebugTruedivNode(name())) {
+        LOG(INFO) << "[TF TRUEDIV DEBUG] op=" << type_string()
+                  << " node=" << name()
+                  << " input0_shape=" << input_0.shape().DebugString()
+                  << " input1_shape=" << input_1.shape().DebugString()
+                  << " output_shape=" << out.shape().DebugString();
+      }
+    };
     const Device& eigen_device = ctx->eigen_device<Device>();
     bool error = false;
     bool* const error_ptr = Functor::has_errors ? &error : nullptr;
@@ -116,6 +144,7 @@ class BinaryOp : public BinaryOpShared {
       if (Functor::has_errors && error) {
         SetComputeError(ctx);
       }
+      maybe_log_output(*out);
       return;
     } else if (input_0.shape().dims() == 0) {
       // scalar op tensor.
@@ -130,6 +159,7 @@ class BinaryOp : public BinaryOpShared {
       if (Functor::has_errors && error) {
         SetComputeError(ctx);
       }
+      maybe_log_output(*out);
       return;
     } else if (input_1.shape().dims() == 0) {
       // tensor op scalar.
@@ -143,6 +173,7 @@ class BinaryOp : public BinaryOpShared {
       if (Functor::has_errors && error) {
         SetComputeError(ctx);
       }
+      maybe_log_output(*out);
       return;
     }
 
@@ -225,6 +256,7 @@ class BinaryOp : public BinaryOpShared {
     if (Functor::has_errors && error) {
       SetComputeError(ctx);
     }
+    maybe_log_output(*out);
   }
 };
 

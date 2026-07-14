@@ -23,6 +23,7 @@ limitations under the License.
 #include <ostream>
 #include <numeric>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -37,6 +38,125 @@ Constant* AsConstant(DynExpr* expr) {
   return expr != nullptr && expr->kind() == DExpr::Kind::kConstant
              ? static_cast<Constant*>(expr)
              : nullptr;
+}
+
+struct CoveringSubexpression {
+  std::set<int> ids;
+  int node_count = 1;
+  DynExpr* smallest = nullptr;
+  int smallest_node_count = 0;
+};
+
+CoveringSubexpression FindSmallestCoveringSubexpression(
+    DynExpr* expr, const std::set<int>& target_ids) {
+  CHECK(expr != nullptr);
+  CoveringSubexpression result;
+  DynExpr* lhs = nullptr;
+  DynExpr* rhs = nullptr;
+
+  switch (expr->kind()) {
+    case DExpr::Kind::kUnknown:
+    case DExpr::Kind::kConstant:
+      break;
+    case DExpr::Kind::kVariable:
+      result.ids.insert(static_cast<Variable*>(expr)->get_id());
+      break;
+    case DExpr::Kind::kAdd: {
+      auto* add = static_cast<Add*>(expr);
+      lhs = add->get_lhs();
+      rhs = add->get_rhs();
+      break;
+    }
+    case DExpr::Kind::kSub: {
+      auto* sub = static_cast<Sub*>(expr);
+      lhs = sub->get_lhs();
+      rhs = sub->get_rhs();
+      break;
+    }
+    case DExpr::Kind::kMul: {
+      auto* mul = static_cast<Mul*>(expr);
+      lhs = mul->get_lhs();
+      rhs = mul->get_rhs();
+      break;
+    }
+    case DExpr::Kind::kDiv: {
+      auto* div = static_cast<Div*>(expr);
+      lhs = div->get_lhs();
+      rhs = div->get_rhs();
+      break;
+    }
+  }
+
+  if (lhs != nullptr) {
+    CoveringSubexpression lhs_result =
+        FindSmallestCoveringSubexpression(lhs, target_ids);
+    CoveringSubexpression rhs_result =
+        FindSmallestCoveringSubexpression(rhs, target_ids);
+    result.node_count += lhs_result.node_count + rhs_result.node_count;
+    result.ids.insert(lhs_result.ids.begin(), lhs_result.ids.end());
+    result.ids.insert(rhs_result.ids.begin(), rhs_result.ids.end());
+
+    if (lhs_result.smallest != nullptr) {
+      result.smallest = lhs_result.smallest;
+      result.smallest_node_count = lhs_result.smallest_node_count;
+    }
+    if (rhs_result.smallest != nullptr &&
+        (result.smallest == nullptr ||
+         rhs_result.smallest_node_count < result.smallest_node_count)) {
+      result.smallest = rhs_result.smallest;
+      result.smallest_node_count = rhs_result.smallest_node_count;
+    }
+  }
+
+  if (result.ids == target_ids &&
+      (result.smallest == nullptr ||
+       result.node_count < result.smallest_node_count)) {
+    result.smallest = expr;
+    result.smallest_node_count = result.node_count;
+  }
+  return result;
+}
+
+std::unique_ptr<DynExpr> ReplaceSubexpression(DynExpr* expr, DynExpr* target,
+                                              DynExpr* replacement) {
+  CHECK(expr != nullptr);
+  CHECK(target != nullptr);
+  CHECK(replacement != nullptr);
+  if (DynExpr::equal(expr, target)) {
+    return replacement->clone();
+  }
+
+  switch (expr->kind()) {
+    case DExpr::Kind::kUnknown:
+    case DExpr::Kind::kConstant:
+    case DExpr::Kind::kVariable:
+      return expr->clone();
+    case DExpr::Kind::kAdd: {
+      auto* add = static_cast<Add*>(expr);
+      return std::make_unique<Add>(
+          ReplaceSubexpression(add->get_lhs(), target, replacement).release(),
+          ReplaceSubexpression(add->get_rhs(), target, replacement).release());
+    }
+    case DExpr::Kind::kSub: {
+      auto* sub = static_cast<Sub*>(expr);
+      return std::make_unique<Sub>(
+          ReplaceSubexpression(sub->get_lhs(), target, replacement).release(),
+          ReplaceSubexpression(sub->get_rhs(), target, replacement).release());
+    }
+    case DExpr::Kind::kMul: {
+      auto* mul = static_cast<Mul*>(expr);
+      return std::make_unique<Mul>(
+          ReplaceSubexpression(mul->get_lhs(), target, replacement).release(),
+          ReplaceSubexpression(mul->get_rhs(), target, replacement).release());
+    }
+    case DExpr::Kind::kDiv: {
+      auto* div = static_cast<Div*>(expr);
+      return std::make_unique<Div>(
+          ReplaceSubexpression(div->get_lhs(), target, replacement).release(),
+          ReplaceSubexpression(div->get_rhs(), target, replacement).release());
+    }
+  }
+  return expr->clone();
 }
 
 void NormalizeFraction(int64_t* numerator, int64_t* denominator) {
@@ -346,6 +466,25 @@ std::unique_ptr<DynExpr> SimplifyCanonical(const DynExpr* expr) {
 }
 
 }  // namespace
+
+DExpr DExpr::find_smallest_subexpression_covering_all_variables() const {
+  CHECK(expr_ != nullptr);
+  const std::set<int> ids = expr_->get_all_ids();
+  CHECK(!ids.empty());
+  CoveringSubexpression result =
+      FindSmallestCoveringSubexpression(expr_.get(), ids);
+  CHECK(result.smallest != nullptr);
+  return DExpr::Adopt(result.smallest->clone().release());
+}
+
+DExpr DExpr::replace_subexpression(const DExpr& target,
+                                   const DExpr& replacement) const {
+  if (expr_ == nullptr) {
+    return DExpr();
+  }
+  return DExpr(ReplaceSubexpression(expr_.get(), target.get(),
+                                    replacement.get()));
+}
 
 const DExpr& Shape::MissingExpression() {
   static const DExpr missing = DExpr::Unknown(kMissingExpressionSentinel);

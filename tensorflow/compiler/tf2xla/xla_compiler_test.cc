@@ -1146,7 +1146,7 @@ TEST_F(XlaCompilerDynamicSizesTest, SqueezeRemovesUnitExpression) {
                                   xla::DExpr::Const(4)));
 }
 
-TEST_F(XlaCompilerTest, SplitPreservesAndDividesExpressions) {
+TEST_F(XlaCompilerDynamicSizesTest, SplitPreservesAndDividesExpressions) {
   Scope scope = Scope::NewRootScope().ExitOnError();
   auto split_dim = ops::Const<int32>(scope.WithOpName("split_dim"), 0, {});
   auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
@@ -1216,7 +1216,7 @@ TEST_F(XlaCompilerDynamicSizesTest, TileScalesExpression) {
                                   xla::DExpr::Const(5)));
 }
 
-TEST_F(XlaCompilerTest, PackInsertsAxisAndPreservesExpressions) {
+TEST_F(XlaCompilerDynamicSizesTest, PackInsertsAxisAndPreservesExpressions) {
   Scope scope = Scope::NewRootScope().ExitOnError();
   auto input0 = ops::_Arg(scope.WithOpName("input0"), DT_INT32, 0);
   auto input1 = ops::_Arg(scope.WithOpName("input1"), DT_INT32, 1);
@@ -1264,7 +1264,7 @@ TEST_F(XlaCompilerTest, PackInsertsAxisAndPreservesExpressions) {
                                   xla::DExpr::Const(2)));
 }
 
-TEST_F(XlaCompilerTest, UnpackRemovesAxisAndPreservesExpressions) {
+TEST_F(XlaCompilerDynamicSizesTest, UnpackRemovesAxisAndPreservesExpressions) {
   Scope scope = Scope::NewRootScope().ExitOnError();
   auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
 
@@ -1311,7 +1311,7 @@ TEST_F(XlaCompilerTest, UnpackRemovesAxisAndPreservesExpressions) {
   }
 }
 
-TEST_F(XlaCompilerTest, ConcatV2AddsLeadingExpressions) {
+TEST_F(XlaCompilerDynamicSizesTest, ConcatV2AddsLeadingExpressions) {
   Scope scope = Scope::NewRootScope().ExitOnError();
   auto lhs = ops::_Arg(scope.WithOpName("lhs"), DT_INT32, 0);
   auto rhs = ops::_Arg(scope.WithOpName("rhs"), DT_INT32, 1);
@@ -1957,6 +1957,304 @@ TEST_F(XlaCompilerDynamicSizesTest, SliceSubtractsFromLeadingExpression) {
   EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
                                       1),
                                   xla::DExpr::Const(3)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       StridedSlicePreservesLeadingExpressionOnInnerAxis) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto begin = ops::Const<int32>(scope.WithOpName("begin"), {0, 1}, {2});
+  auto end = ops::Const<int32>(scope.WithOpName("end"), {0, 7}, {2});
+  auto strides = ops::Const<int32>(scope.WithOpName("strides"), {1, 2}, {2});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("strided_slice", "StridedSlice")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Input(begin.node()->name(), 0, DT_INT32)
+                   .Input(end.node()->name(), 0, DT_INT32)
+                   .Input(strides.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Index", DT_INT32)
+                   .Attr("begin_mask", 1)
+                   .Attr("end_mask", 1)
+                   .Attr("ellipsis_mask", 0)
+                   .Attr("new_axis_mask", 0)
+                   .Attr("shrink_axis_mask", 0)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* strided_slice = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, strided_slice, 0);
+  scope.graph()->AddEdge(begin.node(), 0, strided_slice, 1);
+  scope.graph()->AddEdge(end.node(), 0, strided_slice, 2);
+  scope.graph()->AddEdge(strides.node(), 0, strided_slice, 3);
+  TF_ASSERT_OK(scope.DoShapeInference(strided_slice));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(strided_slice), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 8},
+      std::vector<xla::DExpr>{xla::DExpr::Var(40), xla::DExpr::Const(8)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "strided_slice_inner", std::move(graph),
+                                     args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(40)));
+  EXPECT_EQ(result.outputs[0].shape.dim_size(1), 3);
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, StridedSliceScalesLeadingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto begin = ops::Const<int32>(scope.WithOpName("begin"), {0, 0}, {2});
+  auto end = ops::Const<int32>(scope.WithOpName("end"), {0, 4}, {2});
+  auto strides = ops::Const<int32>(scope.WithOpName("strides"), {2, 1}, {2});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("strided_slice", "StridedSlice")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Input(begin.node()->name(), 0, DT_INT32)
+                   .Input(end.node()->name(), 0, DT_INT32)
+                   .Input(strides.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Index", DT_INT32)
+                   .Attr("begin_mask", 1)
+                   .Attr("end_mask", 1)
+                   .Attr("ellipsis_mask", 0)
+                   .Attr("new_axis_mask", 0)
+                   .Attr("shrink_axis_mask", 0)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* strided_slice = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, strided_slice, 0);
+  scope.graph()->AddEdge(begin.node(), 0, strided_slice, 1);
+  scope.graph()->AddEdge(end.node(), 0, strided_slice, 2);
+  scope.graph()->AddEdge(strides.node(), 0, strided_slice, 3);
+  TF_ASSERT_OK(scope.DoShapeInference(strided_slice));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(strided_slice), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 4},
+      std::vector<xla::DExpr>{
+          ((xla::DExpr::Const(2) * xla::DExpr::Var(41)) -
+           xla::DExpr::Const(1))
+              .simplify(),
+          xla::DExpr::Const(4)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "strided_slice_leading", std::move(graph),
+                                     args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(
+      result.outputs[0].shape.get_filled_expression(0), xla::DExpr::Var(41)));
+  EXPECT_EQ(result.outputs[0].shape.dim_size(0), 4);
+  EXPECT_EQ(result.outputs[0].shape.dim_size(1), 4);
+}
+
+TEST_F(XlaCompilerDynamicSizesTest, StridedSliceNewAxisInsertsUnitExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto begin = ops::Const<int32>(scope.WithOpName("begin"), {0, 0}, {2});
+  auto end = ops::Const<int32>(scope.WithOpName("end"), {0, 0}, {2});
+  auto strides = ops::Const<int32>(scope.WithOpName("strides"), {1, 1}, {2});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("strided_slice", "StridedSlice")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Input(begin.node()->name(), 0, DT_INT32)
+                   .Input(end.node()->name(), 0, DT_INT32)
+                   .Input(strides.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Index", DT_INT32)
+                   .Attr("begin_mask", 0x1)
+                   .Attr("end_mask", 0x1)
+                   .Attr("ellipsis_mask", 0)
+                   .Attr("new_axis_mask", 0x2)
+                   .Attr("shrink_axis_mask", 0)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* strided_slice = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, strided_slice, 0);
+  scope.graph()->AddEdge(begin.node(), 0, strided_slice, 1);
+  scope.graph()->AddEdge(end.node(), 0, strided_slice, 2);
+  scope.graph()->AddEdge(strides.node(), 0, strided_slice, 3);
+  TF_ASSERT_OK(scope.DoShapeInference(strided_slice));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(strided_slice), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(42), xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "strided_slice_new_axis",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(42)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(1)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      2),
+                                  xla::DExpr::Const(5)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       StridedSliceShrinkAxisPreservesRemainingExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto begin = ops::Const<int32>(scope.WithOpName("begin"), {0, 2, 0}, {3});
+  auto end = ops::Const<int32>(scope.WithOpName("end"), {0, 2, 5}, {3});
+  auto strides = ops::Const<int32>(scope.WithOpName("strides"), {1, 1, 1}, {3});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("strided_slice", "StridedSlice")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Input(begin.node()->name(), 0, DT_INT32)
+                   .Input(end.node()->name(), 0, DT_INT32)
+                   .Input(strides.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Index", DT_INT32)
+                   .Attr("begin_mask", 0x3)
+                   .Attr("end_mask", 0x3)
+                   .Attr("ellipsis_mask", 0)
+                   .Attr("new_axis_mask", 0)
+                   .Attr("shrink_axis_mask", 0x2)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* strided_slice = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, strided_slice, 0);
+  scope.graph()->AddEdge(begin.node(), 0, strided_slice, 1);
+  scope.graph()->AddEdge(end.node(), 0, strided_slice, 2);
+  scope.graph()->AddEdge(strides.node(), 0, strided_slice, 3);
+  TF_ASSERT_OK(scope.DoShapeInference(strided_slice));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(strided_slice), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 5, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(43), xla::DExpr::Const(5),
+                              xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "strided_slice_shrink", std::move(graph),
+                                     args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(43)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(5)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       StridedSliceNegativeStridePreservesLeadingExpression) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);
+  auto begin = ops::Const<int32>(scope.WithOpName("begin"), {0, 0}, {2});
+  auto end = ops::Const<int32>(scope.WithOpName("end"), {0, 0}, {2});
+  auto strides =
+      ops::Const<int32>(scope.WithOpName("strides"), {-1, 1}, {2});
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("strided_slice", "StridedSlice")
+                   .Input(input.node()->name(), 0, DT_INT32)
+                   .Input(begin.node()->name(), 0, DT_INT32)
+                   .Input(end.node()->name(), 0, DT_INT32)
+                   .Input(strides.node()->name(), 0, DT_INT32)
+                   .Attr("T", DT_INT32)
+                   .Attr("Index", DT_INT32)
+                   .Attr("begin_mask", 0x3)
+                   .Attr("end_mask", 0x3)
+                   .Attr("ellipsis_mask", 0)
+                   .Attr("new_axis_mask", 0)
+                   .Attr("shrink_axis_mask", 0)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* strided_slice = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  scope.graph()->AddEdge(input.node(), 0, strided_slice, 0);
+  scope.graph()->AddEdge(begin.node(), 0, strided_slice, 1);
+  scope.graph()->AddEdge(end.node(), 0, strided_slice, 2);
+  scope.graph()->AddEdge(strides.node(), 0, strided_slice, 3);
+  TF_ASSERT_OK(scope.DoShapeInference(strided_slice));
+
+  auto retval =
+      ops::_Retval(scope.WithOpName("retval"), Output(strided_slice), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_INT32;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {7, 5},
+      std::vector<xla::DExpr>{xla::DExpr::Var(44), xla::DExpr::Const(5)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "strided_slice_negative",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      0),
+                                  xla::DExpr::Var(44)));
+  EXPECT_TRUE(xla::DynExpr::equal(result.outputs[0].shape.get_filled_expression(
+                                      1),
+                                  xla::DExpr::Const(5)));
 }
 
 TEST_F(XlaCompilerDynamicSizesTest, PadAddsToLeadingExpression) {

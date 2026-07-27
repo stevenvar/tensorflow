@@ -751,6 +751,47 @@ TEST_F(XlaCompilerDynamicSizesTest, MatrixDiagPreservesLeadingExpression) {
                                   xla::DExpr::Const(4)));
 }
 
+TEST_F(XlaCompilerDynamicSizesTest, WhereBuildsDynamicIndexMatrixShape) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto input = ops::_Arg(scope.WithOpName("input"), DT_BOOL, 0);
+
+  NodeDef def;
+  TF_ASSERT_OK(NodeDefBuilder("where", "Where")
+                   .Input(input.node()->name(), 0, DT_BOOL)
+                   .Finalize(&def));
+  absl::Status status;
+  Node* where = scope.graph()->AddNode(def, &status);
+  TF_ASSERT_OK(status);
+  TF_ASSERT_OK(scope.DoShapeInference(where));
+  scope.graph()->AddEdge(input.node(), 0, where, 0);
+
+  auto retval = ops::_Retval(scope.WithOpName("retval"), Output(where), 0);
+
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_BOOL;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::PRED, {8, 4, 6},
+      std::vector<xla::DExpr>{xla::DExpr::Var(46), xla::DExpr::Const(4),
+                              xla::DExpr::Var(47)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "where",
+                                     std::move(graph), args, &result));
+
+  ASSERT_EQ(result.outputs.size(), 1);
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_EQ(result_shape.dimensions_size(), 2);
+  EXPECT_EQ(result_shape.dimensions(1), 3);
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(1), xla::DExpr::Const(3)));
+}
+
 TEST_F(XlaCompilerDynamicSizesTest, DiagDuplicatesLeadingExpression) {
   Scope scope = Scope::NewRootScope().ExitOnError();
   auto input = ops::_Arg(scope.WithOpName("input"), DT_INT32, 0);

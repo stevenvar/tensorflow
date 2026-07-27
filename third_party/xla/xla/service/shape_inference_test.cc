@@ -3503,6 +3503,36 @@ TEST_F(ShapeInferenceTest, PadAddsConstantOffsetToExpressions) {
   EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1), DExpr::Var(2) + 4));
 }
 
+TEST_F(ShapeInferenceTest, PadBuildsExpressionsForTwoSymbolicDimensions) {
+  const Shape input_shape = ShapeUtil::MakeShape(
+      F32, {7, 9}, std::vector<DExpr>{DExpr::Var(34), DExpr::Var(35)});
+  const Shape padding_value_shape = ShapeUtil::MakeShape(F32, {});
+  PaddingConfig padding_config;
+  auto* dimension0 = padding_config.add_dimensions();
+  dimension0->set_edge_padding_low(2);
+  dimension0->set_edge_padding_high(1);
+  dimension0->set_interior_padding(2);
+  auto* dimension1 = padding_config.add_dimensions();
+  dimension1->set_edge_padding_low(3);
+  dimension1->set_edge_padding_high(4);
+  dimension1->set_interior_padding(1);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape inferred_shape,
+      ShapeInference::InferPadShape(input_shape, padding_value_shape,
+                                    padding_config));
+
+  EXPECT_TRUE(ShapeUtil::Equal(
+      inferred_shape, ShapeUtil::MakeShape(
+                          F32, {22, 24},
+                          std::vector<DExpr>{DExpr::Var(34) + 15,
+                                             DExpr::Var(35) + 15})));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(0),
+                             DExpr::Var(34) + 15));
+  EXPECT_TRUE(DynExpr::equal(inferred_shape.expressions(1),
+                             DExpr::Var(35) + 15));
+}
+
 TEST_F(ShapeInferenceTest, Reverse) {
   const Shape input_shape = ShapeUtil::MakeShape(F32, {10, 25});
 
@@ -6470,6 +6500,47 @@ TEST_F(ShapeInferenceTest, UnboundedSelectAndScatter) {
   EXPECT_TRUE(ShapeUtil::Equal(result, expected))
       << "inferred: " << ShapeUtil::HumanString(result)
       << " expected: " << ShapeUtil::HumanString(expected);
+}
+
+TEST_F(ShapeInferenceTest, SelectAndScatterPreservesOperandExpressions) {
+  const Shape operand = ShapeUtil::MakeShape(
+      F32, {11, 10}, std::vector<DExpr>{DExpr::Var(36), DExpr::Const(10)});
+  const Shape source = ShapeUtil::MakeShape(
+      F32, {5, 10}, std::vector<DExpr>{(((DExpr::Var(36) - 1) / 2) + 1).simplify(),
+                                       DExpr::Const(10)});
+  const Shape init_value = ShapeUtil::MakeShape(F32, {});
+
+  Window window;
+  WindowDimension dim0;
+  dim0.set_base_dilation(1);
+  dim0.set_size(3);
+  dim0.set_stride(2);
+  dim0.set_padding_low(0);
+  dim0.set_padding_high(1);
+  dim0.set_window_dilation(1);
+
+  WindowDimension dim1;
+  dim1.set_base_dilation(1);
+  dim1.set_size(1);
+  dim1.set_stride(1);
+  dim1.set_padding_low(0);
+  dim1.set_padding_high(0);
+  dim1.set_window_dilation(1);
+
+  *window.add_dimensions() = dim0;
+  *window.add_dimensions() = dim1;
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      const Shape result,
+      ShapeInference::InferSelectAndScatterShape(
+          operand,
+          /*select_shape=*/ShapeUtil::MakeProgramShape({f32_, f32_}, pred_),
+          window, source, init_value,
+          /*scatter_shape=*/
+          ShapeUtil::MakeProgramShape({f32_, f32_}, f32_)));
+
+  EXPECT_TRUE(DynExpr::equal(result.expressions(0), DExpr::Var(36)));
+  EXPECT_TRUE(DynExpr::equal(result.expressions(1), DExpr::Const(10)));
 }
 
 TEST_P(UnboundedBinaryOpShapeInferenceTest, UnboundedShiftLeft) {

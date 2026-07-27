@@ -112,9 +112,9 @@ TEST(PjRtCApiClientTest, IsDynamicDimension) {
   EXPECT_THAT(is_dynamic_dimension,
               ::testing::ElementsAreArray(dims_are_dynamic));
   EXPECT_EQ(result_buffer->on_device_shape(),
-            ShapeUtil::MakeShape(S32, {2, 3}, {false, true}));
+            ShapeUtil::MakeShape(S32, {2, 3}, std::vector<bool>{false, true}, {}));
   EXPECT_EQ(*result_buffer->logical_on_device_shape(),
-            ShapeUtil::MakeShape(S32, {2, 2}, {false, true}));
+            ShapeUtil::MakeShape(S32, {2, 2}, std::vector<bool>{false, true}, {}));
 }
 
 TEST(PjRtCApiClientTest, OnDeviceShape) {

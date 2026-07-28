@@ -26,6 +26,10 @@ message TensorShapeProto {
     //Symbolic expression for this dimension when size == -1.
     //Allows tracking relationships between unknown dimensions.
     ExpressionProto expr = 3;
+
+    // This occurrence may be a singleton that is broadcast to another
+    // dimension. It is not an equality constraint on the symbolic expression.
+    bool may_be_broadcast_singleton = 4;
   };
 
   // Dimensions of the tensor, such as {"input", 30}, {"output", 40}

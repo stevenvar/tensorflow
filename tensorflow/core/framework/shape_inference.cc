@@ -327,7 +327,7 @@ string InferenceContext::DebugString(ShapeHandle s) {
 }
 
 string InferenceContext::DebugString(DimensionHandle d) {
-  return ValueKnown(d) ? strings::StrCat(Value(d), strings::StrCat("~",DynamicRatio(d))) : "?";
+  return ValueKnown(d) ? strings::StrCat(Value(d)) : "?";
 }
 
 string InferenceContext::DebugString() const {
@@ -466,6 +466,34 @@ absl::Status InferenceContext::Merge(DimensionHandle d0, DimensionHandle d1,
     return errors::InvalidArgument("Dimensions must be equal, but are ",
                                    Value(d0), " and ", Value(d1));
   }
+}
+
+absl::Status InferenceContext::MergeForBroadcast(DimensionHandle d0,
+                                                 DimensionHandle d1,
+                                                 DimensionHandle* out) {
+  if (d0.SameHandle(d1) || ValueKnown(d0) || ValueKnown(d1)) {
+    return Merge(d0, d1, out);
+  }
+
+  // Neither unknown operand is necessarily equal to the output: either may be
+  // the runtime singleton while the other determines the output dimension.
+  DimExpr* output_expr = GetDimExpr(d0);
+  if (output_expr == nullptr) {
+    output_expr = GetDimExpr(d1);
+  }
+  *out = shape_manager_.MakeDim(kUnknownDim, /*dynamic_ratio=*/0, output_expr);
+  broadcast_merged_dims_.emplace_back(d0, *out);
+  broadcast_merged_dims_.emplace_back(d1, *out);
+  MarkMayBeBroadcastSingleton(d0);
+  MarkMayBeBroadcastSingleton(d1);
+  return absl::OkStatus();
+}
+
+void InferenceContext::MarkMayBeBroadcastSingleton(DimensionHandle dim) {
+  if (!dim.IsSet() || ValueKnown(dim)) {
+    return;
+  }
+  may_be_broadcast_singleton_dims_.push_back(dim);
 }
 
 absl::Status InferenceContext::MergePrefix(ShapeHandle s, ShapeHandle prefix,

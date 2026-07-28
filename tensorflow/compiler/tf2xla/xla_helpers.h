@@ -150,6 +150,11 @@ struct XlaCompilationResult {
   // the flattened shapes.
   std::vector<xla::Shape> xla_input_shapes;
 
+  // Per-dimension broadcast-singleton provenance aligned with
+  // xla_input_shapes.
+  std::vector<std::vector<bool>>
+      xla_input_may_be_broadcast_singleton_dimensions;
+
   // Output shape in XLA format. The output shape is always a tuple. If we
   // are flattening outputs, these are the flattened shapes.
   xla::Shape xla_output_shape;

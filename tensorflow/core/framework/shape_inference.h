@@ -505,6 +505,14 @@ class InferenceContext {
   absl::Status Merge(DimensionHandle d0, DimensionHandle d1,
                      DimensionHandle* out);
 
+  // Records broadcast compatibility without treating the input dimensions as
+  // equal. For two distinct unknown dimensions, the result is a fresh unknown
+  // dimension and either input may legally be a singleton at runtime.
+  absl::Status MergeForBroadcast(DimensionHandle d0, DimensionHandle d1,
+                                 DimensionHandle* out);
+
+  void MarkMayBeBroadcastSingleton(DimensionHandle dim);
+
   // Returns in <*out> a sub-shape of <s> with dimensions [start:].
   // <start> can be negative to index from the end of the shape. If <start> >
   // rank of <s>, then an empty subshape is returned.
@@ -761,6 +769,13 @@ class InferenceContext {
       const {
     return merged_dims_;
   }
+  const std::vector<std::pair<DimensionHandle, DimensionHandle>>&
+  BroadcastMergedDims() const {
+    return broadcast_merged_dims_;
+  }
+  const std::vector<DimensionHandle>& MayBeBroadcastSingletonDims() const {
+    return may_be_broadcast_singleton_dims_;
+  }
 
   // Adds new outputs; useful when mutating the graph.
   absl::Status ExpandOutputs(int new_output_size);
@@ -856,6 +871,8 @@ class InferenceContext {
   void ForgetMerges() {
     merged_shapes_.clear();
     merged_dims_.clear();
+    broadcast_merged_dims_.clear();
+    may_be_broadcast_singleton_dims_.clear();
   }
 
   // Helper method for MakeShapeFromTensor and MakeShapeFromShapeTensor.
@@ -909,6 +926,9 @@ class InferenceContext {
   // known shapes or dims here.
   std::vector<std::pair<ShapeHandle, ShapeHandle>> merged_shapes_;
   std::vector<std::pair<DimensionHandle, DimensionHandle>> merged_dims_;
+  std::vector<std::pair<DimensionHandle, DimensionHandle>>
+      broadcast_merged_dims_;
+  std::vector<DimensionHandle> may_be_broadcast_singleton_dims_;
 
   InferenceContext(const InferenceContext&) = delete;
   void operator=(const InferenceContext&) = delete;

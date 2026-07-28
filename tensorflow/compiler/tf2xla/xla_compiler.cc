@@ -1548,6 +1548,18 @@ absl::Status XlaCompiler::CompileGraph(
       *graph, real_args, options.use_tuple_arg, builder.get(), context,
       arg_shardings, &arg_expressions, &result->input_mapping,
       &result->xla_input_shapes, options.is_entry_computation));
+  result->xla_input_may_be_broadcast_singleton_dimensions.clear();
+  result->xla_input_may_be_broadcast_singleton_dimensions.reserve(
+      result->input_mapping.size());
+  for (int arg_index : result->input_mapping) {
+    if (arg_index >= 0 &&
+        arg_index < static_cast<int>(real_args.size())) {
+      result->xla_input_may_be_broadcast_singleton_dimensions.push_back(
+          real_args[arg_index].may_be_broadcast_singleton_dimensions);
+    } else {
+      result->xla_input_may_be_broadcast_singleton_dimensions.emplace_back();
+    }
+  }
   context->set_args(std::move(arg_expressions));
 
   PushNodeTokenMapping();

@@ -171,6 +171,11 @@ void AppendMarkForCompilationPassFlagsInternal(std::vector<Flag>* flag_list) {
            &mark_for_compilation_flags->tf_xla_disable_dynamic_size_padding,
            "Disable padding dynamic runtime sizes up to an XLA compile batch "
            "when dynamic sizes support is enabled."),
+      Flag("tf_xla_enable_dynamic_solve_majority_vote",
+           &mark_for_compilation_flags
+                ->tf_xla_enable_dynamic_solve_majority_vote,
+           "Enable solve-time majority vote when dynamic expression solving "
+           "observes conflicting candidates."),
       Flag("tf_xla_enable_symbolic_content",
            &mark_for_compilation_flags->tf_xla_enable_symbolic_content,
            "Enable symbolic content propagation."),
@@ -270,6 +275,8 @@ void AllocateAndParseFlags() {
   mark_for_compilation_flags->tf_xla_deterministic_cluster_names = false;
   mark_for_compilation_flags->tf_xla_enable_dynamic_sizes = false;
   mark_for_compilation_flags->tf_xla_disable_dynamic_size_padding = false;
+  mark_for_compilation_flags->tf_xla_enable_dynamic_solve_majority_vote =
+      false;
   mark_for_compilation_flags->tf_xla_enable_symbolic_content = false;
   mark_for_compilation_flags->tf_xla_persistent_cache_directory = "";
   mark_for_compilation_flags->tf_xla_persistent_cache_device_types = "";

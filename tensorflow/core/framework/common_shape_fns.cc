@@ -26,6 +26,7 @@ limitations under the License.
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/logging.h"
 #include "tensorflow/core/framework/attr_value.pb.h"
 #include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/lib/core/errors.h"
@@ -2208,6 +2209,11 @@ absl::Status ReductionShape(InferenceContext* c) {
 
 absl::Status ConcatShapeHelper(InferenceContext* c, int start_value_index,
                                int end_value_index, int dim_index) {
+  auto dim_expr_string = [&](DimensionHandle dim) -> string {
+    DimExpr* expr = c->GetDimExpr(dim);
+    return expr == nullptr ? "<none>" : expr->DebugString();
+  };
+
   ShapeHandle unused;
   TF_RETURN_IF_ERROR(c->WithRank(c->input(dim_index), 0, &unused));
   const Tensor* concat_dim_t = c->input_tensor(dim_index);
@@ -2355,12 +2361,14 @@ absl::Status BroadcastBinaryOpOutputShapeFnHelper(InferenceContext* c,
           *out = c->UnknownShape();
           return absl::OkStatus();
         }
+        c->MarkMayBeBroadcastSingleton(dim_y);
         dims.push_back(dim_x);
       } else if (c->Value(dim_y) > 1) {
         if (!incompatible_shape_error) {
           *out = c->UnknownShape();
           return absl::OkStatus();
         }
+        c->MarkMayBeBroadcastSingleton(dim_x);
         dims.push_back(dim_y);
       } else if (c->Value(dim_x) == 1) {
         dims.push_back(dim_y);
@@ -2370,7 +2378,7 @@ absl::Status BroadcastBinaryOpOutputShapeFnHelper(InferenceContext* c,
         dims.push_back(dim_x);
       } else if (!c->ValueKnown(dim_x) && !c->ValueKnown(dim_y)) {
         DimensionHandle merged;
-        absl::Status s = c->Merge(dim_x, dim_y, &merged);
+        absl::Status s = c->MergeForBroadcast(dim_x, dim_y, &merged);
         if (s.ok()) {
           dims.push_back(merged);
         } else {

@@ -83,6 +83,11 @@ struct XlaArgument {
   // This is only used for shape-like integer tensors crossing cluster
   // boundaries.
   std::vector<xla::ExpressionProto> constant_value_expressions;
+
+  // Per-dimension provenance from TF shape inference. A marked dimension may
+  // legally be a runtime singleton broadcast to the shared dynamic dimension.
+  std::vector<bool> may_be_broadcast_singleton_dimensions;
+
   // The upper bounds of the value.
   std::optional<Tensor> value_bound;
 

@@ -105,6 +105,10 @@ struct MarkForCompilationPassFlags {
   // If true disables padding runtime dynamic sizes up to an XLA compile batch.
   bool tf_xla_disable_dynamic_size_padding;
 
+  // If true enables solve-time majority vote when dynamic expression solving
+  // observes conflicting candidates.
+  bool tf_xla_enable_dynamic_solve_majority_vote;
+
   // If true enables symbolic content propagation.
   bool tf_xla_enable_symbolic_content;
 

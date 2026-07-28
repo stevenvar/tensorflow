@@ -2396,9 +2396,8 @@ class SymbolicShapeManager {
     if (InferenceContext::Rank(s1) > 0 && InferenceContext::Rank(s2) > 0) {
       CHECK_EQ(InferenceContext::Rank(s1), InferenceContext::Rank(s2));
       for (int i = 0; i < InferenceContext::Rank(s1); ++i) {
-        TF_RETURN_IF_ERROR(
-            MergeDimsWithExpr(InferenceContext::DimKnownRank(s1, i),
-                              InferenceContext::DimKnownRank(s2, i)));
+        TF_RETURN_IF_ERROR(Merge(InferenceContext::DimKnownRank(s1, i),
+                                 InferenceContext::DimKnownRank(s2, i)));
       }
     }
     return absl::OkStatus();
@@ -2407,7 +2406,28 @@ class SymbolicShapeManager {
     if (!d1.IsSet() || !d2.IsSet()) {
       return absl::OkStatus();
     }
+    TF_RETURN_IF_ERROR(strong_dims_.Merge(d1, d2));
     return MergeDimsWithExpr(d1, d2);
+  }
+
+  absl::Status MergeBroadcast(DimensionHandle d1, DimensionHandle d2) {
+    if (!d1.IsSet() || !d2.IsSet()) {
+      return absl::OkStatus();
+    }
+    return MergeDimsWithExpr(d1, d2);
+  }
+
+  void MarkMayBeBroadcastSingleton(DimensionHandle dim) {
+    if (dim.IsSet()) {
+      may_be_broadcast_singleton_dims_.push_back(dim);
+    }
+  }
+
+  void FinalizeBroadcastSingletonComponents() {
+    may_be_broadcast_singleton_roots_.clear();
+    for (DimensionHandle dim : may_be_broadcast_singleton_dims_) {
+      may_be_broadcast_singleton_roots_.insert(strong_dims_.RootId(dim));
+    }
   }
 
   void AsTensorProperties(const ShapeHandle& shape, const DataType& type,
@@ -2434,6 +2454,10 @@ class SymbolicShapeManager {
           expr->ToProto(out_dim->mutable_expr());
           // TODO: Apply simplification?
         }
+        out_dim->set_may_be_broadcast_singleton(
+            may_be_broadcast_singleton_roots_.find(
+                strong_dims_.RootId(dim)) !=
+            may_be_broadcast_singleton_roots_.end());
       }
     }
   }
@@ -2595,6 +2619,10 @@ class SymbolicShapeManager {
   // Map from union-find root pointer to the best expression for that set.
   absl::flat_hash_map<void*, DimExpr*> dim_root_expr_;
   DisjointSet<shape_inference::DimensionHandle> dims_;
+  DisjointSet<shape_inference::DimensionHandle> strong_dims_;
+  std::vector<shape_inference::DimensionHandle>
+      may_be_broadcast_singleton_dims_;
+  absl::flat_hash_set<void*> may_be_broadcast_singleton_roots_;
 };
 
 // Checks whether there is any conflict in merged shapes and dims in
@@ -3110,6 +3138,17 @@ absl::Status GraphProperties::InferStatically(
         break;
       }
     }
+    for (const auto& merged_dims : node_ctx->BroadcastMergedDims()) {
+      if (!shape_manager
+               ->MergeBroadcast(merged_dims.first, merged_dims.second)
+               .ok()) {
+        found_error = true;
+        break;
+      }
+    }
+    for (const auto& dim : node_ctx->MayBeBroadcastSingletonDims()) {
+      shape_manager->MarkMayBeBroadcastSingleton(dim);
+    }
     if (found_error) {
       // The shapes aren't consistent, we can't infer safely: discard all the
       // information discovered so far.
@@ -3117,6 +3156,8 @@ absl::Status GraphProperties::InferStatically(
       break;
     }
   }
+
+  shape_manager->FinalizeBroadcastSingletonComponents();
 
   TF_RETURN_IF_ERROR(ValidateSymbolicShapeManager(item_.graph, refiner.get(),
                                                   shape_manager.get()));

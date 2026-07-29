@@ -246,12 +246,10 @@ absl::StatusOr<Shape> InferWindowOutputShape(const Shape& base_shape,
       continue;
     }
 
-    DExpr dilated_base_expr = base_shape.expressions(i);
+    DExpr dilated_base_expr = input_expression;
     if (dim.base_dilation() != 1) {
       dilated_base_expr =
-          DExpr::Max((dim.base_dilation() *
-                      (base_shape.expressions(i) - 1)) +
-                         1,
+          DExpr::Max((dim.base_dilation() * (input_expression - 1)) + 1,
                      DExpr::Const(0))
               .simplify();
     }

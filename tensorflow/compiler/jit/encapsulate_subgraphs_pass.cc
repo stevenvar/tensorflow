@@ -139,6 +139,17 @@ std::string ExprProtoToString(const ExpressionProto& e) {
     case ExpressionProto::kDivNode:
       return absl::StrCat("(", ExprProtoToString(e.div_node().lhs()), " / ",
                          ExprProtoToString(e.div_node().rhs()), ")");
+    case ExpressionProto::kMaxNode:
+      return absl::StrCat("max(", ExprProtoToString(e.max_node().lhs()), ", ",
+                          ExprProtoToString(e.max_node().rhs()), ")");
+    case ExpressionProto::kGtNode:
+      return absl::StrCat("(", ExprProtoToString(e.gt_node().lhs()), " > ",
+                          ExprProtoToString(e.gt_node().rhs()), ")");
+    case ExpressionProto::kSelectNode:
+      return absl::StrCat("select(", ExprProtoToString(e.select_node().pred()),
+                          ", ", ExprProtoToString(e.select_node().on_true()),
+                          ", ", ExprProtoToString(e.select_node().on_false()),
+                          ")");
     default:
       return "<none>";
   }

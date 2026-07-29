@@ -219,16 +219,6 @@ std::vector<xla::DExpr> BuildShapeContentsFromTensorShapeProto(
   return contents;
 }
 
-int64_t CountDynamicShapeContents(const TensorShapeProto& shape) {
-  int64_t dynamic_count = 0;
-  for (int i = 0; i < shape.expressions_size(); ++i) {
-    if (IsDynamicExpressionProto(shape.expressions(i))) {
-      ++dynamic_count;
-    }
-  }
-  return dynamic_count;
-}
-
 bool CanAttachContentsFromTensorShapeProto(const TensorShape& tensor_shape,
                                            const TensorShapeProto& contents) {
   return (tensor_shape.dims() == 0 && contents.dim_size() == 1) ||
@@ -258,10 +248,10 @@ class ConstOp : public XlaOpKernel {
     TensorShapeProto inferred_value_contents_proto;
     string inferred_value_contents_serialized;
     if (GetNodeAttr(ctx->op_kernel().def(), "has_dynamic", &has_dynamic).ok() &&
-        has_dynamic &&
-        GetNodeAttr(ctx->op_kernel().def(), "user_inferred_shape",
-                    &inferred_shape_proto)
-            .ok()) {
+        has_dynamic) {
+      GetNodeAttr(ctx->op_kernel().def(), "user_inferred_shape",
+                  &inferred_shape_proto)
+          .IgnoreError();
     }
     if (GetNodeAttr(ctx->op_kernel().def(), kUserInferredValueContentsAttrName,
                     &inferred_value_contents_serialized)

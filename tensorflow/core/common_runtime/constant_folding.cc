@@ -82,8 +82,8 @@ bool GetShapeFromDirectDynamicSource(const Node* node,
          GetShapeFromArgNode(node, out_shape);
 }
 
-bool TryParseSerializedContentsAttr(const AttrSlice& attrs,
-                                    TensorShapeProto* out_contents) {
+bool TryGetContentsProtoAttr(const AttrSlice& attrs,
+                             TensorShapeProto* out_contents) {
   string serialized_contents;
   if (!GetNodeAttr(attrs, kUserInferredValueContentsAttrName,
                    &serialized_contents)
@@ -94,16 +94,15 @@ bool TryParseSerializedContentsAttr(const AttrSlice& attrs,
   return out_contents->ParseFromString(serialized_contents);
 }
 
-bool TryGetContentsProtoAttr(const AttrSlice& attrs,
-                             TensorShapeProto* out_contents) {
-  return TryParseSerializedContentsAttr(attrs, out_contents);
-}
-
 bool HasTransitiveDynamicShapeContents(
-    const Node* node, std::unordered_map<const Node*, bool>* memo) {
+    const Node* node, std::unordered_map<const Node*, bool>* memo,
+    absl::flat_hash_set<const Node*>* visiting) {
   auto it = memo->find(node);
   if (it != memo->end()) {
     return it->second;
+  }
+  if (!visiting->insert(node).second) {
+    return false;
   }
 
   TensorShapeProto contents_proto;
@@ -129,7 +128,7 @@ bool HasTransitiveDynamicShapeContents(
 
   for (const Edge* edge : node->in_edges()) {
     if (edge->IsControlEdge()) continue;
-    if (HasTransitiveDynamicShapeContents(edge->src(), memo)) {
+    if (HasTransitiveDynamicShapeContents(edge->src(), memo, visiting)) {
       return (*memo)[node] = true;
     }
   }
@@ -231,7 +230,8 @@ ExpressionProto GetContentExpressionProto(const TensorShapeProto& contents,
   return MakeConstantExpressionProto(contents.dim(index).size());
 }
 
-ExpressionProto MakeMulExpressionProto(ExpressionProto lhs, ExpressionProto rhs) {
+ExpressionProto MakeMulExpressionProto(ExpressionProto lhs,
+                                       ExpressionProto rhs) {
   ExpressionProto expr;
   auto* mul = expr.mutable_mul_node();
   *mul->mutable_lhs() = std::move(lhs);
@@ -240,19 +240,17 @@ ExpressionProto MakeMulExpressionProto(ExpressionProto lhs, ExpressionProto rhs)
 }
 
 bool TryGetFoldedValueContents(const Node* node, int output_index,
-                               TensorShapeProto* out_contents) {
+                               TensorShapeProto* out_contents,
+                               absl::flat_hash_set<const Node*>* visiting) {
   out_contents->Clear();
   if (output_index != 0) {
     return false;
   }
-
-  if (TryParseSerializedContentsAttr(node->attrs(), out_contents)) {
-    return true;
+  if (!visiting->insert(node).second) {
+    return false;
   }
 
-  TensorShapeProto existing_contents;
-  if (TryGetContentsProtoAttr(node->attrs(), &existing_contents)) {
-    *out_contents = existing_contents;
+  if (TryGetContentsProtoAttr(node->attrs(), out_contents)) {
     return true;
   }
 
@@ -277,7 +275,7 @@ bool TryGetFoldedValueContents(const Node* node, int output_index,
       return false;
     }
     return TryGetFoldedValueContents(input_edge->src(), input_edge->src_output(),
-                                     input_contents);
+                                     input_contents, visiting);
   };
 
   if (node->IsIdentity() || node->type_string() == "Cast") {
@@ -328,7 +326,8 @@ bool TryGetFoldedValueContents(const Node* node, int output_index,
     Tensor axis_tensor;
     std::vector<int64_t> axis_values;
     if (!GetInputConstTensor(node, node->num_inputs() - 1, &axis_tensor) ||
-        !GetTensorIntValues(axis_tensor, &axis_values) || axis_values.size() != 1) {
+        !GetTensorIntValues(axis_tensor, &axis_values) ||
+        axis_values.size() != 1) {
       return false;
     }
     int64_t axis = axis_values[0];
@@ -494,6 +493,12 @@ bool TryGetFoldedValueContents(const Node* node, int output_index,
   }
 
   return false;
+}
+
+bool TryGetFoldedValueContents(const Node* node, int output_index,
+                               TensorShapeProto* out_contents) {
+  absl::flat_hash_set<const Node*> visiting;
+  return TryGetFoldedValueContents(node, output_index, out_contents, &visiting);
 }
 
 // For stateless RNGs ops, they are pure but device-dependent. Those ops are not
@@ -690,14 +695,17 @@ bool IsConstantFoldable(
     int64_t max_constant_size_in_bytes,
     std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map) {
   TensorShapeProto exact_contents;
-  const bool has_exact_contents = TryGetFoldedValueContents(n, 0, &exact_contents);
+  const bool has_exact_contents =
+      TryGetFoldedValueContents(n, 0, &exact_contents);
   TensorShapeProto dynamic_shape;
   const bool has_dynamic = GetShapeFromDirectDynamicSource(n, &dynamic_shape);
   const bool is_shape_derived =
       n->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr;
   std::unordered_map<const Node*, bool> dynamic_contents_memo;
+  absl::flat_hash_set<const Node*> dynamic_contents_visiting;
   const bool has_transitive_dynamic_contents =
-      HasTransitiveDynamicShapeContents(n, &dynamic_contents_memo);
+      HasTransitiveDynamicShapeContents(n, &dynamic_contents_memo,
+                                        &dynamic_contents_visiting);
   if ((has_dynamic || is_shape_derived || has_transitive_dynamic_contents) &&
       (!has_exact_contents || n->num_outputs() > 1)) {
     return false;
@@ -910,7 +918,8 @@ void AddShapeNodeToConstantGraph(
   const bool has_dynamic =
       GetShapeFromDirectDynamicSource(n, &user_inferred_shape);
   TensorShapeProto exact_contents;
-  const bool has_exact_contents = TryGetFoldedValueContents(n, 0, &exact_contents);
+  const bool has_exact_contents =
+      TryGetFoldedValueContents(n, 0, &exact_contents);
   std::vector<Node*>& added = (*node_map)[n];
   const string& node_name = n->name();
   for (const Tensor& t : shape_replacement_map.at(n)) {

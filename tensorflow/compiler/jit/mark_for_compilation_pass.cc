@@ -717,6 +717,14 @@ std::string ExprProtoToString(const ExpressionProto& e) {
     case ExpressionProto::kMaxNode:
       return absl::StrCat("max(", ExprProtoToString(e.max_node().lhs()), ", ",
                           ExprProtoToString(e.max_node().rhs()), ")");
+    case ExpressionProto::kGtNode:
+      return absl::StrCat("(", ExprProtoToString(e.gt_node().lhs()), " > ",
+                          ExprProtoToString(e.gt_node().rhs()), ")");
+    case ExpressionProto::kSelectNode:
+      return absl::StrCat("select(", ExprProtoToString(e.select_node().pred()),
+                          ", ", ExprProtoToString(e.select_node().on_true()),
+                          ", ", ExprProtoToString(e.select_node().on_false()),
+                          ")");
     default:
       return "<none>";
   }
@@ -755,6 +763,18 @@ std::unique_ptr<DimExpr> ExprFromProto(const ExpressionProto& proto) {
       auto rhs = ExprFromProto(proto.max_node().rhs());
       return std::make_unique<ExprMax>(lhs.release(), rhs.release());
     }
+    case ExpressionProto::kGtNode: {
+      auto lhs = ExprFromProto(proto.gt_node().lhs());
+      auto rhs = ExprFromProto(proto.gt_node().rhs());
+      return std::make_unique<ExprGt>(lhs.release(), rhs.release());
+    }
+    case ExpressionProto::kSelectNode: {
+      auto pred = ExprFromProto(proto.select_node().pred());
+      auto on_true = ExprFromProto(proto.select_node().on_true());
+      auto on_false = ExprFromProto(proto.select_node().on_false());
+      return std::make_unique<ExprSelect>(pred.release(), on_true.release(),
+                                          on_false.release());
+    }
     case ExpressionProto::NODE_TYPE_NOT_SET:
     default:
       return nullptr;
@@ -791,6 +811,17 @@ static xla::DExpr DimExprToDExpr(const DimExpr* e) {
       auto* ee = static_cast<const ExprMax*>(e);
       return xla::DExpr::Max(DimExprToDExpr(ee->lhs()),
                              DimExprToDExpr(ee->rhs()));
+    }
+    case DimExpr::Kind::kGt: {
+      auto* ee = static_cast<const ExprGt*>(e);
+      return xla::DExpr::Gt(DimExprToDExpr(ee->lhs()),
+                            DimExprToDExpr(ee->rhs()));
+    }
+    case DimExpr::Kind::kSelect: {
+      auto* ee = static_cast<const ExprSelect*>(e);
+      return xla::DExpr::Select(DimExprToDExpr(ee->pred()),
+                                DimExprToDExpr(ee->on_true()),
+                                DimExprToDExpr(ee->on_false()));
     }
   }
   return xla::DExpr();

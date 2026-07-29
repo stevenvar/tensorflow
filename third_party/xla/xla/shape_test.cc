@@ -143,6 +143,19 @@ TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
   EXPECT_TRUE(expr == DExprFromProto(proto));
 }
 
+TEST_F(ShapeTest, DExprSelectUsesDynamicPredicate) {
+  DExpr delta = DExpr::Var(1);
+  DExpr expr = DExpr::Select(DExpr::Gt(delta, DExpr::Const(0)),
+                             DExpr::Const(7), DExpr::Const(11));
+  EXPECT_EQ("select((A > 0), 7, 11)", DExprToString(expr.simplify()));
+  EXPECT_EQ(7, expr.substitute(1, DExpr::Const(2))->s()->get_val());
+  EXPECT_EQ(11, expr.substitute(1, DExpr::Const(-2))->s()->get_val());
+
+  ExpressionProto proto;
+  expr.to_proto(&proto);
+  EXPECT_TRUE(expr == DExprFromProto(proto));
+}
+
 TEST_F(ShapeTest, DeleteDimensions) {
   Shape shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {5, 3, 2, 7, 9},
                                                     {2, 0, 1, 4, 3});

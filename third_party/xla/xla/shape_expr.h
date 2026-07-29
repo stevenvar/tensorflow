@@ -22,10 +22,12 @@ limitations under the License.
 #include <optional>
 #include <ostream>
 #include <set>
+#include <utility>
 #include <vector>
 
 #include "absl/hash/hash.h"
 #include "absl/log/check.h"
+#include "absl/log/log.h"
 #include "absl/types/span.h"
 #include "xla/printer.h"
 #include "xla/xla_data.pb.h"
@@ -46,6 +48,8 @@ enum class DExprKind {
   kMul,
   kDiv,
   kMax,
+  kGt,
+  kSelect,
 };
 
 class DynExpr {
@@ -103,6 +107,9 @@ class DExpr {
   static DExpr Const(int64_t value) { return Adopt(DynExpr::_(value)); }
   static DExpr Var(int var_id) { return Adopt(DynExpr::V(var_id)); }
   static DExpr Max(const DExpr& lhs, const DExpr& rhs);
+  static DExpr Gt(const DExpr& lhs, const DExpr& rhs);
+  static DExpr Select(const DExpr& pred, const DExpr& on_true,
+                      const DExpr& on_false);
   bool is_unknown() const {
     return expr_ != nullptr && expr_->kind() == DExprKind::kUnknown;
   }
@@ -188,8 +195,7 @@ class UnknownExpr : public DynExpr {
     return clone().release();
   }
   std::set<int> get_all_ids() override { return {}; }
-  std::optional<int64_t> solve(int64_t x) override {
-    (void)x;
+  std::optional<int64_t> solve(int64_t) override {
     return std::nullopt;
   }
   DynExpr* s() override { return clone().release(); }
@@ -574,7 +580,116 @@ class MaxExpr : public DynExpr {
   }
   // Max is not invertible: either operand may have produced the result.
   std::optional<int64_t> solve(int64_t x) override {
-    (void)x;
+    StringPrinter printer;
+    print(&printer);
+    LOG(WARNING) << "Cannot solve Max dynamic shape expression for value " << x
+                 << ": " << std::move(printer).ToString();
+    return std::nullopt;
+  }
+  DynExpr* s() override;
+};
+
+class GtExpr : public DynExpr {
+  std::unique_ptr<DynExpr> lhs;
+  std::unique_ptr<DynExpr> rhs;
+
+ public:
+  GtExpr(DynExpr* l, DynExpr* r) : lhs(l), rhs(r) {}
+  std::unique_ptr<DynExpr> clone() const override {
+    return std::make_unique<GtExpr>(lhs->clone().release(),
+                                    rhs->clone().release());
+  }
+  DExprKind kind() const override { return DExprKind::kGt; }
+  void print(xla::Printer* printer) const override {
+    printer->Append("(");
+    lhs->print(printer);
+    printer->Append(" > ");
+    rhs->print(printer);
+    printer->Append(")");
+  }
+  void to_proto(xla::ExpressionProto* proto) const override {
+    auto* gt_msg = proto->mutable_gt_node();
+    lhs->to_proto(gt_msg->mutable_lhs());
+    rhs->to_proto(gt_msg->mutable_rhs());
+  }
+  bool is_constant() const override {
+    return lhs->is_constant() && rhs->is_constant();
+  }
+  int64_t get_val() const override { return lhs->get_val() > rhs->get_val(); }
+  DynExpr* get_lhs() const { return lhs.get(); }
+  DynExpr* get_rhs() const { return rhs.get(); }
+  DynExpr* substitute(int id, DynExpr* v) override {
+    return new GtExpr(lhs->substitute(id, v), rhs->substitute(id, v));
+  }
+  std::set<int> get_all_ids() override {
+    auto ids = lhs->get_all_ids();
+    ids.merge(rhs->get_all_ids());
+    return ids;
+  }
+  std::optional<int64_t> solve(int64_t x) override {
+    StringPrinter printer;
+    print(&printer);
+    LOG(WARNING) << "Cannot solve Gt dynamic shape expression for value " << x
+                 << ": " << std::move(printer).ToString();
+    return std::nullopt;
+  }
+  DynExpr* s() override;
+};
+
+class SelectExpr : public DynExpr {
+  std::unique_ptr<DynExpr> pred;
+  std::unique_ptr<DynExpr> on_true;
+  std::unique_ptr<DynExpr> on_false;
+
+ public:
+  SelectExpr(DynExpr* p, DynExpr* t, DynExpr* f)
+      : pred(p), on_true(t), on_false(f) {}
+  std::unique_ptr<DynExpr> clone() const override {
+    return std::make_unique<SelectExpr>(pred->clone().release(),
+                                        on_true->clone().release(),
+                                        on_false->clone().release());
+  }
+  DExprKind kind() const override { return DExprKind::kSelect; }
+  void print(xla::Printer* printer) const override {
+    printer->Append("select(");
+    pred->print(printer);
+    printer->Append(", ");
+    on_true->print(printer);
+    printer->Append(", ");
+    on_false->print(printer);
+    printer->Append(")");
+  }
+  void to_proto(xla::ExpressionProto* proto) const override {
+    auto* select_msg = proto->mutable_select_node();
+    pred->to_proto(select_msg->mutable_pred());
+    on_true->to_proto(select_msg->mutable_on_true());
+    on_false->to_proto(select_msg->mutable_on_false());
+  }
+  bool is_constant() const override {
+    return pred->is_constant() && on_true->is_constant() &&
+           on_false->is_constant();
+  }
+  int64_t get_val() const override {
+    return pred->get_val() != 0 ? on_true->get_val() : on_false->get_val();
+  }
+  DynExpr* get_pred() const { return pred.get(); }
+  DynExpr* get_on_true() const { return on_true.get(); }
+  DynExpr* get_on_false() const { return on_false.get(); }
+  DynExpr* substitute(int id, DynExpr* v) override {
+    return new SelectExpr(pred->substitute(id, v), on_true->substitute(id, v),
+                          on_false->substitute(id, v));
+  }
+  std::set<int> get_all_ids() override {
+    auto ids = pred->get_all_ids();
+    ids.merge(on_true->get_all_ids());
+    ids.merge(on_false->get_all_ids());
+    return ids;
+  }
+  std::optional<int64_t> solve(int64_t x) override {
+    StringPrinter printer;
+    print(&printer);
+    LOG(WARNING) << "Cannot solve Select dynamic shape expression for value "
+                 << x << ": " << std::move(printer).ToString();
     return std::nullopt;
   }
   DynExpr* s() override;
@@ -648,6 +763,16 @@ inline DExpr DExprFromProto(const xla::ExpressionProto& proto) {
       const auto& max = proto.max_node();
       return DExpr::Max(DExprFromProto(max.lhs()),
                         DExprFromProto(max.rhs()));
+    }
+    case ExpressionProto::kGtNode: {
+      const auto& gt = proto.gt_node();
+      return DExpr::Gt(DExprFromProto(gt.lhs()), DExprFromProto(gt.rhs()));
+    }
+    case ExpressionProto::kSelectNode: {
+      const auto& select = proto.select_node();
+      return DExpr::Select(DExprFromProto(select.pred()),
+                           DExprFromProto(select.on_true()),
+                           DExprFromProto(select.on_false()));
     }
     case ExpressionProto::NODE_TYPE_NOT_SET:
     default:

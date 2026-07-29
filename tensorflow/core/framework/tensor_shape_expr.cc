@@ -57,6 +57,13 @@ bool IsDynamicDimExpr(const ExpressionProto& proto) {
     case ExpressionProto::kMaxNode:
       return IsDynamicDimExpr(proto.max_node().lhs()) ||
              IsDynamicDimExpr(proto.max_node().rhs());
+    case ExpressionProto::kGtNode:
+      return IsDynamicDimExpr(proto.gt_node().lhs()) ||
+             IsDynamicDimExpr(proto.gt_node().rhs());
+    case ExpressionProto::kSelectNode:
+      return IsDynamicDimExpr(proto.select_node().pred()) ||
+             IsDynamicDimExpr(proto.select_node().on_true()) ||
+             IsDynamicDimExpr(proto.select_node().on_false());
     case ExpressionProto::kConstantValue:
     case ExpressionProto::NODE_TYPE_NOT_SET:
       return false;
@@ -134,6 +141,19 @@ static bool EqualsImpl(const DimExpr* a, const DimExpr* b) {
              (EqualsImpl(am->lhs(), bm->rhs()) &&
               EqualsImpl(am->rhs(), bm->lhs()));
     }
+    case DimExpr::Kind::kGt: {
+      auto* ag = static_cast<const ExprGt*>(a);
+      auto* bg = static_cast<const ExprGt*>(b);
+      return EqualsImpl(ag->lhs(), bg->lhs()) &&
+             EqualsImpl(ag->rhs(), bg->rhs());
+    }
+    case DimExpr::Kind::kSelect: {
+      auto* as = static_cast<const ExprSelect*>(a);
+      auto* bs = static_cast<const ExprSelect*>(b);
+      return EqualsImpl(as->pred(), bs->pred()) &&
+             EqualsImpl(as->on_true(), bs->on_true()) &&
+             EqualsImpl(as->on_false(), bs->on_false());
+    }
   }
 
   return false;
@@ -175,6 +195,18 @@ std::unique_ptr<DimExpr> DimExpr::FromProto(const ExpressionProto& proto) {
       auto lhs = FromProto(proto.max_node().lhs());
       auto rhs = FromProto(proto.max_node().rhs());
       return std::make_unique<ExprMax>(lhs.release(), rhs.release());
+    }
+    case ExpressionProto::kGtNode: {
+      auto lhs = FromProto(proto.gt_node().lhs());
+      auto rhs = FromProto(proto.gt_node().rhs());
+      return std::make_unique<ExprGt>(lhs.release(), rhs.release());
+    }
+    case ExpressionProto::kSelectNode: {
+      auto pred = FromProto(proto.select_node().pred());
+      auto on_true = FromProto(proto.select_node().on_true());
+      auto on_false = FromProto(proto.select_node().on_false());
+      return std::make_unique<ExprSelect>(pred.release(), on_true.release(),
+                                          on_false.release());
     }
     case ExpressionProto::NODE_TYPE_NOT_SET:
     default:
@@ -289,6 +321,27 @@ DimExpr* SimplifyExpr(DimExpr* expr,
       }
       if (DimExpr::Equals(lhs, rhs)) return lhs;
       return own(std::make_unique<ExprMax>(lhs, rhs));
+    }
+    case DimExpr::Kind::kGt: {
+      auto* gt = static_cast<ExprGt*>(expr);
+      DimExpr* lhs = SimplifyExpr(gt->lhs(), arena);
+      DimExpr* rhs = SimplifyExpr(gt->rhs(), arena);
+      if (lhs->IsConstant() && rhs->IsConstant()) {
+        return own(DimExpr::Cons(lhs->ConstantValue() > rhs->ConstantValue()));
+      }
+      if (DimExpr::Equals(lhs, rhs)) return own(DimExpr::Cons(0));
+      return own(std::make_unique<ExprGt>(lhs, rhs));
+    }
+    case DimExpr::Kind::kSelect: {
+      auto* select = static_cast<ExprSelect*>(expr);
+      DimExpr* pred = SimplifyExpr(select->pred(), arena);
+      DimExpr* on_true = SimplifyExpr(select->on_true(), arena);
+      DimExpr* on_false = SimplifyExpr(select->on_false(), arena);
+      if (DimExpr::Equals(on_true, on_false)) return on_true;
+      if (pred->IsConstant()) {
+        return pred->ConstantValue() != 0 ? on_true : on_false;
+      }
+      return own(std::make_unique<ExprSelect>(pred, on_true, on_false));
     }
   }
 

@@ -209,6 +209,11 @@ std::optional<CanonicalAffineExpr> ToCanonicalAffine(const DynExpr* expr) {
       return MultiplyAffineByRational(*lhs, rhs->denominator, rhs->constant);
     }
     case DExpr::Kind::kMax:
+    case DExpr::Kind::kGt:
+    case DExpr::Kind::kSelect:
+      return std::nullopt;
+    default:
+      return std::nullopt;
   }
   return std::nullopt;
 }
@@ -371,8 +376,31 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
       if (*lhs == *rhs) return lhs;
       return std::make_unique<MaxExpr>(lhs.release(), rhs.release());
     }
+    case DExpr::Kind::kGt: {
+      const auto* gt = static_cast<const GtExpr*>(expr);
+      auto lhs = std::unique_ptr<DynExpr>(gt->get_lhs()->s());
+      auto rhs = std::unique_ptr<DynExpr>(gt->get_rhs()->s());
+      if (lhs->is_constant() && rhs->is_constant()) {
+        return std::make_unique<Constant>(lhs->get_val() > rhs->get_val());
+      }
+      if (*lhs == *rhs) return std::make_unique<Constant>(0);
+      return std::make_unique<GtExpr>(lhs.release(), rhs.release());
+    }
+    case DExpr::Kind::kSelect: {
+      const auto* select = static_cast<const SelectExpr*>(expr);
+      auto pred = std::unique_ptr<DynExpr>(select->get_pred()->s());
+      auto on_true = std::unique_ptr<DynExpr>(select->get_on_true()->s());
+      auto on_false = std::unique_ptr<DynExpr>(select->get_on_false()->s());
+      if (*on_true == *on_false) return on_true;
+      if (pred->is_constant()) {
+        return pred->get_val() != 0 ? std::move(on_true) : std::move(on_false);
+      }
+      return std::make_unique<SelectExpr>(pred.release(), on_true.release(),
+                                           on_false.release());
+    }
+    default:
+      return expr->clone();
   }
-  return expr->clone();
 }
 
 std::unique_ptr<DynExpr> SimplifyCanonical(const DynExpr* expr) {
@@ -429,6 +457,17 @@ bool operator<(DynExpr& lhs, int64_t d) {
 
 DExpr DExpr::Max(const DExpr& lhs, const DExpr& rhs) {
   return Adopt(new xla::MaxExpr(lhs.clone().release(), rhs.clone().release()));
+}
+
+DExpr DExpr::Gt(const DExpr& lhs, const DExpr& rhs) {
+  return Adopt(new xla::GtExpr(lhs.clone().release(), rhs.clone().release()));
+}
+
+DExpr DExpr::Select(const DExpr& pred, const DExpr& on_true,
+                    const DExpr& on_false) {
+  return Adopt(new xla::SelectExpr(pred.clone().release(),
+                                    on_true.clone().release(),
+                                    on_false.clone().release()));
 }
 
 bool DynExpr::equal(DynExpr* expr1, DynExpr* expr2) {
@@ -503,6 +542,20 @@ bool DynExpr::equal(DynExpr* expr1, DynExpr* expr2) {
     auto* d = cd->get_rhs();
     return (*a == *c && *b == *d) || (*a == *d && *b == *c);
   }
+  if (e1->kind() == DExpr::Kind::kGt && e2->kind() == DExpr::Kind::kGt) {
+    auto* lhs = static_cast<GtExpr*>(e1.get());
+    auto* rhs = static_cast<GtExpr*>(e2.get());
+    return *lhs->get_lhs() == *rhs->get_lhs() &&
+           *lhs->get_rhs() == *rhs->get_rhs();
+  }
+  if (e1->kind() == DExpr::Kind::kSelect &&
+      e2->kind() == DExpr::Kind::kSelect) {
+    auto* lhs = static_cast<SelectExpr*>(e1.get());
+    auto* rhs = static_cast<SelectExpr*>(e2.get());
+    return *lhs->get_pred() == *rhs->get_pred() &&
+           *lhs->get_on_true() == *rhs->get_on_true() &&
+           *lhs->get_on_false() == *rhs->get_on_false();
+  }
   return false;
 }
 
@@ -519,6 +572,10 @@ DynExpr* Sub::s() { return SimplifyCanonical(this).release(); }
 DynExpr* Div::s() { return SimplifyCanonical(this).release(); }
 
 DynExpr* MaxExpr::s() { return SimplifyCanonical(this).release(); }
+
+DynExpr* GtExpr::s() { return SimplifyCanonical(this).release(); }
+
+DynExpr* SelectExpr::s() { return SimplifyCanonical(this).release(); }
 
 std::ostream& operator<<(std::ostream& os, DynExpr* expr) {
   auto simplified = std::unique_ptr<DynExpr>(expr->s());

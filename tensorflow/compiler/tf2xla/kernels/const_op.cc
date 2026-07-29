@@ -126,6 +126,13 @@ bool IsDynamicExpressionProto(const ExpressionProto& proto) {
     case ExpressionProto::kMaxNode:
       return IsDynamicExpressionProto(proto.max_node().lhs()) ||
              IsDynamicExpressionProto(proto.max_node().rhs());
+    case ExpressionProto::kGtNode:
+      return IsDynamicExpressionProto(proto.gt_node().lhs()) ||
+             IsDynamicExpressionProto(proto.gt_node().rhs());
+    case ExpressionProto::kSelectNode:
+      return IsDynamicExpressionProto(proto.select_node().pred()) ||
+             IsDynamicExpressionProto(proto.select_node().on_true()) ||
+             IsDynamicExpressionProto(proto.select_node().on_false());
     case ExpressionProto::kConstantValue:
     case ExpressionProto::NODE_TYPE_NOT_SET:
       return false;
@@ -165,6 +172,17 @@ static xla::DExpr DimExprToDExpr(const DimExpr* e) {
       const auto* ee = static_cast<const ExprMax*>(e);
       return xla::DExpr::Max(DimExprToDExpr(ee->lhs()),
                              DimExprToDExpr(ee->rhs()));
+    }
+    case DimExpr::Kind::kGt: {
+      auto* ee = static_cast<const ExprGt*>(e);
+      return xla::DExpr::Gt(DimExprToDExpr(ee->lhs()),
+                            DimExprToDExpr(ee->rhs()));
+    }
+    case DimExpr::Kind::kSelect: {
+      auto* ee = static_cast<const ExprSelect*>(e);
+      return xla::DExpr::Select(DimExprToDExpr(ee->pred()),
+                                DimExprToDExpr(ee->on_true()),
+                                DimExprToDExpr(ee->on_false()));
     }
   }
   return xla::DExpr();

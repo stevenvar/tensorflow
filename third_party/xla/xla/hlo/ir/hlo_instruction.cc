@@ -140,6 +140,17 @@ DynExpr* DynExprFromProtoForPrint(const ExpressionProto& proto) {
       return new MaxExpr(DynExprFromProtoForPrint(max.lhs()),
                          DynExprFromProtoForPrint(max.rhs()));
     }
+    case ExpressionProto::kGtNode: {
+      const auto& gt = proto.gt_node();
+      return new GtExpr(DynExprFromProtoForPrint(gt.lhs()),
+                        DynExprFromProtoForPrint(gt.rhs()));
+    }
+    case ExpressionProto::kSelectNode: {
+      const auto& select = proto.select_node();
+      return new SelectExpr(DynExprFromProtoForPrint(select.pred()),
+                            DynExprFromProtoForPrint(select.on_true()),
+                            DynExprFromProtoForPrint(select.on_false()));
+    }
     case ExpressionProto::NODE_TYPE_NOT_SET:
     default:
       return nullptr;

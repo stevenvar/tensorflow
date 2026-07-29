@@ -919,6 +919,29 @@ static llvm::Value* EmitExpressionImpl(llvm::IRBuilderBase* b,
     llvm::Value* v_rhs = EmitExpressionImpl(b, *sub_node->get_rhs());
     return b->CreateSub(v_lhs, v_rhs, "sub_dims");
   }
+  if (expr.kind() == DExpr::Kind::kMax) {
+    auto* max_node = static_cast<const MaxExpr*>(&expr);
+    llvm::Value* v_lhs = EmitExpressionImpl(b, *max_node->get_lhs());
+    llvm::Value* v_rhs = EmitExpressionImpl(b, *max_node->get_rhs());
+    llvm::Value* lhs_is_greater =
+        b->CreateICmpSGT(v_lhs, v_rhs, "max_dims_pred");
+    return b->CreateSelect(lhs_is_greater, v_lhs, v_rhs, "max_dims");
+  }
+  if (expr.kind() == DExpr::Kind::kCeilDiv) {
+    auto* ceil_div_node = static_cast<const CeilDivExpr*>(&expr);
+    llvm::Value* numerator =
+        EmitExpressionImpl(b, *ceil_div_node->get_operand());
+    llvm::Value* divisor = llvm::ConstantInt::get(
+        i64Type, ceil_div_node->get_divisor(), true);
+    llvm::Value* quotient =
+        b->CreateSDiv(numerator, divisor, "ceildiv_dims_quotient");
+    llvm::Value* remainder =
+        b->CreateSRem(numerator, divisor, "ceildiv_dims_remainder");
+    llvm::Value* round_up = b->CreateICmpSGT(
+        remainder, llvm::ConstantInt::get(i64Type, 0), "ceildiv_dims_round_up");
+    return b->CreateAdd(
+        quotient, b->CreateZExt(round_up, i64Type), "ceildiv_dims");
+  }
   return nullptr;
 }
 

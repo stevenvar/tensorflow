@@ -1215,6 +1215,8 @@ message ExpressionProto {
     SubNode sub_node = 4;      // exp - exp
     MulNode mul_node = 5;      // exp * exp
     DivNode div_node = 6;      // exp / exp
+    MaxNode max_node = 7;      // max(exp, exp)
+    CeilDivNode ceil_div_node = 8;  // ceil(exp / positive constant)
   }
 }
 
@@ -1236,4 +1238,14 @@ message MulNode {
 message DivNode {
   ExpressionProto lhs = 1;
   ExpressionProto rhs = 2;
+}
+
+message MaxNode {
+  ExpressionProto lhs = 1;
+  ExpressionProto rhs = 2;
+}
+
+message CeilDivNode {
+  ExpressionProto operand = 1;
+  int64 divisor = 2;
 }

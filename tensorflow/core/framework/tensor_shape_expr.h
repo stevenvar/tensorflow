@@ -1,6 +1,7 @@
 #ifndef TENSORFLOW_CORE_FRAMEWORK_TENSOR_SHAPE_EXPR_H_
 #define TENSORFLOW_CORE_FRAMEWORK_TENSOR_SHAPE_EXPR_H_
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -18,6 +19,8 @@ class ExprAdd;
 class ExprSub;
 class ExprMul;
 class ExprDiv;
+class ExprMax;
+class ExprCeilDiv;
 
 // DimExpr: Base class for symbolic expressions representing dynamic dimension
 // sizes. These expressions form a DAG that tracks how unknown dimensions relate
@@ -27,6 +30,8 @@ class ExprDiv;
 //   - Var(sym_id): A symbolic variable representing an unknown dimension
 //   - Const(k): A known constant value
 //   - Add/Sub/Mul/Div(lhs, rhs): Binary arithmetic operations
+//   - Max(lhs, rhs): Maximum of two expressions
+//   - CeilDiv(value, divisor): Ceiling division by a positive constant
 //
 // INVARIANT: An unknown dimension is not just -1, it is -1 + Var(sym).
 class DimExpr {
@@ -38,6 +43,8 @@ class DimExpr {
     kSub,
     kMul,
     kDiv,
+    kMax,
+    kCeilDiv,
   };
 
   virtual ~DimExpr() = default;
@@ -207,6 +214,54 @@ class ExprDiv final : public DimExpr {
  private:
   DimExpr* lhs_;
   DimExpr* rhs_;
+};
+
+class ExprMax final : public DimExpr {
+ public:
+  ExprMax(DimExpr* lhs, DimExpr* rhs) : lhs_(lhs), rhs_(rhs) {}
+
+  Kind kind() const override { return Kind::kMax; }
+  void ToProto(ExpressionProto* proto) const override {
+    auto* max_msg = proto->mutable_max_node();
+    lhs_->ToProto(max_msg->mutable_lhs());
+    rhs_->ToProto(max_msg->mutable_rhs());
+  }
+  bool IsConstant() const override {
+    return lhs_->IsConstant() && rhs_->IsConstant();
+  }
+  int64_t ConstantValue() const override {
+    return std::max(lhs_->ConstantValue(), rhs_->ConstantValue());
+  }
+  DimExpr* lhs() const { return lhs_; }
+  DimExpr* rhs() const { return rhs_; }
+
+ private:
+  DimExpr* lhs_;
+  DimExpr* rhs_;
+};
+
+class ExprCeilDiv final : public DimExpr {
+ public:
+  ExprCeilDiv(DimExpr* operand, int64_t divisor)
+      : operand_(operand), divisor_(divisor) {}
+
+  Kind kind() const override { return Kind::kCeilDiv; }
+  void ToProto(ExpressionProto* proto) const override {
+    auto* ceil_div_msg = proto->mutable_ceil_div_node();
+    operand_->ToProto(ceil_div_msg->mutable_operand());
+    ceil_div_msg->set_divisor(divisor_);
+  }
+  bool IsConstant() const override { return operand_->IsConstant(); }
+  int64_t ConstantValue() const override {
+    const int64_t value = operand_->ConstantValue();
+    return value / divisor_ + (value % divisor_ > 0 ? 1 : 0);
+  }
+  DimExpr* operand() const { return operand_; }
+  int64_t divisor() const { return divisor_; }
+
+ private:
+  DimExpr* operand_;
+  int64_t divisor_;
 };
 
 // Simplify an expression tree: constant folding and algebraic identities.

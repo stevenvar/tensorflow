@@ -233,6 +233,19 @@ TEST_F(ShapeInferenceTest, SelectRejectsMismatchedOperandExpressions) {
               HasSubstr("mismatched expressions in dimension 0"));
 }
 
+TEST_F(ShapeInferenceTest, SelectRejectsMissingDynamicOperandExpression) {
+  const Shape pred = ShapeUtil::MakeShape(PRED, {});
+  const Shape on_true = ShapeUtil::MakeShape(
+      F32, {8, 5}, std::vector<DExpr>{DExpr::Var(33), DExpr::Const(5)});
+  const Shape on_false = ShapeUtil::MakeShape(F32, {8, 5});
+  const absl::StatusOr<Shape> inferred_shape =
+      ShapeInference::InferTernaryOpShape(HloOpcode::kSelect, pred, on_true,
+                                          on_false);
+  ASSERT_FALSE(inferred_shape.ok());
+  EXPECT_THAT(inferred_shape.status().message(),
+              HasSubstr("mismatched expressions in dimension 0"));
+}
+
 TEST_F(ShapeInferenceTest, SelectBadShapes) {
   const absl::StatusOr<Shape> inferred_shape_error1 =
       ShapeInference::InferTernaryOpShape(HloOpcode::kSelect, pred_,
@@ -1516,6 +1529,58 @@ TEST_F(ReduceShapeInferenceTest, ReduceWindowMultiOutput) {
       ShapeUtil::MakeTupleShape({ShapeUtil::MakeShape(F32, {5, 2, 0}),
                                  ShapeUtil::MakeShape(S32, {5, 2, 0})}),
       *inferred_shape));
+}
+
+TEST_F(ReduceShapeInferenceTest,
+       ReduceWindowPreservesDynamicStridedBoundExpression) {
+  Shape operand = ShapeUtil::MakeShape(
+      F32, {101}, std::vector<bool>{true}, {DExpr::Var(1)});
+  Window window;
+  WindowDimension* dimension = window.add_dimensions();
+  dimension->set_size(3);
+  dimension->set_stride(2);
+  dimension->set_padding_low(1);
+  dimension->set_padding_high(1);
+  dimension->set_base_dilation(1);
+  dimension->set_window_dilation(1);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      Shape inferred,
+      ShapeInference::InferReduceWindowShape(operand, f32_, window));
+  EXPECT_EQ(51, inferred.dimensions(0));
+  EXPECT_TRUE(inferred.expressions(0) ==
+              DExpr::Max((DExpr::Var(1) + 1) / 2, DExpr::Const(0)));
+
+  DExpr runtime_expression =
+      inferred.expressions(0).substitute(1, DExpr::Const(100)).simplify();
+  ASSERT_TRUE(runtime_expression->is_constant());
+  EXPECT_EQ(50, runtime_expression->get_val());
+}
+
+TEST_F(ReduceShapeInferenceTest,
+       ReduceWindowClampsDynamicStridedBoundAtZero) {
+  Shape operand = ShapeUtil::MakeShape(
+      F32, {101}, std::vector<bool>{true}, {DExpr::Var(2)});
+  Window window;
+  WindowDimension* dimension = window.add_dimensions();
+  dimension->set_size(5);
+  dimension->set_stride(1);
+  dimension->set_padding_low(0);
+  dimension->set_padding_high(0);
+  dimension->set_base_dilation(1);
+  dimension->set_window_dilation(1);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      Shape inferred,
+      ShapeInference::InferReduceWindowShape(operand, f32_, window));
+  EXPECT_EQ(97, inferred.dimensions(0));
+  EXPECT_TRUE(inferred.expressions(0) ==
+              DExpr::Max(DExpr::Var(2) - 4, DExpr::Const(0)));
+
+  DExpr runtime_expression =
+      inferred.expressions(0).substitute(2, DExpr::Const(2)).simplify();
+  ASSERT_TRUE(runtime_expression->is_constant());
+  EXPECT_EQ(0, runtime_expression->get_val());
 }
 
 TEST_F(ReduceShapeInferenceTest, ErrorMultiOutputBadReducerInput1) {

@@ -39,6 +39,39 @@ Constant* AsConstant(DynExpr* expr) {
              : nullptr;
 }
 
+bool IsKnownNonNegative(const DynExpr* expr) {
+  if (expr == nullptr) return false;
+  if (expr->kind() == DExpr::Kind::kConstant) {
+    return static_cast<const Constant*>(expr)->get_val() >= 0;
+  }
+  switch (expr->kind()) {
+    case DExpr::Kind::kVariable:
+      return true;
+    case DExpr::Kind::kAdd: {
+      const auto* add = static_cast<const Add*>(expr);
+      return IsKnownNonNegative(add->get_lhs()) &&
+             IsKnownNonNegative(add->get_rhs());
+    }
+    case DExpr::Kind::kMul: {
+      const auto* mul = static_cast<const Mul*>(expr);
+      return IsKnownNonNegative(mul->get_lhs()) &&
+             IsKnownNonNegative(mul->get_rhs());
+    }
+    case DExpr::Kind::kMax: {
+      const auto* max = static_cast<const MaxExpr*>(expr);
+      return IsKnownNonNegative(max->get_lhs()) ||
+             IsKnownNonNegative(max->get_rhs());
+    }
+    case DExpr::Kind::kCeilDiv: {
+      const auto* ceil_div = static_cast<const CeilDivExpr*>(expr);
+      return ceil_div->get_divisor() > 0 &&
+             IsKnownNonNegative(ceil_div->get_operand());
+    }
+    default:
+      return false;
+  }
+}
+
 void NormalizeFraction(int64_t* numerator, int64_t* denominator) {
   CHECK(denominator != nullptr);
   CHECK(*denominator != 0);
@@ -361,6 +394,12 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
       if (l && r) {
         return std::make_unique<Constant>(
             std::max(l->get_val(), r->get_val()));
+      }
+      if (l && l->get_val() == 0 && IsKnownNonNegative(rhs.get())) {
+        return rhs;
+      }
+      if (r && r->get_val() == 0 && IsKnownNonNegative(lhs.get())) {
+        return lhs;
       }
       if (*lhs == *rhs) return lhs;
       return std::make_unique<MaxExpr>(lhs.release(), rhs.release());

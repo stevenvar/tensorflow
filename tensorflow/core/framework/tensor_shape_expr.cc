@@ -24,6 +24,37 @@ std::optional<bool>& TensorShapeExpressionsEnabledOverride() {
   return *enabled_override;
 }
 
+bool IsKnownNonNegative(const DimExpr* expr) {
+  if (expr == nullptr) return false;
+  if (expr->IsConstant()) return expr->ConstantValue() >= 0;
+  switch (expr->kind()) {
+    case DimExpr::Kind::kVariable:
+      return true;
+    case DimExpr::Kind::kAdd: {
+      const auto* add = static_cast<const ExprAdd*>(expr);
+      return IsKnownNonNegative(add->lhs()) &&
+             IsKnownNonNegative(add->rhs());
+    }
+    case DimExpr::Kind::kMul: {
+      const auto* mul = static_cast<const ExprMul*>(expr);
+      return IsKnownNonNegative(mul->lhs()) &&
+             IsKnownNonNegative(mul->rhs());
+    }
+    case DimExpr::Kind::kMax: {
+      const auto* max = static_cast<const ExprMax*>(expr);
+      return IsKnownNonNegative(max->lhs()) ||
+             IsKnownNonNegative(max->rhs());
+    }
+    case DimExpr::Kind::kCeilDiv: {
+      const auto* ceil_div = static_cast<const ExprCeilDiv*>(expr);
+      return ceil_div->divisor() > 0 &&
+             IsKnownNonNegative(ceil_div->operand());
+    }
+    default:
+      return false;
+  }
+}
+
 }  // namespace
 
 bool TensorShapeExpressionsEnabled() {
@@ -291,6 +322,14 @@ DimExpr* SimplifyExpr(DimExpr* expr,
       if (lhs->IsConstant() && rhs->IsConstant()) {
         return own(DimExpr::Cons(
             std::max(lhs->ConstantValue(), rhs->ConstantValue())));
+      }
+      if (lhs->IsConstant() && lhs->ConstantValue() == 0 &&
+          IsKnownNonNegative(rhs)) {
+        return rhs;
+      }
+      if (rhs->IsConstant() && rhs->ConstantValue() == 0 &&
+          IsKnownNonNegative(lhs)) {
+        return lhs;
       }
       if (DimExpr::Equals(lhs, rhs)) return lhs;
       return own(std::make_unique<ExprMax>(lhs, rhs));

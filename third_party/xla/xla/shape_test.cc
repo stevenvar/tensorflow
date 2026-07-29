@@ -131,6 +131,10 @@ TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
   EXPECT_EQ("max(A, 4)", DExprToString(expr.simplify()));
   EXPECT_FALSE(expr->solve(7).has_value());
 
+  DExpr clamped = DExpr::Max(DExpr::CeilDiv(DExpr::Var(1), 2),
+                             DExpr::Const(0));
+  EXPECT_EQ("ceildiv(A, 2)", DExprToString(clamped.simplify()));
+
   DExpr evaluated = expr.substitute(1, DExpr::Const(7)).simplify();
   EXPECT_EQ(DExpr::Kind::kConstant, evaluated.kind());
   EXPECT_EQ(7, evaluated->get_val());

@@ -484,6 +484,11 @@ std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
       !module->config().debug_options().xla_cpu_enable_fast_min_max());
   options.set_supports_non_canonical_dots(false);
   options.set_executing_on_cpu(true);
+  options.set_enable_divide_by_broadcast_reciprocal(
+      module->config().debug_options().xla_cpu_enable_fast_math() &&
+      !module->config()
+           .debug_options()
+           .xla_cpu_fast_math_honor_division());
   pipeline->AddPass<AlgebraicSimplifier>(options);
   pipeline->AddPass<SortSimplifier>();
   pipeline->AddPass<HloDCE>();
@@ -907,6 +912,11 @@ absl::Status CpuCompiler::RunHloPassesAfterLayoutAssn(
     options.set_minmax_propagate_nan(
         !module->config().debug_options().xla_cpu_enable_fast_min_max());
     options.set_executing_on_cpu(true);
+    options.set_enable_divide_by_broadcast_reciprocal(
+        module->config().debug_options().xla_cpu_enable_fast_math() &&
+        !module->config()
+             .debug_options()
+             .xla_cpu_fast_math_honor_division());
     pipeline.AddPass<AlgebraicSimplifier>(options);
     pipeline.AddPass<HloDCE>();
     pipeline.AddPass<HloCSE>(/*is_layout_sensitive=*/true);

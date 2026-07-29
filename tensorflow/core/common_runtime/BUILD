@@ -2774,6 +2774,7 @@ tf_cc_test(
         "//tensorflow/core/kernels:identity_op",
         "//tensorflow/core/kernels:immutable_constant_op",
         "//tensorflow/core/kernels:matmul_op",
+        "//tensorflow/core/kernels:pack_op",
         "//tensorflow/core/kernels:reshape_op",
         "//tensorflow/core/kernels:slice_op",
         "//tensorflow/core/kernels:topk_op",

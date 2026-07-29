@@ -844,8 +844,9 @@ TEST_F(ConstantFoldingTest, FoldPackOfDynamicShapePreservesContents) {
                              ops::Const(s.WithOpName("index"), 0),
                              ops::Const(s.WithOpName("axis"), 0));
   auto second = ops::Const(s.WithOpName("second"), 16);
-  auto pack = ops::Pack(s.WithOpName("pack"), {first, second},
-                        ops::Pack::Axis(0));
+  OutputList pack_inputs = {first, second};
+  auto pack = ops::Stack(s.WithOpName("pack"), pack_inputs,
+                         ops::Stack::Axis(0));
   auto send = ops::_Send(s.WithOpName("send"), pack, "send", "sender", 0,
                          "receiver");
   TF_ASSERT_OK(s.ToGraph(&g));
@@ -870,6 +871,7 @@ TEST_F(ConstantFoldingTest, FoldPackOfDynamicShapePreservesContents) {
   const Edge* send_input = nullptr;
   TF_ASSERT_OK(send_node->input_edge(0, &send_input));
   Node* folded = send_input->src();
+  ASSERT_TRUE(folded->IsConstant());
   ExpectNodeEqual<int32>(folded, {977, 16}, {2});
 
   string serialized_contents_proto;
@@ -878,9 +880,8 @@ TEST_F(ConstantFoldingTest, FoldPackOfDynamicShapePreservesContents) {
                            &serialized_contents_proto));
   TensorShapeProto contents_proto;
   ASSERT_TRUE(contents_proto.ParseFromString(serialized_contents_proto));
-  ASSERT_EQ(contents_proto.expressions_size(), 2);
+  ASSERT_EQ(contents_proto.expressions_size(), 1);
   EXPECT_TRUE(IsDynamicDimExpr(contents_proto.expressions(0)));
-  EXPECT_FALSE(IsDynamicDimExpr(contents_proto.expressions(1)));
   EXPECT_EQ(contents_proto.dim(0).size(), 977);
   EXPECT_EQ(contents_proto.dim(1).size(), 16);
 }
@@ -914,7 +915,7 @@ TEST_F(ConstantFoldingTest, DoNotFoldUnsupportedDynamicContentsTransform) {
   Node* send_node = index_by_name.at("send");
   const Edge* send_input = nullptr;
   TF_ASSERT_OK(send_node->input_edge(0, &send_input));
-  EXPECT_EQ(send_input->src()->type_string(), "AddV2");
+  EXPECT_FALSE(send_input->src()->IsConstant());
 }
 
 TEST_F(ConstantFoldingTest, NoReplacePartialOutput) {

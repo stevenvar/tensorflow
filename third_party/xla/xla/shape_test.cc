@@ -53,9 +53,10 @@ class ShapeTest : public ::testing::Test {
   const Shape nested_tuple_ =
       ShapeUtil::MakeTupleShape({tuple_, matrix_, token_});
   const Shape dynamic_matrix_ =
-      ShapeUtil::MakeShape(S32, {5, 2}, {true, false});
+      ShapeUtil::MakeShape(S32, {5, 2}, std::vector<bool>{true, false}, {});
   const Shape unbounded_ =
-      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, 784}, {true, false});
+      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, 784},
+                           std::vector<bool>{true, false}, {});
 };
 
 // Tests that if the dynamic_dimensions parameter empty in the Shape
@@ -105,8 +106,8 @@ TEST_F(ShapeTest, ShapeToString) {
 }
 
 TEST_F(ShapeTest, DynamicShapeToString) {
-  Shape array_shape =
-      ShapeUtil::MakeShape(F32, {23, 44, 55}, {true, false, true});
+  Shape array_shape = ShapeUtil::MakeShape(
+      F32, {23, 44, 55}, std::vector<bool>{true, false, true}, {});
   EXPECT_EQ("f32[<=23,44,<=55]", array_shape.ToString());
 
   array_shape.set_dynamic_dimension(2, false);
@@ -123,6 +124,38 @@ TEST_F(ShapeTest, DExprSimplifyScalesMixedDenominators) {
 TEST_F(ShapeTest, DExprSimplifyCombinesEqualFractions) {
   DExpr expr = (DExpr::Var(1) / 2) + (DExpr::Var(1) / 2);
   EXPECT_EQ("A", DExprToString(expr.simplify()));
+}
+
+TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
+  DExpr expr = DExpr::Max(DExpr::Var(1), DExpr::Const(4));
+  EXPECT_EQ("max(A, 4)", DExprToString(expr.simplify()));
+  EXPECT_FALSE(expr->solve(7).has_value());
+
+  DExpr evaluated = expr.substitute(1, DExpr::Const(7)).simplify();
+  EXPECT_EQ(DExpr::Kind::kConstant, evaluated.kind());
+  EXPECT_EQ(7, evaluated->get_val());
+
+  ExpressionProto proto;
+  expr.to_proto(&proto);
+  EXPECT_TRUE(expr == DExprFromProto(proto));
+}
+
+TEST_F(ShapeTest, DExprCeilDivEvaluatesButDoesNotSolve) {
+  DExpr expr = DExpr::CeilDiv(DExpr::Var(1), 240);
+  EXPECT_EQ("ceildiv(A, 240)", DExprToString(expr.simplify()));
+  EXPECT_FALSE(expr->solve(3).has_value());
+
+  DExpr evaluated = expr.substitute(1, DExpr::Const(481)).simplify();
+  EXPECT_EQ(DExpr::Kind::kConstant, evaluated.kind());
+  EXPECT_EQ(3, evaluated->get_val());
+
+  DExpr negative = expr.substitute(1, DExpr::Const(-1)).simplify();
+  EXPECT_EQ(DExpr::Kind::kConstant, negative.kind());
+  EXPECT_EQ(0, negative->get_val());
+
+  ExpressionProto proto;
+  expr.to_proto(&proto);
+  EXPECT_TRUE(expr == DExprFromProto(proto));
 }
 
 TEST_F(ShapeTest, DeleteDimensions) {

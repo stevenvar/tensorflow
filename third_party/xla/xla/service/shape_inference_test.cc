@@ -1518,6 +1518,33 @@ TEST_F(ReduceShapeInferenceTest, ReduceWindowMultiOutput) {
       *inferred_shape));
 }
 
+TEST_F(ReduceShapeInferenceTest,
+       ReduceWindowPreservesDynamicStridedBoundExpression) {
+  Shape operand = ShapeUtil::MakeShape(
+      F32, {101}, std::vector<bool>{true}, {DExpr::Var(1)});
+  Window window;
+  WindowDimension* dimension = window.add_dimensions();
+  dimension->set_size(3);
+  dimension->set_stride(2);
+  dimension->set_padding_low(1);
+  dimension->set_padding_high(1);
+  dimension->set_base_dilation(1);
+  dimension->set_window_dilation(1);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      Shape inferred,
+      ShapeInference::InferReduceWindowShape(operand, f32_, window));
+  EXPECT_EQ(51, inferred.dimensions(0));
+  EXPECT_TRUE(inferred.expressions(0) ==
+              DExpr::Max(DExpr::CeilDiv(DExpr::Var(1), 2),
+                         DExpr::Const(0)));
+
+  DExpr runtime_expression =
+      inferred.expressions(0).substitute(1, DExpr::Const(100)).simplify();
+  ASSERT_TRUE(runtime_expression->is_constant());
+  EXPECT_EQ(50, runtime_expression->get_val());
+}
+
 TEST_F(ReduceShapeInferenceTest, ErrorMultiOutputBadReducerInput1) {
   const Shape f32_arg_shape = ShapeUtil::MakeShape(F32, {5, 3});
   const Shape s32_arg_shape = ShapeUtil::MakeShape(S32, {5, 3});

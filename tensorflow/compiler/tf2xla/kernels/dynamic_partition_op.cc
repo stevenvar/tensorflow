@@ -213,11 +213,11 @@ class DynamicPartitionOp : public XlaOpKernel {
       {CollapseExpressions(flattened_partition_exprs)});
     xla::Shape data_1d_shape = xla::ShapeUtil::MakeShape(
         data_shape.element_type(), {input_count},
-        {xla::DExpr::Const(input_count)});
+        std::vector<xla::DExpr>{xla::DExpr::Const(input_count)});
 
     xla::Shape partitions_1d_shape = xla::ShapeUtil::MakeShape(
         partition_shape.element_type(), {input_count},
-        {xla::DExpr::Const(input_count)});
+        std::vector<xla::DExpr>{xla::DExpr::Const(input_count)});
 
     std::vector<xla::XlaOp> output, partition_length;
     std::tie(output, partition_length) = DynamicPartition1D(

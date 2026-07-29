@@ -317,10 +317,24 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
       }
       Constant* l = AsConstant(lhs.get());
       Constant* r = AsConstant(rhs.get());
+      if (*lhs == *rhs) {
+        return std::make_unique<Constant>(1);
+      }
       if (l && l->get_val() == 0 && r && r->get_val() != 0) {
         return std::make_unique<Constant>(0);
       }
       if (r && r->get_val() == 1) return lhs;
+      if (lhs->kind() == DExpr::Kind::kMul) {
+        auto* mul = static_cast<Mul*>(lhs.get());
+        auto lhs_l = std::unique_ptr<DynExpr>(mul->get_lhs()->s());
+        auto lhs_r = std::unique_ptr<DynExpr>(mul->get_rhs()->s());
+        if (*lhs_l == *rhs) {
+          return lhs_r;
+        }
+        if (*lhs_r == *rhs) {
+          return lhs_l;
+        }
+      }
       if (l && r && r->get_val() != 0) {
         int64_t numerator = l->get_val();
         int64_t denominator = r->get_val();
@@ -391,6 +405,13 @@ bool DynExpr::equal(DynExpr* expr1, DynExpr* expr2) {
   auto e1 = std::unique_ptr<DynExpr>(expr1->s());
   auto e2 = std::unique_ptr<DynExpr>(expr2->s());
   if (e1 == nullptr || e2 == nullptr) return false;
+  auto a1 = ToCanonicalAffine(e1.get());
+  auto a2 = ToCanonicalAffine(e2.get());
+  if (a1.has_value() && a2.has_value()) {
+    return a1->denominator == a2->denominator &&
+           a1->constant == a2->constant &&
+           a1->coefficients == a2->coefficients;
+  }
   if (e1->kind() == DExpr::Kind::kConstant &&
       e2->kind() == DExpr::Kind::kConstant) {
     return static_cast<Constant*>(e1.get())->get_val() ==

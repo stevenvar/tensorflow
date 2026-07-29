@@ -140,11 +140,6 @@ DynExpr* DynExprFromProtoForPrint(const ExpressionProto& proto) {
       return new MaxExpr(DynExprFromProtoForPrint(max.lhs()),
                          DynExprFromProtoForPrint(max.rhs()));
     }
-    case ExpressionProto::kCeilDivNode: {
-      const auto& ceil_div = proto.ceil_div_node();
-      return new CeilDivExpr(DynExprFromProtoForPrint(ceil_div.operand()),
-                             ceil_div.divisor());
-    }
     case ExpressionProto::NODE_TYPE_NOT_SET:
     default:
       return nullptr;

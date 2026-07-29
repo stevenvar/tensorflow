@@ -24,37 +24,6 @@ std::optional<bool>& TensorShapeExpressionsEnabledOverride() {
   return *enabled_override;
 }
 
-bool IsKnownNonNegative(const DimExpr* expr) {
-  if (expr == nullptr) return false;
-  if (expr->IsConstant()) return expr->ConstantValue() >= 0;
-  switch (expr->kind()) {
-    case DimExpr::Kind::kVariable:
-      return true;
-    case DimExpr::Kind::kAdd: {
-      const auto* add = static_cast<const ExprAdd*>(expr);
-      return IsKnownNonNegative(add->lhs()) &&
-             IsKnownNonNegative(add->rhs());
-    }
-    case DimExpr::Kind::kMul: {
-      const auto* mul = static_cast<const ExprMul*>(expr);
-      return IsKnownNonNegative(mul->lhs()) &&
-             IsKnownNonNegative(mul->rhs());
-    }
-    case DimExpr::Kind::kMax: {
-      const auto* max = static_cast<const ExprMax*>(expr);
-      return IsKnownNonNegative(max->lhs()) ||
-             IsKnownNonNegative(max->rhs());
-    }
-    case DimExpr::Kind::kCeilDiv: {
-      const auto* ceil_div = static_cast<const ExprCeilDiv*>(expr);
-      return ceil_div->divisor() > 0 &&
-             IsKnownNonNegative(ceil_div->operand());
-    }
-    default:
-      return false;
-  }
-}
-
 }  // namespace
 
 bool TensorShapeExpressionsEnabled() {
@@ -88,8 +57,6 @@ bool IsDynamicDimExpr(const ExpressionProto& proto) {
     case ExpressionProto::kMaxNode:
       return IsDynamicDimExpr(proto.max_node().lhs()) ||
              IsDynamicDimExpr(proto.max_node().rhs());
-    case ExpressionProto::kCeilDivNode:
-      return IsDynamicDimExpr(proto.ceil_div_node().operand());
     case ExpressionProto::kConstantValue:
     case ExpressionProto::NODE_TYPE_NOT_SET:
       return false;
@@ -167,12 +134,6 @@ static bool EqualsImpl(const DimExpr* a, const DimExpr* b) {
              (EqualsImpl(am->lhs(), bm->rhs()) &&
               EqualsImpl(am->rhs(), bm->lhs()));
     }
-    case DimExpr::Kind::kCeilDiv: {
-      auto* ac = static_cast<const ExprCeilDiv*>(a);
-      auto* bc = static_cast<const ExprCeilDiv*>(b);
-      return ac->divisor() == bc->divisor() &&
-             EqualsImpl(ac->operand(), bc->operand());
-    }
   }
 
   return false;
@@ -214,11 +175,6 @@ std::unique_ptr<DimExpr> DimExpr::FromProto(const ExpressionProto& proto) {
       auto lhs = FromProto(proto.max_node().lhs());
       auto rhs = FromProto(proto.max_node().rhs());
       return std::make_unique<ExprMax>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kCeilDivNode: {
-      auto operand = FromProto(proto.ceil_div_node().operand());
-      return std::make_unique<ExprCeilDiv>(
-          operand.release(), proto.ceil_div_node().divisor());
     }
     case ExpressionProto::NODE_TYPE_NOT_SET:
     default:
@@ -324,28 +280,15 @@ DimExpr* SimplifyExpr(DimExpr* expr,
             std::max(lhs->ConstantValue(), rhs->ConstantValue())));
       }
       if (lhs->IsConstant() && lhs->ConstantValue() == 0 &&
-          IsKnownNonNegative(rhs)) {
+          rhs->kind() == DimExpr::Kind::kVariable) {
         return rhs;
       }
       if (rhs->IsConstant() && rhs->ConstantValue() == 0 &&
-          IsKnownNonNegative(lhs)) {
+          lhs->kind() == DimExpr::Kind::kVariable) {
         return lhs;
       }
       if (DimExpr::Equals(lhs, rhs)) return lhs;
       return own(std::make_unique<ExprMax>(lhs, rhs));
-    }
-    case DimExpr::Kind::kCeilDiv: {
-      auto* ceil_div = static_cast<ExprCeilDiv*>(expr);
-      DimExpr* operand = SimplifyExpr(ceil_div->operand(), arena);
-      if (ceil_div->divisor() == 1) return operand;
-      if (operand->IsConstant()) {
-        const int64_t value = operand->ConstantValue();
-        const int64_t divisor = ceil_div->divisor();
-        return own(DimExpr::Cons(
-            value / divisor + (value % divisor > 0 ? 1 : 0)));
-      }
-      return own(
-          std::make_unique<ExprCeilDiv>(operand, ceil_div->divisor()));
     }
   }
 

@@ -165,7 +165,8 @@ class ReshapeOp : public XlaOpKernel {
               0, 0, padded_input_num - input_num_elements);
           input_shape.set_dim(0, padded_input_num);
           missing_expr =
-              xla::DExpr::CeilDiv(input_num_elements_expr, product).simplify();
+              (input_num_elements_expr + (product - 1)) / product;
+          missing_expr = missing_expr.simplify();
           xla::DExpr padded_input_num_expr =
               (missing_expr * xla::DExpr::Const(product))
                   .simplify();

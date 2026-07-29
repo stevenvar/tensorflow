@@ -46,7 +46,6 @@ enum class DExprKind {
   kMul,
   kDiv,
   kMax,
-  kCeilDiv,
 };
 
 class DynExpr {
@@ -104,7 +103,6 @@ class DExpr {
   static DExpr Const(int64_t value) { return Adopt(DynExpr::_(value)); }
   static DExpr Var(int var_id) { return Adopt(DynExpr::V(var_id)); }
   static DExpr Max(const DExpr& lhs, const DExpr& rhs);
-  static DExpr CeilDiv(const DExpr& operand, int64_t divisor);
   bool is_unknown() const {
     return expr_ != nullptr && expr_->kind() == DExprKind::kUnknown;
   }
@@ -582,51 +580,6 @@ class MaxExpr : public DynExpr {
   DynExpr* s() override;
 };
 
-// ceil(operand / divisor), where divisor is a positive constant.
-class CeilDivExpr : public DynExpr {
-  std::unique_ptr<DynExpr> operand;
-  int64_t divisor;
-
- public:
-  CeilDivExpr(DynExpr* value, int64_t positive_divisor)
-      : operand(value), divisor(positive_divisor) {
-    CHECK_GT(divisor, 0);
-  }
-  std::unique_ptr<DynExpr> clone() const override {
-    return std::make_unique<CeilDivExpr>(operand->clone().release(), divisor);
-  }
-  DExprKind kind() const override { return DExprKind::kCeilDiv; }
-  void print(xla::Printer* printer) const override {
-    printer->Append("ceildiv(");
-    operand->print(printer);
-    printer->Append(", ");
-    printer->Append(divisor);
-    printer->Append(")");
-  }
-  void to_proto(xla::ExpressionProto* proto) const override {
-    auto* ceil_div_msg = proto->mutable_ceil_div_node();
-    operand->to_proto(ceil_div_msg->mutable_operand());
-    ceil_div_msg->set_divisor(divisor);
-  }
-  bool is_constant() const override { return operand->is_constant(); }
-  int64_t get_val() const override {
-    const int64_t value = operand->get_val();
-    return value / divisor + (value % divisor > 0 ? 1 : 0);
-  }
-  DynExpr* get_operand() const { return operand.get(); }
-  int64_t get_divisor() const { return divisor; }
-  DynExpr* substitute(int id, DynExpr* v) override {
-    return new CeilDivExpr(operand->substitute(id, v), divisor);
-  }
-  std::set<int> get_all_ids() override { return operand->get_all_ids(); }
-  // CeilDiv maps a range of input values to the same result.
-  std::optional<int64_t> solve(int64_t x) override {
-    (void)x;
-    return std::nullopt;
-  }
-  DynExpr* s() override;
-};
-
 DynExpr* operator*(DynExpr& lhs, DynExpr& rhs);
 DynExpr* operator*(int64_t k, DynExpr& rhs);
 DynExpr* operator/(DynExpr& lhs, DynExpr& rhs);
@@ -695,11 +648,6 @@ inline DExpr DExprFromProto(const xla::ExpressionProto& proto) {
       const auto& max = proto.max_node();
       return DExpr::Max(DExprFromProto(max.lhs()),
                         DExprFromProto(max.rhs()));
-    }
-    case ExpressionProto::kCeilDivNode: {
-      const auto& ceil_div = proto.ceil_div_node();
-      return DExpr::CeilDiv(DExprFromProto(ceil_div.operand()),
-                            ceil_div.divisor());
     }
     case ExpressionProto::NODE_TYPE_NOT_SET:
     default:

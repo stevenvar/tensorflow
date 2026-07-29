@@ -2489,7 +2489,6 @@ class SymbolicShapeManager {
       case DimExpr::Kind::kMul:
       case DimExpr::Kind::kDiv:
       case DimExpr::Kind::kMax:
-      case DimExpr::Kind::kCeilDiv:
         return true;
       default:
         return false;

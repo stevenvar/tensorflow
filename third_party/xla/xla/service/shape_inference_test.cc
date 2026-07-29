@@ -1536,8 +1536,7 @@ TEST_F(ReduceShapeInferenceTest,
       ShapeInference::InferReduceWindowShape(operand, f32_, window));
   EXPECT_EQ(51, inferred.dimensions(0));
   EXPECT_TRUE(inferred.expressions(0) ==
-              DExpr::Max(DExpr::CeilDiv(DExpr::Var(1), 2),
-                         DExpr::Const(0)));
+              DExpr::Max((DExpr::Var(1) + 1) / 2, DExpr::Const(0)));
 
   DExpr runtime_expression =
       inferred.expressions(0).substitute(1, DExpr::Const(100)).simplify();

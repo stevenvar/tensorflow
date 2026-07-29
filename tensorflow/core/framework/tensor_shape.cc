@@ -57,11 +57,6 @@ xla::DExpr DExprFromProto(const ExpressionProto& proto) {
       return xla::DExpr::Max(DExprFromProto(max.lhs()),
                              DExprFromProto(max.rhs()));
     }
-    case ExpressionProto::kCeilDivNode: {
-      const auto& ceil_div = proto.ceil_div_node();
-      return xla::DExpr::CeilDiv(DExprFromProto(ceil_div.operand()),
-                                 ceil_div.divisor());
-    }
     case ExpressionProto::NODE_TYPE_NOT_SET:
     default:
       return xla::DExpr::Unknown(xla::kMissingExpressionSentinel);
@@ -121,14 +116,6 @@ void ExprToProto(const xla::DExpr& expr, ExpressionProto* proto) {
       const auto& node = static_cast<xla::MaxExpr&>(*expr.get());
       ExprToProto(xla::DExpr(node.get_lhs()->clone()), max->mutable_lhs());
       ExprToProto(xla::DExpr(node.get_rhs()->clone()), max->mutable_rhs());
-      return;
-    }
-    case xla::DExpr::Kind::kCeilDiv: {
-      auto* ceil_div = proto->mutable_ceil_div_node();
-      const auto& node = static_cast<xla::CeilDivExpr&>(*expr.get());
-      ExprToProto(xla::DExpr(node.get_operand()->clone()),
-                  ceil_div->mutable_operand());
-      ceil_div->set_divisor(node.get_divisor());
       return;
     }
   }

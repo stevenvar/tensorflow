@@ -39,39 +39,6 @@ Constant* AsConstant(DynExpr* expr) {
              : nullptr;
 }
 
-bool IsKnownNonNegative(const DynExpr* expr) {
-  if (expr == nullptr) return false;
-  if (expr->kind() == DExpr::Kind::kConstant) {
-    return static_cast<const Constant*>(expr)->get_val() >= 0;
-  }
-  switch (expr->kind()) {
-    case DExpr::Kind::kVariable:
-      return true;
-    case DExpr::Kind::kAdd: {
-      const auto* add = static_cast<const Add*>(expr);
-      return IsKnownNonNegative(add->get_lhs()) &&
-             IsKnownNonNegative(add->get_rhs());
-    }
-    case DExpr::Kind::kMul: {
-      const auto* mul = static_cast<const Mul*>(expr);
-      return IsKnownNonNegative(mul->get_lhs()) &&
-             IsKnownNonNegative(mul->get_rhs());
-    }
-    case DExpr::Kind::kMax: {
-      const auto* max = static_cast<const MaxExpr*>(expr);
-      return IsKnownNonNegative(max->get_lhs()) ||
-             IsKnownNonNegative(max->get_rhs());
-    }
-    case DExpr::Kind::kCeilDiv: {
-      const auto* ceil_div = static_cast<const CeilDivExpr*>(expr);
-      return ceil_div->get_divisor() > 0 &&
-             IsKnownNonNegative(ceil_div->get_operand());
-    }
-    default:
-      return false;
-  }
-}
-
 void NormalizeFraction(int64_t* numerator, int64_t* denominator) {
   CHECK(denominator != nullptr);
   CHECK(*denominator != 0);
@@ -242,8 +209,6 @@ std::optional<CanonicalAffineExpr> ToCanonicalAffine(const DynExpr* expr) {
       return MultiplyAffineByRational(*lhs, rhs->denominator, rhs->constant);
     }
     case DExpr::Kind::kMax:
-    case DExpr::Kind::kCeilDiv:
-      return std::nullopt;
   }
   return std::nullopt;
 }
@@ -395,30 +360,16 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
         return std::make_unique<Constant>(
             std::max(l->get_val(), r->get_val()));
       }
-      if (l && l->get_val() == 0 && IsKnownNonNegative(rhs.get())) {
+      if (l && l->get_val() == 0 &&
+          rhs->kind() == DExpr::Kind::kVariable) {
         return rhs;
       }
-      if (r && r->get_val() == 0 && IsKnownNonNegative(lhs.get())) {
+      if (r && r->get_val() == 0 &&
+          lhs->kind() == DExpr::Kind::kVariable) {
         return lhs;
       }
       if (*lhs == *rhs) return lhs;
       return std::make_unique<MaxExpr>(lhs.release(), rhs.release());
-    }
-    case DExpr::Kind::kCeilDiv: {
-      const auto* ceil_div = static_cast<const CeilDivExpr*>(expr);
-      auto operand = std::unique_ptr<DynExpr>(ceil_div->get_operand()->s());
-      if (operand->kind() == DExpr::Kind::kUnknown) {
-        return std::make_unique<UnknownExpr>();
-      }
-      if (ceil_div->get_divisor() == 1) return operand;
-      if (Constant* value = AsConstant(operand.get())) {
-        const int64_t divisor = ceil_div->get_divisor();
-        const int64_t numerator = value->get_val();
-        return std::make_unique<Constant>(
-            numerator / divisor + (numerator % divisor > 0 ? 1 : 0));
-      }
-      return std::make_unique<CeilDivExpr>(operand.release(),
-                                           ceil_div->get_divisor());
     }
   }
   return expr->clone();
@@ -478,11 +429,6 @@ bool operator<(DynExpr& lhs, int64_t d) {
 
 DExpr DExpr::Max(const DExpr& lhs, const DExpr& rhs) {
   return Adopt(new xla::MaxExpr(lhs.clone().release(), rhs.clone().release()));
-}
-
-DExpr DExpr::CeilDiv(const DExpr& operand, int64_t divisor) {
-  return Adopt(
-      new xla::CeilDivExpr(operand.clone().release(), divisor));
 }
 
 bool DynExpr::equal(DynExpr* expr1, DynExpr* expr2) {
@@ -557,13 +503,6 @@ bool DynExpr::equal(DynExpr* expr1, DynExpr* expr2) {
     auto* d = cd->get_rhs();
     return (*a == *c && *b == *d) || (*a == *d && *b == *c);
   }
-  if (e1->kind() == DExpr::Kind::kCeilDiv &&
-      e2->kind() == DExpr::Kind::kCeilDiv) {
-    auto* lhs = static_cast<CeilDivExpr*>(e1.get());
-    auto* rhs = static_cast<CeilDivExpr*>(e2.get());
-    return lhs->get_divisor() == rhs->get_divisor() &&
-           *lhs->get_operand() == *rhs->get_operand();
-  }
   return false;
 }
 
@@ -580,8 +519,6 @@ DynExpr* Sub::s() { return SimplifyCanonical(this).release(); }
 DynExpr* Div::s() { return SimplifyCanonical(this).release(); }
 
 DynExpr* MaxExpr::s() { return SimplifyCanonical(this).release(); }
-
-DynExpr* CeilDivExpr::s() { return SimplifyCanonical(this).release(); }
 
 std::ostream& operator<<(std::ostream& os, DynExpr* expr) {
   auto simplified = std::unique_ptr<DynExpr>(expr->s());

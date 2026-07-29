@@ -142,10 +142,6 @@ std::string ExprProtoToString(const ExpressionProto& e) {
     case ExpressionProto::kMaxNode:
       return absl::StrCat("max(", ExprProtoToString(e.max_node().lhs()), ", ",
                           ExprProtoToString(e.max_node().rhs()), ")");
-    case ExpressionProto::kCeilDivNode:
-      return absl::StrCat(
-          "ceildiv(", ExprProtoToString(e.ceil_div_node().operand()), ", ",
-          e.ceil_div_node().divisor(), ")");
     default:
       return "<none>";
   }

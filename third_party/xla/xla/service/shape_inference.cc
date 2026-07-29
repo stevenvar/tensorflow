@@ -257,8 +257,9 @@ absl::StatusOr<Shape> InferWindowOutputShape(const Shape& base_shape,
     }
     DExpr padded_dilated_base_expr =
         (dilated_base_expr + dim.padding_low() + dim.padding_high()).simplify();
-    DExpr strided_bound_expr = DExpr::CeilDiv(
-        padded_dilated_base_expr - dilated_window + 1, dim.stride());
+    DExpr strided_bound_expr =
+        (padded_dilated_base_expr - dilated_window + 1 + dim.stride() - 1) /
+        dim.stride();
     output_expressions[i] =
         DExpr::Max(strided_bound_expr, DExpr::Const(0)).simplify();
   }

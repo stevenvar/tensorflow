@@ -419,11 +419,6 @@ std::unique_ptr<DimExpr> ExprFromProto(const ExpressionProto& proto) {
       auto rhs = ExprFromProto(proto.max_node().rhs());
       return std::make_unique<ExprMax>(lhs.release(), rhs.release());
     }
-    case ExpressionProto::kCeilDivNode: {
-      auto operand = ExprFromProto(proto.ceil_div_node().operand());
-      return std::make_unique<ExprCeilDiv>(
-          operand.release(), proto.ceil_div_node().divisor());
-    }
     case ExpressionProto::NODE_TYPE_NOT_SET:
     default:
       return nullptr;
@@ -459,11 +454,6 @@ static xla::DExpr DimExprToDExpr(const DimExpr* e) {
       auto* ee = static_cast<const ExprMax*>(e);
       return xla::DExpr::Max(DimExprToDExpr(ee->lhs()),
                              DimExprToDExpr(ee->rhs()));
-    }
-    case DimExpr::Kind::kCeilDiv: {
-      auto* ee = static_cast<const ExprCeilDiv*>(e);
-      return xla::DExpr::CeilDiv(DimExprToDExpr(ee->operand()),
-                                 ee->divisor());
     }
   }
   return xla::DExpr::Unknown();

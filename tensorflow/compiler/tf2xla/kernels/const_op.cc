@@ -126,8 +126,6 @@ bool IsDynamicExpressionProto(const ExpressionProto& proto) {
     case ExpressionProto::kMaxNode:
       return IsDynamicExpressionProto(proto.max_node().lhs()) ||
              IsDynamicExpressionProto(proto.max_node().rhs());
-    case ExpressionProto::kCeilDivNode:
-      return IsDynamicExpressionProto(proto.ceil_div_node().operand());
     case ExpressionProto::kConstantValue:
     case ExpressionProto::NODE_TYPE_NOT_SET:
       return false;
@@ -167,11 +165,6 @@ static xla::DExpr DimExprToDExpr(const DimExpr* e) {
       const auto* ee = static_cast<const ExprMax*>(e);
       return xla::DExpr::Max(DimExprToDExpr(ee->lhs()),
                              DimExprToDExpr(ee->rhs()));
-    }
-    case DimExpr::Kind::kCeilDiv: {
-      const auto* ee = static_cast<const ExprCeilDiv*>(e);
-      return xla::DExpr::CeilDiv(DimExprToDExpr(ee->operand()),
-                                 ee->divisor());
     }
   }
   return xla::DExpr();

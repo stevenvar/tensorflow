@@ -131,31 +131,12 @@ TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
   EXPECT_EQ("max(A, 4)", DExprToString(expr.simplify()));
   EXPECT_FALSE(expr->solve(7).has_value());
 
-  DExpr clamped = DExpr::Max(DExpr::CeilDiv(DExpr::Var(1), 2),
-                             DExpr::Const(0));
-  EXPECT_EQ("ceildiv(A, 2)", DExprToString(clamped.simplify()));
+  DExpr clamped = DExpr::Max(DExpr::Var(1), DExpr::Const(0));
+  EXPECT_EQ("A", DExprToString(clamped.simplify()));
 
   DExpr evaluated = expr.substitute(1, DExpr::Const(7)).simplify();
   EXPECT_EQ(DExpr::Kind::kConstant, evaluated.kind());
   EXPECT_EQ(7, evaluated->get_val());
-
-  ExpressionProto proto;
-  expr.to_proto(&proto);
-  EXPECT_TRUE(expr == DExprFromProto(proto));
-}
-
-TEST_F(ShapeTest, DExprCeilDivEvaluatesButDoesNotSolve) {
-  DExpr expr = DExpr::CeilDiv(DExpr::Var(1), 240);
-  EXPECT_EQ("ceildiv(A, 240)", DExprToString(expr.simplify()));
-  EXPECT_FALSE(expr->solve(3).has_value());
-
-  DExpr evaluated = expr.substitute(1, DExpr::Const(481)).simplify();
-  EXPECT_EQ(DExpr::Kind::kConstant, evaluated.kind());
-  EXPECT_EQ(3, evaluated->get_val());
-
-  DExpr negative = expr.substitute(1, DExpr::Const(-1)).simplify();
-  EXPECT_EQ(DExpr::Kind::kConstant, negative.kind());
-  EXPECT_EQ(0, negative->get_val());
 
   ExpressionProto proto;
   expr.to_proto(&proto);

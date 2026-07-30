@@ -511,6 +511,7 @@ cc_library(
 tf_proto_library(
     name = "shape_util_proto",
     srcs = ["shape_util.proto"],
+    make_default_target_header_only = True,
 )
 
 cc_library(
@@ -549,6 +550,7 @@ xla_cc_test(
     srcs = ["shape_util_test.cc"],
     deps = [
         ":shape_util",
+        ":shape_util_proto_cc_impl",
         ":util",
         ":xla_data_proto_cc",
         "//xla/hlo/testlib:test",

@@ -1657,6 +1657,12 @@ cc_header_only_library(
     deps = [
         ":lib",
         ":lib_internal",
+        "//tensorflow/core/framework:common_shape_fns",
+        "//tensorflow/core/framework:op",
+        "//tensorflow/core/framework:shape_inference",
+        "//tensorflow/core/framework:tensor",
+        "//tensorflow/core/framework:tensor_shape",
+        "//tensorflow/core/framework:tensor_shape_expr",
         "//tensorflow/core/framework:bounds_check",
         "//tensorflow/core/platform/default/build_config:platformlib",
     ],
@@ -1814,6 +1820,7 @@ tf_cuda_library(
         "@com_google_absl//absl/types:optional",
         "@com_google_absl//absl/types:span",
         "@eigen_archive//:eigen3",
+        "@local_xla//xla:shape_util",
     ],
 )
 

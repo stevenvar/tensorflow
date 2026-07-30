@@ -237,7 +237,7 @@ TEST_F(DynamismInferenceTest, GetDimensionSize) {
   // get_dimension_size(param, 0) is dynamic
   // get_dimension_size(param, 1) is static
   auto p =
-      Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2, 3}, {true, false}), "p0");
+      Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2, 3}, std::vector<bool>{true, false}, {}), "p0");
 
   auto gds0 = GetDimensionSize(p, 0);
   auto gds1 = GetDimensionSize(p, 1);
@@ -559,7 +559,7 @@ class UpperBoundInferenceTest : public ValueInferenceTest {
 TEST_F(UpperBoundInferenceTest, GetDimensionSize) {
   XlaBuilder b(TestName());
   auto p =
-      Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2, 3}, {true, false}), "p0");
+      Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2, 3}, std::vector<bool>{true, false}, {}), "p0");
 
   auto gds0 = GetDimensionSize(p, 0);
   auto gds1 = GetDimensionSize(p, 1);
@@ -573,7 +573,7 @@ TEST_F(UpperBoundInferenceTest, GetDimensionSize) {
 TEST_F(UpperBoundInferenceTest, GetDimensionSizeSub) {
   XlaBuilder b(TestName());
   auto p =
-      Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2, 3}, {true, false}), "p0");
+      Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2, 3}, std::vector<bool>{true, false}, {}), "p0");
 
   // The range of the first dimension is [0, 2]
   auto gds0 = GetDimensionSize(p, 0);
@@ -587,7 +587,7 @@ TEST_F(UpperBoundInferenceTest, GetDimensionSizeSub) {
 TEST_F(UpperBoundInferenceTest, GetDimensionSizeDiv) {
   XlaBuilder b(TestName());
   auto p =
-      Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2, 3}, {true, false}), "p0");
+      Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2, 3}, std::vector<bool>{true, false}, {}), "p0");
   // The range of the first dimension is [0, 2]
   auto gds0 = GetDimensionSize(p, 0);
   // The range of the second dimension is [3, 3]
@@ -603,7 +603,7 @@ TEST_F(UpperBoundInferenceTest, SumSubtract) {
   // upperbound(x + y) should be upperbound(b)
   XlaBuilder b(TestName());
   auto p =
-      Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2, 3}, {true, true}), "p0");
+      Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2, 3}, std::vector<bool>{true, true}, {}), "p0");
   // The range of the first dimension is [0, 2]
   auto gds0 = GetDimensionSize(p, 0);
   // The range of the second dimension is [0, 3]
@@ -622,7 +622,7 @@ TEST_F(UpperBoundInferenceTest, SumSubtractWithDataShuffling) {
   // (broadcast, slice, reshape, identity convert, etc).
   XlaBuilder b(TestName());
   auto p =
-      Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2, 3}, {true, true}), "p0");
+      Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2, 3}, std::vector<bool>{true, true}, {}), "p0");
   // The range of the first dimension is [0, 2]
   auto gds0 = GetDimensionSize(p, 0);
   // The range of the second dimension is [0, 3]
@@ -644,7 +644,7 @@ TEST_F(UpperBoundInferenceTest, SumSubtractWithDataShuffling) {
 TEST_F(UpperBoundInferenceTest, SumSubtractEquivalentGetDimensionSize) {
   XlaBuilder b(TestName());
   auto p =
-      Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2, 3}, {true, true}), "p0");
+      Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2, 3}, std::vector<bool>{true, true}, {}), "p0");
   // The range of the first dimension is [0, 2]
   auto gds0 = GetDimensionSize(p, 0);
   // The range of the second dimension is [0, 3]
@@ -662,8 +662,8 @@ TEST_F(UpperBoundInferenceTest, ParamCantInferBound) {
   // We can infer a parameter's dimension's bound, but not the parameter value's
   // bound.
   XlaBuilder b(TestName());
-  auto p0 = Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2}, {true}), "p0");
-  auto p1 = Parameter(&b, 1, ShapeUtil::MakeShape(S32, {}, {}), "p1");
+  auto p0 = Parameter(&b, 0, ShapeUtil::MakeShape(S32, {2}, std::vector<bool>{true}, {}), "p0");
+  auto p1 = Parameter(&b, 1, ShapeUtil::MakeShape(S32, {}), "p1");
   auto gds = GetDimensionSize(p0, 0);
   auto sub = Div(gds, p1);
   EXPECT_FALSE(

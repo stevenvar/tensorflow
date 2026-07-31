@@ -1,8 +1,105 @@
 #include "tensorflow/compiler/jit/xla_batch_matcher.h"
+
+#include <cstdlib>
+#include <numeric>
+
 #include "xla/debug_options_flags.h"
 #include "tensorflow/core/platform/logging.h"
 
 namespace tensorflow {
+namespace {
+
+bool MergeAlignment(int64_t factor, int64_t* alignment) {
+  factor = std::abs(factor);
+  if (factor <= 1) {
+    return true;
+  }
+  const int64_t common = std::gcd(*alignment, factor);
+  const int64_t multiplier = factor / common;
+  if (*alignment > kMaxBatch / multiplier) {
+    return false;
+  }
+  *alignment *= multiplier;
+  return true;
+}
+
+bool CollectDivisorAlignment(xla::DynExpr* expr, int64_t* alignment) {
+  if (expr == nullptr) {
+    return true;
+  }
+
+  xla::DynExpr* lhs = nullptr;
+  xla::DynExpr* rhs = nullptr;
+  switch (expr->kind()) {
+    case xla::DExpr::Kind::kUnknown:
+    case xla::DExpr::Kind::kConstant:
+    case xla::DExpr::Kind::kVariable:
+      return true;
+    case xla::DExpr::Kind::kAdd: {
+      auto* add = static_cast<xla::Add*>(expr);
+      lhs = add->get_lhs();
+      rhs = add->get_rhs();
+      break;
+    }
+    case xla::DExpr::Kind::kSub: {
+      auto* sub = static_cast<xla::Sub*>(expr);
+      lhs = sub->get_lhs();
+      rhs = sub->get_rhs();
+      break;
+    }
+    case xla::DExpr::Kind::kMul: {
+      auto* mul = static_cast<xla::Mul*>(expr);
+      lhs = mul->get_lhs();
+      rhs = mul->get_rhs();
+      break;
+    }
+    case xla::DExpr::Kind::kDiv: {
+      auto* div = static_cast<xla::Div*>(expr);
+      lhs = div->get_lhs();
+      rhs = div->get_rhs();
+      if (lhs->is_dynamic() && rhs->is_constant() &&
+          !MergeAlignment(rhs->get_val(), alignment)) {
+        return false;
+      }
+      break;
+    }
+  }
+
+  return CollectDivisorAlignment(lhs, alignment) &&
+         CollectDivisorAlignment(rhs, alignment);
+}
+
+}  // namespace
+
+int64_t GetDynamicPaddingAlignment(
+    absl::Span<const xla::DExpr> exact_shape_expressions) {
+  int64_t alignment = 1;
+  for (const xla::DExpr& expression : exact_shape_expressions) {
+    if (expression &&
+        !CollectDivisorAlignment(expression.get(), &alignment)) {
+      return 0;
+    }
+  }
+  return alignment;
+}
+
+int64_t GetAlignedPowerOfTwoBatch(int64_t real_batch, int64_t alignment) {
+  if (real_batch <= 0 || real_batch > kMaxBatch || alignment <= 0 ||
+      alignment > kMaxBatch) {
+    return real_batch;
+  }
+
+  const int64_t units = (real_batch + alignment - 1) / alignment;
+  int64_t power = 1;
+  while (power < units && power <= kMaxBatch / 2) {
+    power <<= 1;
+  }
+  if (power < units || power > kMaxBatch / alignment) {
+    const int64_t rounded = units * alignment;
+    return rounded <= kMaxBatch ? rounded : real_batch;
+  }
+  return power * alignment;
+}
 
 XlaBatchMatcher::XlaBatchMatcher() {
   env_str_ = xla::GetDebugOptionsFromFlags().xla_compile_batch_sizes();
@@ -121,55 +218,48 @@ void XlaBatchMatcher::parse_env_config() {
   return;
 }
 
-// Calculate the smallest power of two greater than the real batch
-static int64_t GetNextPowerOfTwo(int64_t real_batch) {
-  // If real_batch is already a power of two, return real_batch directly
-  if ((real_batch & (real_batch - 1)) == 0) {
-    return real_batch;
-  }
-
-  int64_t power = 1;
-  while (power < real_batch) {
-    power <<= 1;
-  }
-  return power;
-}
-
-int64_t XlaBatchMatcher::find_min_larger_batch(int64_t real_batch) {
+int64_t XlaBatchMatcher::find_min_larger_batch(int64_t real_batch,
+                                               int64_t alignment) {
   if (real_batch <= 0 || real_batch > kMaxBatch) {
     LOG(INFO) << "[XLA_BATCH_WARN] Out of valid range: " << real_batch;
     return real_batch;
   }
+  if (alignment <= 0) {
+    LOG(WARNING) << "[XLA_BATCH_WARN] Dynamic padding alignment cannot be "
+                    "represented; using the exact runtime batch "
+                 << real_batch;
+    return real_batch;
+  }
 
   if (all_batches_.empty()) {
-    // Return the next power of two directly without modifying all_batches_
-    return GetNextPowerOfTwo(real_batch);
+    return GetAlignedPowerOfTwoBatch(real_batch, alignment);
   }
 
-  // Edge case 1: Real value < the smallest batch, use smallest
-  if (real_batch < all_batches_.front()) {
-    return all_batches_.front();
+  auto it = std::lower_bound(all_batches_.begin(), all_batches_.end(),
+                             real_batch);
+  for (; it != all_batches_.end(); ++it) {
+    if (alignment <= 1 || *it % alignment == 0) {
+      return *it;
+    }
   }
-  // Edge case 2: Real value ≥ the largest batch, use the nearest power of two
-  if (real_batch > all_batches_.back()) {
-    int64_t val = GetNextPowerOfTwo(real_batch);
+
+  int64_t val = GetAlignedPowerOfTwoBatch(real_batch, alignment);
+  if (alignment <= 1) {
     all_batches_.emplace_back(val);
     print_all_batches();
-    return val;
   }
-
-  // Find first batch larger than real value (binary search via lower_bound)
-  auto it = std::lower_bound(all_batches_.begin(), all_batches_.end(), real_batch);
-  return (it != all_batches_.end()) ? *it : all_batches_.back();
+  return val;
 }
 
-int64_t XlaBatchMatcher::get_xla_compile_batch(int64_t real_batch) {
+int64_t XlaBatchMatcher::get_xla_compile_batch(int64_t real_batch,
+                                               int64_t alignment) {
   // Match target batch size
-  int64_t selected = find_min_larger_batch(real_batch);
+  int64_t selected = find_min_larger_batch(real_batch, alignment);
   if (real_batch != last_batch_ || all_batches_.empty()) {
     last_batch_ = real_batch;
     VLOG(2) << "[XLA_BATCH_INFO] Real batch: " << real_batch
-      << " -> Selected compile batch: " << selected;
+            << " -> Selected compile batch: " << selected
+            << " with alignment: " << alignment;
   }
   return selected;
 }

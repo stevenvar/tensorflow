@@ -1298,6 +1298,31 @@ xla::DExpr ReplaceDynamicSubexpression(const xla::DExpr& expr,
   return xla::DExprFromProto(proto).simplify();
 }
 
+std::vector<xla::DExpr> CollectReshapeOutputExpressions(
+    const FunctionDef& function) {
+  std::vector<xla::DExpr> expressions;
+  for (const NodeDef& node : function.node_def()) {
+    if (node.op() != "Reshape") {
+      continue;
+    }
+    const auto shapes_it =
+        node.attr().find(kXlaInferredOutputTensorShapesAttrName);
+    if (shapes_it == node.attr().end()) {
+      continue;
+    }
+    for (const TensorShapeProto& shape : shapes_it->second.list().shape()) {
+      for (const ExpressionProto& expression : shape.expressions()) {
+        xla::DExpr dynamic_expression =
+            DimExprToDExpr(ExprFromProto(expression).get()).simplify();
+        if (dynamic_expression && dynamic_expression->is_dynamic()) {
+          expressions.push_back(std::move(dynamic_expression));
+        }
+      }
+    }
+  }
+  return expressions;
+}
+
 absl::Status CompileToLocalExecutable(
     OpKernelContext* ctx, const NameAttrList& function, bool has_ref_vars,
     const XlaPlatformInfo& platform_info,
@@ -1361,6 +1386,21 @@ absl::Status CompileToLocalExecutable(
     int64_t dynamic_dim_value = 0;
     XlaBatchMatcher* xla_batch_matcher =
         xla_device_compiler->xla_batch_matcher();
+    const FunctionDef* cluster_fdef =
+        options.flib_def == nullptr
+            ? nullptr
+            : options.flib_def->Find(function.name());
+    const std::vector<xla::DExpr> reshape_output_expressions =
+        cluster_fdef == nullptr
+            ? std::vector<xla::DExpr>()
+            : CollectReshapeOutputExpressions(*cluster_fdef);
+    const int64_t dynamic_padding_alignment =
+        GetDynamicPaddingAlignment(reshape_output_expressions);
+    if (dynamic_padding_alignment > 1) {
+      VLOG(1) << "Using dynamic compile-batch alignment "
+              << dynamic_padding_alignment << " for cluster "
+              << function.name() << " based on internal Reshape expressions";
+    }
     std::optional<xla::DExpr> dynamic_dim_expr;
     std::optional<xla::DExpr> shared_dynamic_subexpr;
     auto normalize_dynamic_expr =
@@ -1509,7 +1549,8 @@ absl::Status CompileToLocalExecutable(
             if (!disable_dynamic_size_padding && !filled_batch &&
                 xla_batch_matcher) {
               filled_batch =
-                  xla_batch_matcher->get_xla_compile_batch(shp.dim_size(idx));
+                  xla_batch_matcher->get_xla_compile_batch(
+                      shp.dim_size(idx), dynamic_padding_alignment);
             }
 
             std::vector<xla::DExpr> dyn_exprs;
@@ -1596,7 +1637,8 @@ absl::Status CompileToLocalExecutable(
                 }
                 record_dynamic_dim_value(var_value, e);
                 filled_batch =
-                    xla_batch_matcher->get_xla_compile_batch(var_value);
+                    xla_batch_matcher->get_xla_compile_batch(
+                        var_value, dynamic_padding_alignment);
                 break;
               }
             }
@@ -1665,7 +1707,8 @@ absl::Status CompileToLocalExecutable(
           if (!disable_dynamic_size_padding && !filled_batch &&
               xla_batch_matcher) {
             filled_batch =
-                xla_batch_matcher->get_xla_compile_batch(*solved_value);
+                xla_batch_matcher->get_xla_compile_batch(
+                    *solved_value, dynamic_padding_alignment);
           }
         }
       }

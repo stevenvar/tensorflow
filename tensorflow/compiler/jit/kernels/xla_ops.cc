@@ -494,6 +494,45 @@ void StripIgnoredDynamicArgumentOccurrences(
   }
 }
 
+void MaterializeDynamicArgumentsAsStatic(
+    std::vector<XlaCompiler::Argument>* args) {
+  if (args == nullptr) {
+    return;
+  }
+  for (XlaCompiler::Argument& arg : *args) {
+    if (absl::holds_alternative<TensorShape>(arg.shape)) {
+      TensorShape& shape = std::get<TensorShape>(arg.shape);
+      std::vector<xla::DExpr> static_expressions;
+      static_expressions.reserve(shape.dims());
+      for (int dim = 0; dim < shape.dims(); ++dim) {
+        static_expressions.push_back(xla::DExpr::Const(shape.dim_size(dim)));
+      }
+      shape.set_expressions(std::move(static_expressions));
+      arg.may_be_broadcast_singleton_dimensions.assign(shape.dims(), false);
+    }
+    if (arg.kind == XlaCompiler::Argument::kConstant) {
+      arg.constant_value_expressions.clear();
+    }
+  }
+}
+
+bool HasDynamicSingletonDimension(
+    absl::Span<const XlaCompiler::Argument> args) {
+  for (const XlaCompiler::Argument& arg : args) {
+    if (!absl::holds_alternative<TensorShape>(arg.shape)) {
+      continue;
+    }
+    const TensorShape& shape = std::get<TensorShape>(arg.shape);
+    for (int dim = 0; dim < shape.get_expressions().size(); ++dim) {
+      const xla::DExpr& expr = shape.get_expression(dim);
+      if (shape.dim_size(dim) == 1 && expr && expr->is_dynamic()) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeInputs(
     OpKernelContext* ctx, const XlaCompiler::CompilationResult& comp_result,
     int num_constant_args, bool log_solves, absl::string_view cluster_name,
@@ -1670,8 +1709,13 @@ absl::Status CompileToLocalExecutable(
       }
     }
 
-    DynamicSolveFilterDecision solve_filter_decision =
-        AnalyzeIgnoredDynamicArgumentOccurrences(norm_args);
+    const bool has_dynamic_singleton_dimension =
+        HasDynamicSingletonDimension(norm_args);
+    DynamicSolveFilterDecision solve_filter_decision;
+    if (!has_dynamic_singleton_dimension) {
+      solve_filter_decision =
+          AnalyzeIgnoredDynamicArgumentOccurrences(norm_args);
+    }
     if (!solve_filter_decision.can_run) {
       if (compile_mode == DeviceCompileMode::kLazy) {
         return errors::Unimplemented(solve_filter_decision.diagnostic);
@@ -1712,6 +1756,18 @@ absl::Status CompileToLocalExecutable(
           }
         }
       }
+    }
+
+    if (has_dynamic_singleton_dimension) {
+      LOG(INFO) << "Using a static XLA signature for singleton dynamic "
+                   "cluster: cluster="
+                << function.name();
+      MaterializeDynamicArgumentsAsStatic(&norm_args);
+      saw_dynamic_dim_value = false;
+      has_multiple_dynamic_dim_values = false;
+      dynamic_dim_value = 0;
+      dynamic_dim_expr.reset();
+      filled_batch = 0;
     }
 
     struct SaveOldVar {

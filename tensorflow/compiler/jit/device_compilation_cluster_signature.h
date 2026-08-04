@@ -18,10 +18,8 @@ limitations under the License.
 
 #include <utility>
 #include <variant>
-#include <vector>
 
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
-#include "tensorflow/core/framework/tensor_shape.pb.h"
 
 namespace tensorflow {
 
@@ -36,11 +34,7 @@ struct DeviceCompilationClusterSignature {
   // argument number. Tensors must be in host memory.
   using TensorTypeAndShape =
       std::pair<DataType, absl::InlinedVector<int64_t, 4>>;
-  struct ConstantTensor {
-    Tensor value;
-    std::vector<xla::ExpressionProto> contents;
-  };
-  absl::InlinedVector<std::variant<ConstantTensor, TensorTypeAndShape>, 8> args;
+  absl::InlinedVector<std::variant<Tensor, TensorTypeAndShape>, 8> args;
 
   bool operator==(const DeviceCompilationClusterSignature& other) const;
 

@@ -1826,6 +1826,7 @@ tf_cc_test(
     deps = [
         ":device_compilation_cluster_signature",
         ":flags",
+        ":xla_batch_matcher",
         "//tensorflow/compiler/tf2xla:common",
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",

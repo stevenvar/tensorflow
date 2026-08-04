@@ -1714,12 +1714,6 @@ absl::Status CompileToLocalExecutable(
       }
     }
 
-    struct SaveOldVar {
-      int arg_index;
-      int64_t dyn_dim;
-      int64_t old_value;
-    };
-    std::vector<SaveOldVar> old_vars;
     auto maybe_rewrite_scalar_constant = [&](int arg_index) {
       if (!saw_dynamic_dim_value || has_multiple_dynamic_dim_values) {
         return;
@@ -1794,20 +1788,17 @@ absl::Status CompileToLocalExecutable(
         }
       }
     };
-    // We rewrite only dynamic dimensions to the padded compile batch and then
-    // restore the original runtime sizes after compilation. Some scalar
-    // constants are actually runtime batch sizes folded by earlier TF passes,
-    // so rewrite only those that match the detected dynamic runtime value.
-    // Scalar constants are deep-copied before rewrite so the change stays
-    // local to norm_args and does not require restoration.
+    // Build a canonical padded compilation query before entering the ordinary
+    // compilation cache. Runtime inputs remain unchanged; norm_args is used for
+    // both the cache signature and compilation. Some scalar constants are
+    // runtime batch sizes folded by earlier TF passes, so rewrite only those
+    // that match the detected dynamic runtime value.
     if (filled_batch) {
       for (int i = 0; i < norm_args.size(); ++i) {
         TensorShape& shp = std::get<TensorShape>(norm_args[i].shape);
         for (int j = 0; j < shp.get_expressions().size(); ++j) {
           auto e = shp.get_expression(j);
           if (e && e->is_dynamic()) {
-            int64_t old = shp.dim_size(j);
-            old_vars.push_back({i, j, old});
             xla::DExpr padded_expr = xla::DExpr::Const(filled_batch);
             const std::set<int> ids = e->get_all_ids();
             if (ids.size() != 1) {
@@ -1848,14 +1839,6 @@ absl::Status CompileToLocalExecutable(
     auto status = xla_device_compiler->CompileIfNeeded(
         options, function, norm_args, compile_options, compile_mode, profiler,
         compilation_result, executable);
-    // Restore the original runtime dimensions after compilation.
-    if (filled_batch) {
-      for (const auto& old_var : old_vars) {
-        TensorShape& shp =
-            std::get<TensorShape>(norm_args[old_var.arg_index].shape);
-        shp.set_dim(old_var.dyn_dim, old_var.old_value);
-      }
-    }
     return status;
   } else {
     return xla_device_compiler->CompileIfNeeded(

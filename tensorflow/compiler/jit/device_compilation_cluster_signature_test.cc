@@ -19,6 +19,7 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/compiler/jit/flags.h"
+#include "tensorflow/compiler/jit/xla_batch_matcher.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "xla/client/client_library.h"
 #include "tensorflow/core/platform/test.h"
@@ -92,6 +93,32 @@ TEST(DeviceCompilationClusterSignatureTest, SignatureUniqueness) {
   EXPECT_NE(s1.HumanString(), s2.HumanString());
   EXPECT_NE(SignatureHash()(s1), SignatureHash()(s2));
   EXPECT_FALSE(s1 == s2);
+}
+
+TEST(DeviceCompilationClusterSignatureTest,
+     CanonicalPaddedShapesUseOrdinarySignature) {
+  NameAttrList fn;
+  fn.set_name("afunction");
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_FLOAT;
+
+  auto build_padded_signature = [&](int64_t runtime_size) {
+    args[0].shape =
+        TensorShape({GetAlignedPowerOfTwoBatch(runtime_size, 1), 24});
+    return DeviceCompilationClusterSignature::Build(fn, args);
+  };
+
+  TF_ASSERT_OK_AND_ASSIGN(DeviceCompilationClusterSignature padded_5,
+                          build_padded_signature(5));
+  TF_ASSERT_OK_AND_ASSIGN(DeviceCompilationClusterSignature padded_7,
+                          build_padded_signature(7));
+  TF_ASSERT_OK_AND_ASSIGN(DeviceCompilationClusterSignature padded_9,
+                          build_padded_signature(9));
+
+  EXPECT_EQ(padded_5, padded_7);
+  EXPECT_EQ(SignatureHash()(padded_5), SignatureHash()(padded_7));
+  EXPECT_FALSE(padded_5 == padded_9);
 }
 
 void BM_BuildSignature(::testing::benchmark::State& state) {

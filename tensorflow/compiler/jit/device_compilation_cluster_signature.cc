@@ -23,23 +23,14 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 using Signature = DeviceCompilationClusterSignature;
-using ConstantTensor = Signature::ConstantTensor;
 using TensorTypeAndShape = Signature::TensorTypeAndShape;
 
 // Functor that converts a Signature's arg to a human readable string.
 struct SignatureHumanStringAppender {
   explicit SignatureHumanStringAppender(std::string* dest) : dest(dest) {}
   std::string* dest;
-  void operator()(const ConstantTensor& arg) {
-    absl::StrAppend(dest, "; ", arg.value.DebugString());
-    if (!arg.contents.empty()) {
-      absl::StrAppend(dest, " contents=[");
-      for (int i = 0; i < arg.contents.size(); ++i) {
-        if (i > 0) absl::StrAppend(dest, ",");
-        absl::StrAppend(dest, arg.contents[i].DebugString());
-      }
-      absl::StrAppend(dest, "]");
-    }
+  void operator()(const Tensor& arg) {
+    absl::StrAppend(dest, "; ", arg.DebugString());
   }
   void operator()(const TensorTypeAndShape& arg) {
     absl::StrAppend(dest, ",", DataTypeString(arg.first));
@@ -50,29 +41,18 @@ struct SignatureHumanStringAppender {
 // Functor that compares the arg values of two different signatures. Returns
 // true when the args are not equal.
 struct SignatureNotEqual {
-  bool operator()(const ConstantTensor& arg, const ConstantTensor& other) {
-    if (arg.value.dtype() != other.value.dtype() ||
-        arg.value.shape() != other.value.shape() ||
-        arg.value.tensor_data() != other.value.tensor_data() ||
-        arg.contents.size() != other.contents.size()) {
-      return true;
-    }
-    for (int i = 0; i < arg.contents.size(); ++i) {
-      if (arg.contents[i].SerializeAsString() !=
-          other.contents[i].SerializeAsString()) {
-        return true;
-      }
-    }
-    return false;
+  bool operator()(const Tensor& arg, const Tensor& other) {
+    return arg.dtype() != other.dtype() || arg.shape() != other.shape() ||
+           arg.tensor_data() != other.tensor_data();
   }
   bool operator()(const TensorTypeAndShape& arg,
                   const TensorTypeAndShape& other) {
     return arg.first != other.first || arg.second != other.second;
   }
-  bool operator()(const ConstantTensor& arg, const TensorTypeAndShape& other) {
+  bool operator()(const Tensor& arg, const TensorTypeAndShape& other) {
     return true;
   }
-  bool operator()(const TensorTypeAndShape& arg, const ConstantTensor& other) {
+  bool operator()(const TensorTypeAndShape& arg, const Tensor& other) {
     return true;
   }
 };
@@ -82,16 +62,12 @@ struct SignatureNotEqual {
 struct SignatureHashCombiner {
   explicit SignatureHashCombiner(const uint64 h) : h(h) {}
   uint64 h;
-  uint64 operator()(const ConstantTensor& arg) {
-    h = Hash64Combine(h, std::hash<int>()(static_cast<int>(arg.value.dtype())));
+  uint64 operator()(const Tensor& arg) {
+    h = Hash64Combine(h, std::hash<int>()(static_cast<int>(arg.dtype())));
     h = Hash64Combine(
-        h, Hash64(arg.value.tensor_data().data(), arg.value.tensor_data().size()));
-    for (int dim = 0; dim < arg.value.dims(); ++dim) {
-      h = Hash64Combine(h, std::hash<int>()(arg.value.dim_size(dim)));
-    }
-    for (const xla::ExpressionProto& expr : arg.contents) {
-      std::string serialized = expr.SerializeAsString();
-      h = Hash64Combine(h, Hash64(serialized.data(), serialized.size()));
+        h, Hash64(arg.tensor_data().data(), arg.tensor_data().size()));
+    for (int dim = 0; dim < arg.dims(); ++dim) {
+      h = Hash64Combine(h, std::hash<int>()(arg.dim_size(dim)));
     }
     return h;
   }
@@ -145,8 +121,7 @@ absl::StatusOr<Signature> Signature::Build(
     switch (arg.kind) {
       case XlaCompiler::Argument::kConstant:
       case XlaCompiler::Argument::kConstantResource:
-        signature.args.push_back(
-            ConstantTensor{arg.constant_value, arg.constant_value_expressions});
+        signature.args.push_back(arg.constant_value);
         break;
       case XlaCompiler::Argument::kParameter:
       case XlaCompiler::Argument::kResource:

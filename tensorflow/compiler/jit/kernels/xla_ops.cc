@@ -388,102 +388,336 @@ GetXlaCompilerArgsAndSnapshotVariables(
 }
 
 
-std::unique_ptr<DimExpr> ExprFromProto(const ExpressionProto& proto) {
+xla::DExpr DExprFromProto(const ExpressionProto& proto) {
   switch (proto.node_type_case()) {
     case ExpressionProto::kConstantValue:
-      return DimExpr::Cons(proto.constant_value());
+      return xla::DExpr::Const(proto.constant_value());
     case ExpressionProto::kVariableId:
-      return DimExpr::Var(proto.variable_id());
-    case ExpressionProto::kAddNode: {
-      auto lhs = ExprFromProto(proto.add_node().lhs());
-      auto rhs = ExprFromProto(proto.add_node().rhs());
-      // Note: These are owning pointers, but ExprAdd takes raw pointers.
-      // The caller must manage lifetime appropriately.
-      return std::make_unique<ExprAdd>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kSubNode: {
-      auto lhs = ExprFromProto(proto.sub_node().lhs());
-      auto rhs = ExprFromProto(proto.sub_node().rhs());
-      return std::make_unique<ExprSub>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kMulNode: {
-      auto lhs = ExprFromProto(proto.mul_node().lhs());
-      auto rhs = ExprFromProto(proto.mul_node().rhs());
-      return std::make_unique<ExprMul>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kDivNode: {
-      auto lhs = ExprFromProto(proto.div_node().lhs());
-      auto rhs = ExprFromProto(proto.div_node().rhs());
-      return std::make_unique<ExprDiv>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kMaxNode: {
-      auto lhs = ExprFromProto(proto.max_node().lhs());
-      auto rhs = ExprFromProto(proto.max_node().rhs());
-      return std::make_unique<ExprMax>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kGtNode: {
-      auto lhs = ExprFromProto(proto.gt_node().lhs());
-      auto rhs = ExprFromProto(proto.gt_node().rhs());
-      return std::make_unique<ExprGt>(lhs.release(), rhs.release());
-    }
-    case ExpressionProto::kSelectNode: {
-      auto pred = ExprFromProto(proto.select_node().pred());
-      auto on_true = ExprFromProto(proto.select_node().on_true());
-      auto on_false = ExprFromProto(proto.select_node().on_false());
-      return std::make_unique<ExprSelect>(pred.release(), on_true.release(),
-                                          on_false.release());
-    }
+      return xla::DExpr::Var(proto.variable_id());
+    case ExpressionProto::kAddNode:
+      return DExprFromProto(proto.add_node().lhs()) +
+             DExprFromProto(proto.add_node().rhs());
+    case ExpressionProto::kSubNode:
+      return DExprFromProto(proto.sub_node().lhs()) -
+             DExprFromProto(proto.sub_node().rhs());
+    case ExpressionProto::kMulNode:
+      return DExprFromProto(proto.mul_node().lhs()) *
+             DExprFromProto(proto.mul_node().rhs());
+    case ExpressionProto::kDivNode:
+      return DExprFromProto(proto.div_node().lhs()) /
+             DExprFromProto(proto.div_node().rhs());
+    case ExpressionProto::kMaxNode:
+      return xla::DExpr::Max(DExprFromProto(proto.max_node().lhs()),
+                             DExprFromProto(proto.max_node().rhs()));
+    case ExpressionProto::kGtNode:
+      return xla::DExpr::Gt(DExprFromProto(proto.gt_node().lhs()),
+                            DExprFromProto(proto.gt_node().rhs()));
+    case ExpressionProto::kSelectNode:
+      return xla::DExpr::Select(
+          DExprFromProto(proto.select_node().pred()),
+          DExprFromProto(proto.select_node().on_true()),
+          DExprFromProto(proto.select_node().on_false()));
     case ExpressionProto::NODE_TYPE_NOT_SET:
     default:
-      return nullptr;
+      return xla::DExpr::Unknown();
   }
 }
 
-static xla::DExpr DimExprToDExpr(const DimExpr* e) {
-  switch (e->kind()) {
-    case DimExpr::Kind::kConstant: {
-      auto* ac = static_cast<const Constant*>(e);
-      return xla::DExpr::Const(ac->value());
+absl::StatusOr<std::vector<XlaCompiler::Argument>>
+BuildPaddedCompilationArguments(
+    const XlaCompiler::Options& options, const NameAttrList& function,
+    const std::vector<XlaCompiler::Argument>& args,
+    XlaBatchMatcher* xla_batch_matcher) {
+  // Attach dynamic expressions to a local copy of the arguments, recover the
+  // runtime value of the root variable, and replace it with the selected
+  // compile-time padding bucket.
+  std::vector<XlaCompiler::Argument> padded_args(args.begin(), args.end());
+  int64_t filled_batch = 0;
+  bool saw_dynamic_dim_value = false;
+  // Only one root dynamic dimension is supported.
+  bool has_multiple_dynamic_dim_values = false;
+  int64_t dynamic_dim_value = 0;
+  std::optional<xla::DExpr> dynamic_dim_expr;
+  std::optional<xla::DExpr> shared_dynamic_subexpression;
+  std::vector<int> dynamic_argument_indices;
+
+  auto normalize_dynamic_expression = [&](xla::DExpr expression) {
+    if (!expression || !expression->is_dynamic()) {
+      return expression;
     }
-    case DimExpr::Kind::kVariable: {
-      return xla::DExpr::Var(1);
+    if (!shared_dynamic_subexpression.has_value()) {
+      shared_dynamic_subexpression =
+          expression.find_smallest_subexpression_covering_all_variables();
     }
-    case DimExpr::Kind::kAdd: {
-      auto* ee = static_cast<const ExprAdd*>(e);
-      return DimExprToDExpr(ee->lhs()) + DimExprToDExpr(ee->rhs());
+    return expression
+        .replace_subexpression(*shared_dynamic_subexpression,
+                               xla::DExpr::Var(1))
+        .simplify();
+  };
+
+  auto maybe_attach_shape_contents_from_attrs =
+      [&](int arg_index, const auto& attr_map) {
+        auto& arg = padded_args[arg_index];
+        if (arg.kind != XlaCompiler::Argument::kConstant) {
+          return;
+        }
+
+        auto inferred_shape_it = attr_map.find("user_inferred_shape");
+        auto inferred_contents_it =
+            attr_map.find(kUserInferredValueContentsAttrName);
+        bool has_dynamic = false;
+        auto has_dynamic_it = attr_map.find("has_dynamic");
+        if (has_dynamic_it != attr_map.end()) {
+          has_dynamic = has_dynamic_it->second.b();
+        }
+
+        if (inferred_contents_it == attr_map.end() &&
+            (!has_dynamic || inferred_shape_it == attr_map.end())) {
+          return;
+        }
+
+        TensorShapeProto inferred_shape_proto;
+        if (inferred_contents_it != attr_map.end()) {
+          if (!inferred_shape_proto.ParseFromString(
+                  inferred_contents_it->second.s())) {
+            return;
+          }
+        } else {
+          inferred_shape_proto = inferred_shape_it->second.shape();
+        }
+
+        TensorShape inferred_shape(inferred_shape_proto);
+        if (!((TensorShapeUtils::IsVector(arg.constant_value.shape()) &&
+               arg.constant_value.NumElements() == inferred_shape.dims()) ||
+              (TensorShapeUtils::IsScalar(arg.constant_value.shape()) &&
+               inferred_shape.dims() == 1))) {
+          return;
+        }
+
+        arg.constant_value_expressions.clear();
+        arg.constant_value_expressions.reserve(inferred_shape.dims());
+        for (int64_t i = 0; i < inferred_shape.dims(); ++i) {
+          xla::ExpressionProto expr;
+          const xla::DExpr& dim_expr = inferred_shape.get_expression(i);
+          if (dim_expr && dim_expr->is_dynamic()) {
+            normalize_dynamic_expression(dim_expr)->to_proto(&expr);
+          } else if (arg.constant_value.dtype() == DT_INT32) {
+            expr.set_constant_value(arg.constant_value.flat<int32>()(i));
+          } else if (arg.constant_value.dtype() == DT_INT64) {
+            expr.set_constant_value(arg.constant_value.flat<int64_t>()(i));
+          } else {
+            arg.constant_value_expressions.clear();
+            return;
+          }
+          arg.constant_value_expressions.push_back(std::move(expr));
+        }
+      };
+
+  auto record_dynamic_dim_value = [&](int64_t dim_size, xla::DExpr expr) {
+    if (!saw_dynamic_dim_value) {
+      saw_dynamic_dim_value = true;
+      dynamic_dim_value = dim_size;
+      dynamic_dim_expr = std::move(expr);
+      return;
     }
-    case DimExpr::Kind::kSub: {
-      auto* ee = static_cast<const ExprSub*>(e);
-      return DimExprToDExpr(ee->lhs()) - DimExprToDExpr(ee->rhs());
+    if (dynamic_dim_value != dim_size) {
+      has_multiple_dynamic_dim_values = true;
     }
-    case DimExpr::Kind::kMul: {
-      auto* ee = static_cast<const ExprMul*>(e);
-      return DimExprToDExpr(ee->lhs()) * DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kDiv: {
-      auto* ee = static_cast<const ExprDiv*>(e);
-      return DimExprToDExpr(ee->lhs()) / DimExprToDExpr(ee->rhs());
-    }
-    case DimExpr::Kind::kMax: {
-      auto* ee = static_cast<const ExprMax*>(e);
-      return xla::DExpr::Max(DimExprToDExpr(ee->lhs()),
-                             DimExprToDExpr(ee->rhs()));
-    }
-    case DimExpr::Kind::kGt: {
-      auto* ee = static_cast<const ExprGt*>(e);
-      return xla::DExpr::Gt(DimExprToDExpr(ee->lhs()),
-                            DimExprToDExpr(ee->rhs()));
-    }
-    case DimExpr::Kind::kSelect: {
-      auto* ee = static_cast<const ExprSelect*>(e);
-      return xla::DExpr::Select(DimExprToDExpr(ee->pred()),
-                                DimExprToDExpr(ee->on_true()),
-                                DimExprToDExpr(ee->on_false()));
+  };
+
+  if (options.flib_def != nullptr) {
+    const FunctionDef* fdef = options.flib_def->Find(function.name());
+    if (fdef != nullptr) {
+      for (const auto& kv : fdef->arg_attr()) {
+        int arg_index = kv.first;
+        const auto& attr_map = kv.second.attr();
+        const std::string& node_name =
+            fdef->signature().input_arg(arg_index).name();
+
+        auto shape_derived_attr = attr_map.find(kXlaShapeDerivedAttrName);
+        if (shape_derived_attr != attr_map.end()) {
+          VLOG(1) << "XlaCompileOp retrieved shape-derived marker for arg "
+                  << arg_index << " node=" << node_name;
+        }
+        maybe_attach_shape_contents_from_attrs(arg_index, attr_map);
+
+        auto dyn_dim_attr = attr_map.find("_dynamic_dim");
+        if (dyn_dim_attr != attr_map.end()) {
+          TensorShape& shape =
+              std::get<TensorShape>(padded_args[arg_index].shape);
+          int64_t dim = dyn_dim_attr->second.i();
+          record_dynamic_dim_value(shape.dim_size(dim), xla::DExpr::Var(1));
+          if (!filled_batch && xla_batch_matcher) {
+            filled_batch = xla_batch_matcher->get_xla_compile_batch(
+                shape.dim_size(dim));
+          }
+
+          std::vector<xla::DExpr> dynamic_expressions;
+          dynamic_expressions.reserve(shape.dims());
+          for (int64_t size : shape.dim_sizes()) {
+            dynamic_expressions.push_back(xla::DExpr::Const(size));
+          }
+          dynamic_expressions[dim] = xla::DExpr::Var(1);
+          shape.set_expressions(std::move(dynamic_expressions));
+          dynamic_argument_indices.push_back(arg_index);
+          continue;
+        }
+
+        auto inferred_shapes_it =
+            attr_map.find(kXlaInferredOutputShapesAttrName);
+        if (inferred_shapes_it == attr_map.end()) {
+          continue;
+        }
+
+        const TensorShapeProto& shape_proto =
+            inferred_shapes_it->second.list().shape(0);
+        const auto& expressions = shape_proto.expressions();
+        TensorShape& shape =
+            std::get<TensorShape>(padded_args[arg_index].shape);
+
+        std::vector<xla::DExpr> dynamic_expressions;
+        dynamic_expressions.reserve(shape.dims());
+        for (int64_t size : shape.dim_sizes()) {
+          dynamic_expressions.push_back(xla::DExpr::Const(size));
+        }
+        bool has_dynamic_expression = false;
+        for (int dim = 0; dim < expressions.size(); ++dim) {
+          xla::DExpr expr =
+              normalize_dynamic_expression(DExprFromProto(expressions[dim]));
+          if (!expr->is_dynamic()) {
+            continue;
+          }
+
+          has_dynamic_expression = true;
+          dynamic_expressions[dim] = expr;
+          if (!filled_batch && xla_batch_matcher) {
+            int64_t variable_value;
+            xla::DExpr root_expression;
+            if (expr->kind() == xla::DExpr::Kind::kVariable) {
+              variable_value = shape.dim_size(dim);
+              root_expression = expr;
+            } else {
+              root_expression = expr.simplify();
+              std::optional<int64_t> solved_value =
+                  root_expression->solve(shape.dim_size(dim));
+              if (!solved_value.has_value()) {
+                LOG(WARNING)
+                    << "Failed to solve dynamic dimension for argument "
+                    << arg_index << " dim " << dim << " with size "
+                    << shape.dim_size(dim)
+                    << "; falling back to original dimension size.";
+                variable_value = shape.dim_size(dim);
+              } else {
+                variable_value = *solved_value;
+                VLOG(1) << "Solved dynamic dimension from "
+                        << shape.dim_size(dim) << " to " << variable_value;
+              }
+            }
+            record_dynamic_dim_value(variable_value,
+                                     std::move(root_expression));
+            filled_batch =
+                xla_batch_matcher->get_xla_compile_batch(variable_value);
+          }
+        }
+        if (has_dynamic_expression) {
+          shape.set_expressions(std::move(dynamic_expressions));
+          dynamic_argument_indices.push_back(arg_index);
+        }
+      }
     }
   }
-  return xla::DExpr::Unknown();
-}
 
+  auto maybe_rewrite_constant = [&](int arg_index) {
+    if (!saw_dynamic_dim_value || has_multiple_dynamic_dim_values) {
+      return;
+    }
+
+    auto& arg = padded_args[arg_index];
+    if (arg.kind != XlaCompiler::Argument::kConstant) {
+      return;
+    }
+
+    const bool is_scalar =
+        TensorShapeUtils::IsScalar(arg.constant_value.shape());
+    const bool is_vector =
+        TensorShapeUtils::IsVector(arg.constant_value.shape()) &&
+        arg.constant_value.NumElements() > 0;
+    if (!is_scalar && !is_vector) {
+      return;
+    }
+
+    auto rewrite_typed_constant = [&]<typename T>() {
+      auto flat = arg.constant_value.flat<T>();
+      int rewrite_index = -1;
+      // Rewrite the first shape-like value matching the observed dynamic size.
+      for (int i = 0; i < arg.constant_value.NumElements(); ++i) {
+        if (flat(i) == dynamic_dim_value) {
+          rewrite_index = i;
+          break;
+        }
+      }
+      if (rewrite_index < 0) {
+        return;
+      }
+
+      arg.constant_value = tensor::DeepCopy(arg.constant_value);
+      arg.constant_value.flat<T>()(rewrite_index) = filled_batch;
+      arg.constant_value_expressions.clear();
+      arg.constant_value_expressions.reserve(arg.constant_value.NumElements());
+      for (int64_t i = 0; i < arg.constant_value.NumElements(); ++i) {
+        xla::ExpressionProto expr;
+        if (i == rewrite_index) {
+          dynamic_dim_expr->to_proto(&expr);
+        } else {
+          expr.set_constant_value(arg.constant_value.flat<T>()(i));
+        }
+        arg.constant_value_expressions.push_back(std::move(expr));
+      }
+      VLOG(1) << "XlaCompileOp constant arg " << arg_index << " index "
+              << rewrite_index
+              << " matches dynamic_dim_value=" << dynamic_dim_value;
+    };
+
+    if (arg.constant_value.dtype() == DT_INT32) {
+      rewrite_typed_constant.template operator()<int32>();
+    } else if (arg.constant_value.dtype() == DT_INT64) {
+      rewrite_typed_constant.template operator()<int64_t>();
+    }
+  };
+
+  if (!filled_batch) {
+    return padded_args;
+  }
+
+  for (int arg_index : dynamic_argument_indices) {
+    TensorShape& shape = std::get<TensorShape>(padded_args[arg_index].shape);
+    for (int dim = 0; dim < shape.get_expressions().size(); ++dim) {
+      xla::DExpr expr = shape.get_expression(dim);
+      if (!expr || !expr->is_dynamic()) {
+        continue;
+      }
+
+      std::optional<int64_t> evaluated = expr.evaluate(1, filled_batch);
+      if (!evaluated.has_value()) {
+        return errors::InvalidArgument(
+            "Dynamic shape padding evaluation did not produce an integer "
+            "constant for argument ",
+            arg_index, ", dimension ", dim, ": ", DExprToString(expr));
+      }
+      int64_t padded_size = *evaluated;
+      if (padded_size >= 0) {
+        shape.set_dim(dim, padded_size);
+        // set_dim removes the expression, which the compiler still needs.
+        shape.set_expression(dim, expr);
+      }
+    }
+  }
+  for (int arg_index = 0; arg_index < padded_args.size(); ++arg_index) {
+    maybe_rewrite_constant(arg_index);
+  }
+
+  return padded_args;
+}
 
 absl::Status CompileToLocalExecutable(
     OpKernelContext* ctx, const NameAttrList& function, bool has_ref_vars,
@@ -535,305 +769,18 @@ absl::Status CompileToLocalExecutable(
 
   MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
   if (flags->tf_xla_enable_dynamic_sizes) {
-    // Rewriting the argument with expressions if they have dynamic
-    // dimension, detecting dynamic dimension via either _dynamic_dim or the
-    // inferred-output-shapes attr attached during encapsulation.
-    std::vector<XlaCompiler::Argument> norm_args(args.begin(), args.end());
-    int64_t filled_batch = 0;
-    bool saw_dynamic_dim_value = false;
-    // Only supporting one dynamic dimension. 
-    bool has_multiple_dynamic_dim_values = false;
-    int64_t dynamic_dim_value = 0;
-    XlaBatchMatcher* xla_batch_matcher =
-        xla_device_compiler->xla_batch_matcher();
-    std::optional<xla::DExpr> dynamic_dim_expr;
-    auto maybe_attach_shape_contents_from_attrs =
-        [&](int arg_index, const auto& attr_map,
-            const std::string& node_name) {
-          auto& arg = norm_args[arg_index];
-          if (arg.kind != XlaCompiler::Argument::kConstant) {
-            return;
-          }
-
-          auto inferred_shape_it = attr_map.find("user_inferred_shape");
-          auto inferred_contents_it =
-              attr_map.find(kUserInferredValueContentsAttrName);
-          bool has_dynamic = false;
-          auto has_dynamic_it = attr_map.find("has_dynamic");
-          if (has_dynamic_it != attr_map.end()) {
-            has_dynamic = has_dynamic_it->second.b();
-          }
-
-          if (inferred_contents_it == attr_map.end() &&
-              (!has_dynamic || inferred_shape_it == attr_map.end())) {
-            return;
-          }
-
-          TensorShapeProto inferred_shape_proto;
-          if (inferred_contents_it != attr_map.end()) {
-            if (!inferred_shape_proto.ParseFromString(
-                    inferred_contents_it->second.s())) {
-              return;
-            }
-          } else {
-            inferred_shape_proto = inferred_shape_it->second.shape();
-          }
-
-          TensorShape inferred_shape(inferred_shape_proto);
-          if (!((TensorShapeUtils::IsVector(arg.constant_value.shape()) &&
-                 arg.constant_value.NumElements() == inferred_shape.dims()) ||
-                (TensorShapeUtils::IsScalar(arg.constant_value.shape()) &&
-                 inferred_shape.dims() == 1))) {
-            return;
-          }
-
-          arg.constant_value_expressions.clear();
-          arg.constant_value_expressions.reserve(inferred_shape.dims());
-          for (int64_t i = 0; i < inferred_shape.dims(); ++i) {
-            xla::ExpressionProto expr;
-            const xla::DExpr& dim_expr = inferred_shape.get_expression(i);
-            if (dim_expr && dim_expr->is_dynamic()) {
-              dim_expr->to_proto(&expr);
-            } else if (arg.constant_value.dtype() == DT_INT32) {
-              expr.set_constant_value(arg.constant_value.flat<int32>()(i));
-            } else if (arg.constant_value.dtype() == DT_INT64) {
-              expr.set_constant_value(arg.constant_value.flat<int64_t>()(i));
-            } else {
-              arg.constant_value_expressions.clear();
-              return;
-            }
-            arg.constant_value_expressions.push_back(std::move(expr));
-          }
-        };
-    auto record_dynamic_dim_value = [&](int64_t dim_size, xla::DExpr expr) {
-      if (!saw_dynamic_dim_value) {
-        saw_dynamic_dim_value = true;
-        dynamic_dim_value = dim_size;
-        dynamic_dim_expr = std::move(expr);
-        return;
-      }
-      if (dynamic_dim_value != dim_size) {
-        has_multiple_dynamic_dim_values = true;
-      }
-    };
-    if (options.flib_def != nullptr) {
-      const FunctionDef* fdef = options.flib_def->Find(function.name());
-      if (fdef != nullptr) {
-        for (const auto& kv : fdef->arg_attr()) {
-          int arg_index = kv.first;
-          const auto& attr_map = kv.second.attr();
-          const std::string& node_name =
-              fdef->signature().input_arg(arg_index).name();
-
-          auto shape_derived_attr = attr_map.find(kXlaShapeDerivedAttrName);
-          if (shape_derived_attr != attr_map.end()) {
-            VLOG(1) << "XlaCompileOp retrieved shape-derived marker for arg "
-                    << arg_index << " node=" << node_name;
-          }
-          maybe_attach_shape_contents_from_attrs(arg_index, attr_map, node_name);
-
-          // Special case for _dynamic_dim...
-          auto dyn_dim_attr = attr_map.find("_dynamic_dim");
-          if (dyn_dim_attr != attr_map.end()) {
-            TensorShape& shp =
-                std::get<TensorShape>(norm_args[arg_index].shape);
-            const AttrValue& v = dyn_dim_attr->second;
-            int64_t idx = v.i();
-            record_dynamic_dim_value(shp.dim_size(idx), xla::DExpr::Var(1));
-            if (!filled_batch && xla_batch_matcher) {
-              filled_batch =
-                  xla_batch_matcher->get_xla_compile_batch(shp.dim_size(idx));
-            }
-
-            std::vector<xla::DExpr> dyn_exprs;
-            for (int d : shp.dim_sizes()) {
-              dyn_exprs.push_back(xla::DExpr::Const(d));
-            }
-            dyn_exprs[idx] = xla::DExpr::Var(1);
-            shp.set_expressions(std::move(dyn_exprs));
-            continue;
-          }
-          auto it = attr_map.find(kXlaInferredOutputShapesAttrName);
-          if (it == attr_map.end()) continue;
-
-          const TensorShapeProto& proto = it->second.list().shape(0);
-          const auto& exp = proto.expressions();
-          TensorShape& shp = std::get<TensorShape>(norm_args[arg_index].shape);
-
-          if (!filled_batch && xla_batch_matcher) {
-            for (int idx = 0; idx < exp.size(); ++idx) {
-              // Look for dynamic expression. If found then compute padding
-              // value and exit loop.
-              auto e = DimExprToDExpr(ExprFromProto(exp[idx]).get()).simplify();
-              if (e->is_dynamic()) {
-                std::optional<int64_t> solved_value =
-                    e->solve(shp.dim_size(idx));
-                int64_t var_value;
-                if (!solved_value.has_value()) {
-                  LOG(WARNING)
-                      << "Failed to solve dynamic dimension for argument "
-                      << arg_index << " dim " << idx << " with size "
-                      << shp.dim_size(idx)
-                      << "; falling back to original dimension size.";
-                  var_value = shp.dim_size(idx);
-                } else {
-                  var_value = *solved_value;
-                  VLOG(1) << "Solved dynamic dimension from "
-                          << shp.dim_size(idx) << " to " << var_value;
-                }
-                record_dynamic_dim_value(var_value, e);
-                filled_batch =
-                    xla_batch_matcher->get_xla_compile_batch(var_value);
-                break;
-              }
-            }
-          }
-
-          std::vector<xla::DExpr> dyn_exprs;
-          for (int d : shp.dim_sizes()) {
-            dyn_exprs.push_back(xla::DExpr::Const(d));
-          }
-          for (int j = 0; j < exp.size(); ++j) {
-            auto e = DimExprToDExpr(ExprFromProto(exp[j]).get());
-            if (e->is_dynamic()) {
-              dyn_exprs[j] = e;
-            }
-          }
-          shp.set_expressions(std::move(dyn_exprs));
-        }
-      }
-    }
-
-    struct SaveOldVar {
-      int arg_index;
-      int64_t dyn_dim;
-      int64_t old_value;
-    };
-    std::vector<SaveOldVar> old_vars;
-    auto maybe_rewrite_scalar_constant = [&](int arg_index) {
-      if (!saw_dynamic_dim_value || has_multiple_dynamic_dim_values) {
-        return;
-      }
-
-      auto& arg = norm_args[arg_index];
-      if (arg.kind != XlaCompiler::Argument::kConstant) {
-        return;
-      }
-
-      const bool is_scalar = TensorShapeUtils::IsScalar(arg.constant_value.shape());
-      const bool is_vector = TensorShapeUtils::IsVector(arg.constant_value.shape()) &&
-                             arg.constant_value.NumElements() > 0;
-      if (!is_scalar && !is_vector) {
-        return;
-      }
-
-      auto set_constant_contents = [&]<typename T>(int rewrite_index) {
-        arg.constant_value_expressions.clear();
-        const int64_t num_elements = arg.constant_value.NumElements();
-        arg.constant_value_expressions.reserve(num_elements);
-        for (int64_t i = 0; i < num_elements; ++i) {
-          xla::ExpressionProto expr;
-          if (i == rewrite_index) {
-            dynamic_dim_expr->to_proto(&expr);
-          } else {
-            expr.set_constant_value(arg.constant_value.flat<T>()(i));
-          }
-          arg.constant_value_expressions.push_back(std::move(expr));
-        }
-      };
-
-      if (arg.constant_value.dtype() == DT_INT32) {
-        auto flat = arg.constant_value.flat<int32>();
-        int rewrite_index = -1;
-        // Heuristic: rewrite only scalar constants or shape-like int vectors.
-        // In practice we expect at most one entry to match the observed
-        // runtime batch size, so rewrite the first matching entry.
-        for (int i = 0; i < arg.constant_value.NumElements(); ++i) {
-          if (flat(i) == dynamic_dim_value) {
-            rewrite_index = i;
-            break;
-          }
-        }
-        if (rewrite_index >= 0) {
-          arg.constant_value = tensor::DeepCopy(arg.constant_value);
-          auto mutable_flat = arg.constant_value.flat<int32>();
-          VLOG(1) << "XlaCompileOp int32 constant arg " << arg_index
-                  << " index " << rewrite_index
-                  << " matches dynamic_dim_value=" << dynamic_dim_value;
-          mutable_flat(rewrite_index) = filled_batch;
-          set_constant_contents.template operator()<int32>(rewrite_index);
-        }
-      } else if (arg.constant_value.dtype() == DT_INT64) {
-        auto flat = arg.constant_value.flat<int64_t>();
-        int rewrite_index = -1;
-        // Same heuristic for int64 scalar constants or shape-like vectors.
-        for (int i = 0; i < arg.constant_value.NumElements(); ++i) {
-          if (flat(i) == dynamic_dim_value) {
-            rewrite_index = i;
-            break;
-          }
-        }
-        if (rewrite_index >= 0) {
-          arg.constant_value = tensor::DeepCopy(arg.constant_value);
-          auto mutable_flat = arg.constant_value.flat<int64_t>();
-          VLOG(1) << "XlaCompileOp int64 constant arg " << arg_index
-                  << " index " << rewrite_index
-                  << " matches dynamic_dim_value=" << dynamic_dim_value;
-          mutable_flat(rewrite_index) = filled_batch;
-          set_constant_contents.template operator()<int64_t>(rewrite_index);
-        }
-      }
-    };
-    // We rewrite only dynamic dimensions to the padded compile batch and then
-    // restore the original runtime sizes after compilation. Some scalar
-    // constants are actually runtime batch sizes folded by earlier TF passes,
-    // so rewrite only those that match the detected dynamic runtime value.
-    // Scalar constants are deep-copied before rewrite so the change stays
-    // local to norm_args and does not require restoration.
-    if (filled_batch) {
-      for (int i = 0; i < norm_args.size(); ++i) {
-        TensorShape& shp = std::get<TensorShape>(norm_args[i].shape);
-        for (int j = 0; j < shp.get_expressions().size(); ++j) {
-          auto e = shp.get_expression(j);
-          if (e && e->is_dynamic()) {
-            int64_t old = shp.dim_size(j);
-            old_vars.push_back({i, j, old});
-            xla::DExpr padded_expr = xla::DExpr::Const(filled_batch);
-            xla::DExpr subst_expr = e.substitute(1, padded_expr).simplify();
-            if (!subst_expr->is_constant()) {
-              return errors::InvalidArgument(
-                  "Dynamic shape padding substitution did not produce an "
-                  "integer constant for argument ",
-                  i, ", dimension ", j, ": ", DExprToString(subst_expr));
-            }
-            int64_t new_dim = subst_expr->get_val();
-            if (new_dim >= 0) {
-              shp.set_dim(j, new_dim);
-              // Necessary because set_dim removes the expression:
-              shp.set_expression(j, e);
-            }
-          }
-        }
-        maybe_rewrite_scalar_constant(i);
-      }
-    }
-    auto status = xla_device_compiler->CompileIfNeeded(
-        options, function, norm_args, compile_options, compile_mode, profiler,
-        compilation_result, executable);
-    // Restore the original runtime dimensions after compilation.
-    if (filled_batch) {
-      for (const auto& old_var : old_vars) {
-        TensorShape& shp =
-            std::get<TensorShape>(norm_args[old_var.arg_index].shape);
-        shp.set_dim(old_var.dyn_dim, old_var.old_value);
-      }
-    }
-    return status;
-  } else {
+    TF_ASSIGN_OR_RETURN(
+        std::vector<XlaCompiler::Argument> padded_args,
+        BuildPaddedCompilationArguments(
+            options, function, args, xla_device_compiler->xla_batch_matcher()));
     return xla_device_compiler->CompileIfNeeded(
-        options, function, args, compile_options, compile_mode, profiler,
+        options, function, padded_args, compile_options, compile_mode, profiler,
         compilation_result, executable);
   }
+
+  return xla_device_compiler->CompileIfNeeded(
+      options, function, args, compile_options, compile_mode, profiler,
+      compilation_result, executable);
 }
 
 absl::Status GetUpdatedVariables(

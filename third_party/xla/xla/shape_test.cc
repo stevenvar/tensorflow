@@ -124,6 +124,20 @@ TEST_F(ShapeTest, DExprSimplifyScalesMixedDenominators) {
 TEST_F(ShapeTest, DExprSimplifyCombinesEqualFractions) {
   DExpr expr = (DExpr::Var(1) / 2) + (DExpr::Var(1) / 2);
   EXPECT_EQ("A", DExprToString(expr.simplify()));
+  EXPECT_EQ(7, expr.evaluate(1, 7));
+}
+
+TEST_F(ShapeTest, DExprReplacesSharedVariableSubexpression) {
+  DExpr shared = DExpr::Var(26) + DExpr::Var(27);
+  DExpr expr = shared / 12;
+
+  DExpr core =
+      expr.find_smallest_subexpression_covering_all_variables();
+  DExpr normalized =
+      expr.replace_subexpression(core, DExpr::Var(1)).simplify();
+
+  EXPECT_EQ("(A / 12)", DExprToString(normalized));
+  EXPECT_EQ(2, normalized.evaluate(1, 24));
 }
 
 TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
@@ -137,6 +151,7 @@ TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
   DExpr evaluated = expr.substitute(1, DExpr::Const(7)).simplify();
   EXPECT_EQ(DExpr::Kind::kConstant, evaluated.kind());
   EXPECT_EQ(7, evaluated->get_val());
+  EXPECT_EQ(7, expr.evaluate(1, 7));
 
   ExpressionProto proto;
   expr.to_proto(&proto);
@@ -150,6 +165,8 @@ TEST_F(ShapeTest, DExprSelectUsesDynamicPredicate) {
   EXPECT_EQ("select((A > 0), 7, 11)", DExprToString(expr.simplify()));
   EXPECT_EQ(7, expr.substitute(1, DExpr::Const(2))->s()->get_val());
   EXPECT_EQ(11, expr.substitute(1, DExpr::Const(-2))->s()->get_val());
+  EXPECT_EQ(7, expr.evaluate(1, 2));
+  EXPECT_EQ(11, expr.evaluate(1, -2));
 
   ExpressionProto proto;
   expr.to_proto(&proto);

@@ -23,6 +23,7 @@ limitations under the License.
 #include <ostream>
 #include <numeric>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -37,6 +38,235 @@ Constant* AsConstant(DynExpr* expr) {
   return expr != nullptr && expr->kind() == DExpr::Kind::kConstant
              ? static_cast<Constant*>(expr)
              : nullptr;
+}
+
+struct CoveringSubexpression {
+  std::set<int> ids;
+  int node_count = 1;
+  DynExpr* smallest = nullptr;
+  int smallest_node_count = 0;
+};
+
+CoveringSubexpression FindSmallestCoveringSubexpression(
+    DynExpr* expr, const std::set<int>& target_ids) {
+  CHECK(expr != nullptr);
+  CoveringSubexpression result;
+
+  auto visit_child = [&](DynExpr* child) {
+    CoveringSubexpression child_result =
+        FindSmallestCoveringSubexpression(child, target_ids);
+    result.node_count += child_result.node_count;
+    result.ids.insert(child_result.ids.begin(), child_result.ids.end());
+    if (child_result.smallest != nullptr &&
+        (result.smallest == nullptr ||
+         child_result.smallest_node_count < result.smallest_node_count)) {
+      result.smallest = child_result.smallest;
+      result.smallest_node_count = child_result.smallest_node_count;
+    }
+  };
+
+  switch (expr->kind()) {
+    case DExpr::Kind::kUnknown:
+    case DExpr::Kind::kConstant:
+      break;
+    case DExpr::Kind::kVariable:
+      result.ids.insert(static_cast<const Variable*>(expr)->get_id());
+      break;
+    case DExpr::Kind::kAdd: {
+      const auto* binary = static_cast<const Add*>(expr);
+      visit_child(binary->get_lhs());
+      visit_child(binary->get_rhs());
+      break;
+    }
+    case DExpr::Kind::kSub: {
+      const auto* binary = static_cast<const Sub*>(expr);
+      visit_child(binary->get_lhs());
+      visit_child(binary->get_rhs());
+      break;
+    }
+    case DExpr::Kind::kMul: {
+      const auto* binary = static_cast<const Mul*>(expr);
+      visit_child(binary->get_lhs());
+      visit_child(binary->get_rhs());
+      break;
+    }
+    case DExpr::Kind::kDiv: {
+      const auto* binary = static_cast<const Div*>(expr);
+      visit_child(binary->get_lhs());
+      visit_child(binary->get_rhs());
+      break;
+    }
+    case DExpr::Kind::kMax: {
+      const auto* binary = static_cast<const MaxExpr*>(expr);
+      visit_child(binary->get_lhs());
+      visit_child(binary->get_rhs());
+      break;
+    }
+    case DExpr::Kind::kGt: {
+      const auto* binary = static_cast<const GtExpr*>(expr);
+      visit_child(binary->get_lhs());
+      visit_child(binary->get_rhs());
+      break;
+    }
+    case DExpr::Kind::kSelect: {
+      const auto* select = static_cast<const SelectExpr*>(expr);
+      visit_child(select->get_pred());
+      visit_child(select->get_on_true());
+      visit_child(select->get_on_false());
+      break;
+    }
+  }
+
+  if (result.ids == target_ids &&
+      (result.smallest == nullptr ||
+       result.node_count < result.smallest_node_count)) {
+    result.smallest = expr;
+    result.smallest_node_count = result.node_count;
+  }
+  return result;
+}
+
+std::unique_ptr<DynExpr> ReplaceSubexpression(DynExpr* expr, DynExpr* target,
+                                              DynExpr* replacement) {
+  CHECK(expr != nullptr);
+  CHECK(target != nullptr);
+  CHECK(replacement != nullptr);
+  if (DynExpr::equal(expr, target)) {
+    return replacement->clone();
+  }
+
+  switch (expr->kind()) {
+    case DExpr::Kind::kUnknown:
+    case DExpr::Kind::kConstant:
+    case DExpr::Kind::kVariable:
+      return expr->clone();
+    case DExpr::Kind::kAdd: {
+      const auto* binary = static_cast<const Add*>(expr);
+      return std::make_unique<Add>(
+          ReplaceSubexpression(binary->get_lhs(), target, replacement)
+              .release(),
+          ReplaceSubexpression(binary->get_rhs(), target, replacement)
+              .release());
+    }
+    case DExpr::Kind::kSub: {
+      const auto* binary = static_cast<const Sub*>(expr);
+      return std::make_unique<Sub>(
+          ReplaceSubexpression(binary->get_lhs(), target, replacement)
+              .release(),
+          ReplaceSubexpression(binary->get_rhs(), target, replacement)
+              .release());
+    }
+    case DExpr::Kind::kMul: {
+      const auto* binary = static_cast<const Mul*>(expr);
+      return std::make_unique<Mul>(
+          ReplaceSubexpression(binary->get_lhs(), target, replacement)
+              .release(),
+          ReplaceSubexpression(binary->get_rhs(), target, replacement)
+              .release());
+    }
+    case DExpr::Kind::kDiv: {
+      const auto* binary = static_cast<const Div*>(expr);
+      return std::make_unique<Div>(
+          ReplaceSubexpression(binary->get_lhs(), target, replacement)
+              .release(),
+          ReplaceSubexpression(binary->get_rhs(), target, replacement)
+              .release());
+    }
+    case DExpr::Kind::kMax: {
+      const auto* binary = static_cast<const MaxExpr*>(expr);
+      return std::make_unique<MaxExpr>(
+          ReplaceSubexpression(binary->get_lhs(), target, replacement)
+              .release(),
+          ReplaceSubexpression(binary->get_rhs(), target, replacement)
+              .release());
+    }
+    case DExpr::Kind::kGt: {
+      const auto* binary = static_cast<const GtExpr*>(expr);
+      return std::make_unique<GtExpr>(
+          ReplaceSubexpression(binary->get_lhs(), target, replacement)
+              .release(),
+          ReplaceSubexpression(binary->get_rhs(), target, replacement)
+              .release());
+    }
+    case DExpr::Kind::kSelect: {
+      const auto* select = static_cast<const SelectExpr*>(expr);
+      return std::make_unique<SelectExpr>(
+          ReplaceSubexpression(select->get_pred(), target, replacement)
+              .release(),
+          ReplaceSubexpression(select->get_on_true(), target, replacement)
+              .release(),
+          ReplaceSubexpression(select->get_on_false(), target, replacement)
+              .release());
+    }
+  }
+  return nullptr;
+}
+
+std::optional<int64_t> TryEvaluateExpression(const DynExpr* expr, int id,
+                                             int64_t value) {
+  switch (expr->kind()) {
+    case DExpr::Kind::kUnknown:
+      return std::nullopt;
+    case DExpr::Kind::kConstant:
+      return static_cast<const Constant*>(expr)->get_val();
+    case DExpr::Kind::kVariable:
+      return static_cast<const Variable*>(expr)->get_id() == id
+                 ? std::optional<int64_t>(value)
+                 : std::nullopt;
+    case DExpr::Kind::kAdd: {
+      const auto* add = static_cast<const Add*>(expr);
+      auto lhs = TryEvaluateExpression(add->get_lhs(), id, value);
+      auto rhs = TryEvaluateExpression(add->get_rhs(), id, value);
+      if (!lhs || !rhs) return std::nullopt;
+      return *lhs + *rhs;
+    }
+    case DExpr::Kind::kSub: {
+      const auto* sub = static_cast<const Sub*>(expr);
+      auto lhs = TryEvaluateExpression(sub->get_lhs(), id, value);
+      auto rhs = TryEvaluateExpression(sub->get_rhs(), id, value);
+      if (!lhs || !rhs) return std::nullopt;
+      return *lhs - *rhs;
+    }
+    case DExpr::Kind::kMul: {
+      const auto* mul = static_cast<const Mul*>(expr);
+      auto lhs = TryEvaluateExpression(mul->get_lhs(), id, value);
+      auto rhs = TryEvaluateExpression(mul->get_rhs(), id, value);
+      if (!lhs || !rhs) return std::nullopt;
+      return *lhs * *rhs;
+    }
+    case DExpr::Kind::kDiv: {
+      const auto* div = static_cast<const Div*>(expr);
+      auto lhs = TryEvaluateExpression(div->get_lhs(), id, value);
+      auto rhs = TryEvaluateExpression(div->get_rhs(), id, value);
+      if (!lhs || !rhs || *rhs == 0 || *lhs % *rhs != 0) {
+        return std::nullopt;
+      }
+      return *lhs / *rhs;
+    }
+    case DExpr::Kind::kMax: {
+      const auto* max = static_cast<const MaxExpr*>(expr);
+      auto lhs = TryEvaluateExpression(max->get_lhs(), id, value);
+      auto rhs = TryEvaluateExpression(max->get_rhs(), id, value);
+      if (!lhs || !rhs) return std::nullopt;
+      return *lhs > *rhs ? *lhs : *rhs;
+    }
+    case DExpr::Kind::kGt: {
+      const auto* gt = static_cast<const GtExpr*>(expr);
+      auto lhs = TryEvaluateExpression(gt->get_lhs(), id, value);
+      auto rhs = TryEvaluateExpression(gt->get_rhs(), id, value);
+      if (!lhs || !rhs) return std::nullopt;
+      return static_cast<int64_t>(*lhs > *rhs);
+    }
+    case DExpr::Kind::kSelect: {
+      const auto* select = static_cast<const SelectExpr*>(expr);
+      auto pred = TryEvaluateExpression(select->get_pred(), id, value);
+      if (!pred) return std::nullopt;
+      return TryEvaluateExpression(
+          *pred != 0 ? select->get_on_true() : select->get_on_false(), id,
+          value);
+    }
+  }
+  return std::nullopt;
 }
 
 void NormalizeFraction(int64_t* numerator, int64_t* denominator) {
@@ -468,6 +698,40 @@ DExpr DExpr::Select(const DExpr& pred, const DExpr& on_true,
   return Adopt(new xla::SelectExpr(pred.clone().release(),
                                     on_true.clone().release(),
                                     on_false.clone().release()));
+}
+
+DExpr DExpr::find_smallest_subexpression_covering_all_variables() const {
+  CHECK(expr_ != nullptr);
+  const std::set<int> ids = expr_->get_all_ids();
+  CHECK(!ids.empty());
+  CoveringSubexpression result =
+      FindSmallestCoveringSubexpression(expr_.get(), ids);
+  CHECK(result.smallest != nullptr);
+  return Adopt(result.smallest->clone().release());
+}
+
+DExpr DExpr::replace_subexpression(const DExpr& target,
+                                   const DExpr& replacement) const {
+  if (expr_ == nullptr) {
+    return DExpr();
+  }
+  CHECK(target.expr_ != nullptr);
+  CHECK(replacement.expr_ != nullptr);
+  return DExpr(ReplaceSubexpression(expr_.get(), target.expr_.get(),
+                                    replacement.expr_.get()));
+}
+
+std::optional<int64_t> DExpr::evaluate(int id, int64_t value) const {
+  if (expr_ == nullptr) return std::nullopt;
+  if (auto evaluated = TryEvaluateExpression(expr_.get(), id, value)) {
+    return evaluated;
+  }
+
+  DExpr evaluated = substitute(id, DExpr::Const(value)).simplify();
+  if (!evaluated || evaluated.kind() != DExpr::Kind::kConstant) {
+    return std::nullopt;
+  }
+  return evaluated->get_val();
 }
 
 bool DynExpr::equal(DynExpr* expr1, DynExpr* expr2) {

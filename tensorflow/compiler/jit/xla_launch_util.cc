@@ -460,15 +460,15 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
           has_dynamic = true;
           VLOG(1) << "Current expression is " << expr;
           if (run_options) {
-            xla::DExpr batch_size = xla::DExpr::Const(run_options->batch_size());
-            xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
-            if (!subst_expr->is_constant()) {
+            std::optional<int64_t> dynamic_size =
+                expr.evaluate(1, run_options->batch_size());
+            if (!dynamic_size.has_value()) {
               return absl::InvalidArgumentError(absl::StrCat(
-                  "Runtime shape substitution did not produce an integer "
+                  "Runtime shape evaluation did not produce an integer "
                   "constant for output ",
-                  i, ", dimension ", dim, ": ", DExprToString(subst_expr)));
+                  i, ", dimension ", dim, ": ", DExprToString(expr)));
             }
-            shape.set_dim(dim, subst_expr->get_val());
+            shape.set_dim(dim, *dynamic_size);
           } else {
             // TODO: Fallback to BatchSizeResource for now. Remove it later.
             VLOG(1) << "Warning: Didn't find run_options";
@@ -476,16 +476,15 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
             ScopedStepContainer* step_container = ctx->step_container();
             TF_RETURN_IF_ERROR(step_container->Lookup<BatchSizeResource>(
                           ctx->resource_manager(), BatchSizeResourceName, &bsr));
-            xla::DExpr batch_size = xla::DExpr::Const(bsr->GetBatchSize());
-            // Just substitute Var(1) for now.
-            xla::DExpr subst_expr = expr.substitute(1, batch_size).simplify();
-            if (!subst_expr->is_constant()) {
+            std::optional<int64_t> dynamic_size =
+                expr.evaluate(1, bsr->GetBatchSize());
+            if (!dynamic_size.has_value()) {
               return absl::InvalidArgumentError(absl::StrCat(
-                  "Runtime shape substitution did not produce an integer "
+                  "Runtime shape evaluation did not produce an integer "
                   "constant for output ",
-                  i, ", dimension ", dim, ": ", DExprToString(subst_expr)));
+                  i, ", dimension ", dim, ": ", DExprToString(expr)));
             }
-            shape.set_dim(dim, subst_expr->get_val());
+            shape.set_dim(dim, *dynamic_size);
             bsr->Unref();
           }
         }

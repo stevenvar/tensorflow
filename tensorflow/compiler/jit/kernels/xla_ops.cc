@@ -799,7 +799,16 @@ absl::Status CompileToLocalExecutable(
             int64_t old = shp.dim_size(j);
             old_vars.push_back({i, j, old});
             xla::DExpr padded_expr = xla::DExpr::Const(filled_batch);
-            xla::DExpr subst_expr = e.substitute(1, padded_expr).simplify();
+            const std::set<int> variable_ids = e->get_all_ids();
+            if (variable_ids.size() != 1) {
+              return errors::InvalidArgument(
+                  "Dynamic shape padding expected exactly one variable for "
+                  "argument ",
+                  i, ", dimension ", j, ", but expression ",
+                  DExprToString(e), " contains ", variable_ids.size());
+            }
+            xla::DExpr subst_expr =
+                e.substitute(*variable_ids.begin(), padded_expr).simplify();
             if (!subst_expr->is_constant()) {
               return errors::InvalidArgument(
                   "Dynamic shape padding substitution did not produce an "

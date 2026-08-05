@@ -80,6 +80,15 @@ bool HasDynamicExpressions(const TensorShape& shape) {
   return false;
 }
 
+bool HasDynamicExpressions(const PartialTensorShape& shape) {
+  for (const auto& expr : shape.get_expressions()) {
+    if (expr && expr->is_dynamic()) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool HasDynamicExpressions(const xla::Shape& shape) {
   for (const auto& expr : shape.expressions()) {
     if (expr && expr->is_dynamic()) {
@@ -110,7 +119,7 @@ absl::Status RejectDynamicShapeExpressionsInMlirXlaOpKernel(
       const auto& attr_name = name_attr_pair.first;
       const auto& attr_value = name_attr_pair.second;
       auto maybe_reject_shape = [&](const TensorShapeProto& shape_proto) {
-        const TensorShape shape(shape_proto);
+        const PartialTensorShape shape(shape_proto);
         if (!HasDynamicExpressions(shape)) {
           return absl::OkStatus();
         }

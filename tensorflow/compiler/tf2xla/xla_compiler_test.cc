@@ -400,7 +400,8 @@ TEST_F(XlaCompilerDynamicSizesTest, ReverseSequencePreservesExpressions) {
       std::vector<xla::DExpr>{xla::DExpr::Var(1), xla::DExpr::Var(2)});
   args[1].kind = XlaCompiler::Argument::kParameter;
   args[1].type = DT_INT32;
-  args[1].shape = TensorShape({4});
+  args[1].shape = xla::ShapeUtil::MakeShape(
+      xla::S32, {4}, std::vector<xla::DExpr>{xla::DExpr::Var(1)});
 
   XlaCompiler compiler(DefaultOptions());
   XlaCompiler::CompilationResult result;

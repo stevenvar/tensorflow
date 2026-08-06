@@ -139,6 +139,16 @@ TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
   DExpr clamped = DExpr::Max(DExpr::Var(1), DExpr::Const(0));
   EXPECT_EQ("A", DExprToString(clamped.simplify()));
 
+  DExpr positive_affine =
+      DExpr::Max(2 * DExpr::Var(1) - 1, DExpr::Const(0));
+  EXPECT_EQ("((2 * A) - 1)",
+            DExprToString(positive_affine.simplify()));
+
+  DExpr unbounded_below =
+      DExpr::Max(DExpr::Var(1) - DExpr::Var(2), DExpr::Const(0));
+  EXPECT_EQ("max((A + ((-1) * B)), 0)",
+            DExprToString(unbounded_below.simplify()));
+
   DExpr evaluated = expr.substitute(1, DExpr::Const(7)).simplify();
   EXPECT_EQ(DExpr::Kind::kConstant, evaluated.kind());
   EXPECT_EQ(7, evaluated->get_val());

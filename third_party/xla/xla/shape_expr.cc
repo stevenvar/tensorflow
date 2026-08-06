@@ -218,6 +218,21 @@ std::optional<CanonicalAffineExpr> ToCanonicalAffine(const DynExpr* expr) {
   return std::nullopt;
 }
 
+bool IsNonNegativeForPositiveVariables(const DynExpr* expr) {
+  auto affine = ToCanonicalAffine(expr);
+  if (!affine.has_value()) return false;
+
+  // Dynamic dimension variables are strictly positive. An affine expression
+  // has a finite lower bound only when every variable coefficient is
+  // non-negative; evaluate that bound with each variable set to one.
+  __int128 lower_bound = affine->constant;
+  for (const auto& [_, coefficient] : affine->coefficients) {
+    if (coefficient < 0) return false;
+    lower_bound += coefficient;
+  }
+  return lower_bound >= 0;
+}
+
 std::unique_ptr<DynExpr> BuildScaledVariableTerm(int id, int64_t coefficient) {
   CHECK(coefficient != 0);
   if (coefficient == 1) {
@@ -237,11 +252,14 @@ std::unique_ptr<DynExpr> BuildAffineNumerator(const CanonicalAffineExpr& expr) {
     }
   }
   if (expr.constant != 0 || result == nullptr) {
-    auto constant_term = std::make_unique<Constant>(expr.constant);
     if (result == nullptr) {
-      result = std::move(constant_term);
+      result = std::make_unique<Constant>(expr.constant);
+    } else if (expr.constant > 0) {
+      result = std::make_unique<Add>(result.release(),
+                                     DynExpr::_(expr.constant));
     } else {
-      result = std::make_unique<Add>(result.release(), constant_term.release());
+      result = std::make_unique<Sub>(result.release(),
+                                     DynExpr::_(-expr.constant));
     }
   }
   return result;
@@ -366,11 +384,11 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
             std::max(l->get_val(), r->get_val()));
       }
       if (l && l->get_val() == 0 &&
-          rhs->kind() == DExpr::Kind::kVariable) {
+          IsNonNegativeForPositiveVariables(rhs.get())) {
         return rhs;
       }
       if (r && r->get_val() == 0 &&
-          lhs->kind() == DExpr::Kind::kVariable) {
+          IsNonNegativeForPositiveVariables(lhs.get())) {
         return lhs;
       }
       if (*lhs == *rhs) return lhs;

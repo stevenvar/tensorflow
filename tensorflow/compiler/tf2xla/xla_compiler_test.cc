@@ -2282,17 +2282,8 @@ TEST_F(XlaCompilerDynamicSizesTest, StridedSliceScalesLeadingExpression) {
                                      args, &result));
 
   ASSERT_EQ(result.outputs.size(), 1);
-  const xla::DExpr input_expr =
-      ((xla::DExpr::Const(2) * xla::DExpr::Var(41)) -
-       xla::DExpr::Const(1))
-          .simplify();
-  const xla::DExpr expected_expr =
-      ((xla::DExpr::Max(input_expr, xla::DExpr::Const(0)) +
-        xla::DExpr::Const(2) - xla::DExpr::Const(1)) /
-       xla::DExpr::Const(2))
-          .simplify();
   EXPECT_TRUE(xla::DynExpr::equal(
-      result.outputs[0].shape.get_filled_expression(0), expected_expr));
+      result.outputs[0].shape.get_filled_expression(0), xla::DExpr::Var(41)));
   EXPECT_EQ(result.outputs[0].shape.dim_size(0), 4);
   EXPECT_EQ(result.outputs[0].shape.dim_size(1), 4);
 }

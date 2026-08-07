@@ -865,6 +865,8 @@ bool HasDynamicInputExpression(const Node* node) {
       }
     }
   }
+  return false;
+}
 
 std::string DExprToString(const xla::DExpr& expr) {
   std::ostringstream oss;

@@ -23,8 +23,10 @@ limitations under the License.
 #include <ostream>
 #include <numeric>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "absl/log/check.h"
 #include "xla/printer.h"
@@ -37,6 +39,131 @@ Constant* AsConstant(DynExpr* expr) {
   return expr != nullptr && expr->kind() == DExpr::Kind::kConstant
              ? static_cast<Constant*>(expr)
              : nullptr;
+}
+
+std::vector<DynExpr*> ExpressionChildren(DynExpr* expr) {
+  CHECK(expr != nullptr);
+  switch (expr->kind()) {
+    case DExpr::Kind::kUnknown:
+    case DExpr::Kind::kConstant:
+    case DExpr::Kind::kVariable:
+      return {};
+    case DExpr::Kind::kAdd: {
+      auto* add = static_cast<Add*>(expr);
+      return {add->get_lhs(), add->get_rhs()};
+    }
+    case DExpr::Kind::kSub: {
+      auto* sub = static_cast<Sub*>(expr);
+      return {sub->get_lhs(), sub->get_rhs()};
+    }
+    case DExpr::Kind::kMul: {
+      auto* mul = static_cast<Mul*>(expr);
+      return {mul->get_lhs(), mul->get_rhs()};
+    }
+    case DExpr::Kind::kDiv: {
+      auto* div = static_cast<Div*>(expr);
+      return {div->get_lhs(), div->get_rhs()};
+    }
+    case DExpr::Kind::kMax: {
+      auto* max = static_cast<MaxExpr*>(expr);
+      return {max->get_lhs(), max->get_rhs()};
+    }
+    case DExpr::Kind::kGt: {
+      auto* gt = static_cast<GtExpr*>(expr);
+      return {gt->get_lhs(), gt->get_rhs()};
+    }
+    case DExpr::Kind::kSelect: {
+      auto* select = static_cast<SelectExpr*>(expr);
+      return {select->get_pred(), select->get_on_true(),
+              select->get_on_false()};
+    }
+  }
+  return {};
+}
+
+DynExpr* FindSmallestCoveringSubexpression(DynExpr* expr) {
+  CHECK(expr != nullptr);
+  if (expr->kind() == DExpr::Kind::kVariable) {
+    return expr;
+  }
+
+  DynExpr* common_core = nullptr;
+  for (DynExpr* child : ExpressionChildren(expr)) {
+    DynExpr* child_core = FindSmallestCoveringSubexpression(child);
+    if (child_core == nullptr) {
+      continue;
+    }
+    if (common_core == nullptr) {
+      common_core = child_core;
+    } else if (!DynExpr::equal(common_core, child_core)) {
+      return expr;
+    }
+  }
+  return common_core;
+}
+
+std::unique_ptr<DynExpr> ReplaceSubexpression(DynExpr* expr, DynExpr* target,
+                                              DynExpr* replacement) {
+  CHECK(expr != nullptr);
+  CHECK(target != nullptr);
+  CHECK(replacement != nullptr);
+  if (DynExpr::equal(expr, target)) {
+    return replacement->clone();
+  }
+
+  switch (expr->kind()) {
+    case DExpr::Kind::kUnknown:
+    case DExpr::Kind::kConstant:
+    case DExpr::Kind::kVariable:
+      return expr->clone();
+    case DExpr::Kind::kAdd: {
+      auto* add = static_cast<Add*>(expr);
+      return std::make_unique<Add>(
+          ReplaceSubexpression(add->get_lhs(), target, replacement).release(),
+          ReplaceSubexpression(add->get_rhs(), target, replacement).release());
+    }
+    case DExpr::Kind::kSub: {
+      auto* sub = static_cast<Sub*>(expr);
+      return std::make_unique<Sub>(
+          ReplaceSubexpression(sub->get_lhs(), target, replacement).release(),
+          ReplaceSubexpression(sub->get_rhs(), target, replacement).release());
+    }
+    case DExpr::Kind::kMul: {
+      auto* mul = static_cast<Mul*>(expr);
+      return std::make_unique<Mul>(
+          ReplaceSubexpression(mul->get_lhs(), target, replacement).release(),
+          ReplaceSubexpression(mul->get_rhs(), target, replacement).release());
+    }
+    case DExpr::Kind::kDiv: {
+      auto* div = static_cast<Div*>(expr);
+      return std::make_unique<Div>(
+          ReplaceSubexpression(div->get_lhs(), target, replacement).release(),
+          ReplaceSubexpression(div->get_rhs(), target, replacement).release());
+    }
+    case DExpr::Kind::kMax: {
+      auto* max = static_cast<MaxExpr*>(expr);
+      return std::make_unique<MaxExpr>(
+          ReplaceSubexpression(max->get_lhs(), target, replacement).release(),
+          ReplaceSubexpression(max->get_rhs(), target, replacement).release());
+    }
+    case DExpr::Kind::kGt: {
+      auto* gt = static_cast<GtExpr*>(expr);
+      return std::make_unique<GtExpr>(
+          ReplaceSubexpression(gt->get_lhs(), target, replacement).release(),
+          ReplaceSubexpression(gt->get_rhs(), target, replacement).release());
+    }
+    case DExpr::Kind::kSelect: {
+      auto* select = static_cast<SelectExpr*>(expr);
+      return std::make_unique<SelectExpr>(
+          ReplaceSubexpression(select->get_pred(), target, replacement)
+              .release(),
+          ReplaceSubexpression(select->get_on_true(), target, replacement)
+              .release(),
+          ReplaceSubexpression(select->get_on_false(), target, replacement)
+              .release());
+    }
+  }
+  return expr->clone();
 }
 
 void NormalizeFraction(int64_t* numerator, int64_t* denominator) {
@@ -448,6 +575,24 @@ std::unique_ptr<DynExpr> SimplifyCanonical(const DynExpr* expr) {
 }
 
 }  // namespace
+
+DExpr DExpr::find_smallest_subexpression_covering_all_variables() const {
+  CHECK(expr_ != nullptr);
+  const std::set<int> ids = expr_->get_all_ids();
+  CHECK(!ids.empty());
+  DynExpr* result = FindSmallestCoveringSubexpression(expr_.get());
+  CHECK(result != nullptr);
+  return DExpr::Adopt(result->clone().release());
+}
+
+DExpr DExpr::replace_subexpression(const DExpr& target,
+                                   const DExpr& replacement) const {
+  if (expr_ == nullptr) {
+    return DExpr();
+  }
+  return DExpr(ReplaceSubexpression(expr_.get(), target.get(),
+                                    replacement.get()));
+}
 
 const DExpr& Shape::MissingExpression() {
   static const DExpr missing = DExpr::Unknown(kMissingExpressionSentinel);

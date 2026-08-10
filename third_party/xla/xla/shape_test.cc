@@ -189,6 +189,13 @@ TEST_F(ShapeTest, DExprUnknownPropagatesThroughGtAndSelect) {
   EXPECT_TRUE(select.is_unknown());
 }
 
+TEST_F(ShapeTest, DExprConstantDivisionIsNotDynamic) {
+  const DExpr expr = DExpr::Const(7) / DExpr::Const(3);
+
+  EXPECT_FALSE(expr->is_dynamic());
+  EXPECT_EQ(expr->get_val(), 2);
+}
+
 TEST_F(ShapeTest, DExprFindsSmallestSubexpressionCoveringAllVariables) {
   const DExpr shared_core = DExpr::Var(1) + DExpr::Var(2);
   const DExpr expr = (shared_core + 2) * (shared_core + 3);

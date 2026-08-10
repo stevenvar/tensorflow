@@ -1424,9 +1424,11 @@ class SymbolicShapeRefiner {
     if (node->op() == "_Arg") {
       var_id *= -1;
       // var_id would be minus when it's argument.
-      dim = c->UnknownDimWithExpr(DimExpr::Var(var_id));
+      dim = c->UnknownDimWithExpr(
+          std::make_unique<DimExpr>(DimExpr::Var(var_id)));
     } else {
-      dim = c->UnknownDimWithExpr(DimExpr::Var(var_id));
+      dim = c->UnknownDimWithExpr(
+          std::make_unique<DimExpr>(DimExpr::Var(var_id)));
     }
     VLOG(1) << "[EXPR] GetUnknownOutputDim: node=" << node->name()
             << " out=" << index << " dim=" << dim_id << " -> Var(" << var_id
@@ -2495,7 +2497,7 @@ class SymbolicShapeManager {
           expr = ExprForDim(dim);
         }
         if (expr != nullptr) {
-          expr->ToProto(out_dim->mutable_expr());
+          DimExprToProto(*expr, out_dim->mutable_expr());
           // TODO: Apply simplification?
         }
       }
@@ -2528,7 +2530,7 @@ class SymbolicShapeManager {
   // Get the variable ID from an expression, or -1 if not a variable.
   static int32_t GetVarId(const DimExpr* e) {
     if (!e || e->kind() != DimExpr::Kind::kVariable) return -1;
-    return static_cast<const Variable*>(e)->id();
+    return static_cast<const xla::Variable*>(e->get())->get_id();
   }
 
   static bool IsConst(const DimExpr* e) {
@@ -2542,7 +2544,7 @@ class SymbolicShapeManager {
   static bool IsPlaceHolder(const DimExpr* e) {
     if (!e) return false;
     if (e->kind() != DimExpr::Kind::kVariable) return false;
-    return static_cast<const Variable*>(e)->id() < 0;
+    return static_cast<const xla::Variable*>(e->get())->get_id() < 0;
   }
 
   static bool IsCompound(const DimExpr* e) {
@@ -2601,7 +2603,7 @@ class SymbolicShapeManager {
     if (it != const_exprs_.end()) {
       return it->second.get();
     }
-    auto expr = DimExpr::Cons(value);
+    auto expr = std::make_unique<DimExpr>(DimExpr::Const(value));
     DimExpr* expr_ptr = expr.get();
     const_exprs_.emplace(value, std::move(expr));
     return expr_ptr;

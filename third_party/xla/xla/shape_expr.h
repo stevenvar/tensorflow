@@ -703,6 +703,7 @@ class SelectExpr : public DynExpr {
 
 DynExpr* operator*(DynExpr& lhs, DynExpr& rhs);
 DynExpr* operator*(int64_t k, DynExpr& rhs);
+DynExpr* operator*(DynExpr& lhs, int64_t k);
 DynExpr* operator/(DynExpr& lhs, DynExpr& rhs);
 DynExpr* operator/(DynExpr& lhs, int64_t d);
 DynExpr* operator+(DynExpr& lhs, DynExpr& rhs);
@@ -717,6 +718,9 @@ inline DExpr operator*(const DExpr& lhs, const DExpr& rhs) {
 }
 inline DExpr operator*(int64_t lhs, const DExpr& rhs) {
   return DExpr::Adopt(lhs * *rhs.get());
+}
+inline DExpr operator*(const DExpr& lhs, int64_t rhs) {
+  return DExpr::Adopt(*lhs.get() * rhs);
 }
 inline DExpr operator/(const DExpr& lhs, const DExpr& rhs) {
   return DExpr::Adopt(*lhs.get() / *rhs.get());

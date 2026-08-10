@@ -45,14 +45,13 @@ namespace {
 
 std::string ShapeDimExprDebugString(const TensorShapeProto& shape, int dim) {
   if (shape.dim(dim).has_expr()) {
-    auto expr = DimExpr::FromProto(shape.dim(dim).expr());
-    return expr ? expr->DebugString() : "";
+    return DimExprDebugString(DimExprFromProto(shape.dim(dim).expr()));
   }
   if (dim >= shape.expressions_size()) {
     return "";
   }
-  auto expr = DimExpr::FromProto(shape.expressions(dim));
-  return expr ? expr->DebugString() : "";
+  DimExpr expr = DimExprFromProto(shape.expressions(dim));
+  return expr ? DimExprDebugString(expr) : "";
 }
 
 using shape_inference::InferenceContext;
@@ -2208,10 +2207,9 @@ TEST_F(GraphPropertiesTest, SizeContentsPropagateToFillOutput) {
       properties.GetOutputProperties("filled").at(0).shape();
 
   ASSERT_EQ(1, inferred_fill_shape.dim_size());
-  auto expected = std::make_unique<ExprMul>(
-      DimExpr::FromProto(inferred_input_shape.dim(0).expr()).release(),
-      new Constant(24));
-  EXPECT_EQ(expected->DebugString(),
+  DimExpr expected =
+      DimExprFromProto(inferred_input_shape.dim(0).expr()) * 24;
+  EXPECT_EQ(DimExprDebugString(expected),
             ShapeDimExprDebugString(inferred_fill_shape, 0));
 }
 
@@ -2243,12 +2241,9 @@ TEST_F(GraphPropertiesTest, SizeContentsPropagateToRangeOutput) {
       properties.GetOutputProperties("range").at(0).shape();
 
   ASSERT_EQ(1, inferred_range_shape.dim_size());
-  auto expected = std::make_unique<ExprDiv>(
-      new ExprAdd(
-          DimExpr::FromProto(inferred_input_shape.dim(0).expr()).release(),
-          new Constant(2)),
-      new Constant(3));
-  EXPECT_EQ(expected->DebugString(),
+  DimExpr expected =
+      (DimExprFromProto(inferred_input_shape.dim(0).expr()) + 2) / 3;
+  EXPECT_EQ(DimExprDebugString(expected),
             ShapeDimExprDebugString(inferred_range_shape, 0));
 }
 
@@ -2423,11 +2418,9 @@ TEST_F(GraphPropertiesTest, ShapeTensorContentsThroughGatherProdAndUnpack) {
   ASSERT_GT(gather_reshape_shape.expressions_size(), 0);
   ASSERT_GT(unpack_reshape_shape.expressions_size(), 0);
 
-  auto expected_gather_dim0 =
-      std::make_unique<ExprMul>(DimExpr::FromProto(input_shape.expressions(0))
-                                    .release(),
-                                new Constant(26));
-  EXPECT_EQ(expected_gather_dim0->DebugString(),
+  DimExpr input_expr = DimExprFromProto(input_shape.expressions(0));
+  auto expected_gather_dim0 = input_expr * DimExpr::Const(26);
+  EXPECT_EQ(DimExprDebugString(expected_gather_dim0),
             ShapeDimExprDebugString(gather_reshape_shape, 0));
   EXPECT_EQ(8, gather_reshape_shape.dim(1).size());
 

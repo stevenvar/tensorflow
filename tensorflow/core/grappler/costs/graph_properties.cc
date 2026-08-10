@@ -652,11 +652,13 @@ class SymbolicShapeRefiner {
   explicit SymbolicShapeRefiner(
       const GraphView& graph,
       const absl::flat_hash_map<string, absl::flat_hash_set<int>>& fed_ports,
-      const bool aggressive_shape_inference)
+      const bool aggressive_shape_inference,
+      const bool enable_dynamic_value_inference)
       : graph_(graph),
         function_library_(OpRegistry::Global(), graph.graph()->library()),
         fed_ports_(fed_ports),
-        aggressive_shape_inference_(aggressive_shape_inference) {
+        aggressive_shape_inference_(aggressive_shape_inference),
+        enable_dynamic_value_inference_(enable_dynamic_value_inference) {
     graph_def_version_ = graph.graph()->versions().producer();
     node_to_context_.reserve(graph.graph()->node_size());
   }
@@ -945,7 +947,9 @@ class SymbolicShapeRefiner {
     TF_RETURN_IF_ERROR(gp.InferStatically(
         /*assume_valid_feeds=*/true,
         /*aggressive_shape_inference=*/aggressive_shape_inference_,
-        /*include_tensor_values=*/true));
+        /*include_input_tensor_values=*/true,
+        /*include_output_tensor_values=*/true,
+        /*enable_dynamic_value_inference=*/enable_dynamic_value_inference_));
 
     // Add return nodes for output shapes.
     int output = 0;
@@ -1812,6 +1816,19 @@ class SymbolicShapeRefiner {
         }
       } else if (IsSize(node)) {
         DimensionHandle size = ic->NumElements(ic->input(0));
+        if (enable_dynamic_value_inference_ && !ic->ValueKnown(size) &&
+            ic->RankKnown(ic->input(0))) {
+          size = ic->MakeDim(1);
+          for (int i = 0; i < ic->Rank(ic->input(0)); ++i) {
+            TF_RETURN_IF_ERROR(
+                ic->Multiply(size, ic->Dim(ic->input(0), i), &size));
+          }
+        }
+        if (enable_dynamic_value_inference_ &&
+            (ic->ValueKnown(size) || ic->GetDimExpr(size) != nullptr)) {
+          c->output_tensors_as_shapes.resize(1);
+          c->output_tensors_as_shapes[0] = ic->MakeShape({size});
+        }
         if (ic->ValueKnown(size)) {
           // Propagate size value.
           int64_t sz = ic->Value(size);
@@ -1830,6 +1847,48 @@ class SymbolicShapeRefiner {
           if (valid) {
             c->output_tensor_protos.resize(1);
             c->output_tensor_protos[0] = &const_tensors_to_propagate_.back();
+          }
+        }
+      } else if (enable_dynamic_value_inference_ && op == "Range") {
+        auto scalar_int_value = [&](int input, int64_t* value) {
+          const Tensor* tensor = ic->input_tensor(input);
+          if (tensor == nullptr || tensor->dims() != 0) {
+            return false;
+          }
+          if (tensor->dtype() == DT_INT32) {
+            *value = tensor->scalar<int32>()();
+            return true;
+          }
+          if (tensor->dtype() == DT_INT64) {
+            *value = tensor->scalar<int64_t>()();
+            return true;
+          }
+          return false;
+        };
+
+        int64_t start;
+        int64_t delta;
+        const bool has_positive_constant_delta =
+            scalar_int_value(0, &start) && scalar_int_value(2, &delta) &&
+            start == 0 && delta > 0;
+        if (has_positive_constant_delta &&
+            c->input_tensors_as_shapes_to_propagate.size() > 1) {
+          const ShapeHandle& limit =
+              c->input_tensors_as_shapes_to_propagate[1];
+          if (ic->RankKnown(limit) && ic->Rank(limit) >= 1) {
+            DimensionHandle length = ic->Dim(limit, 0);
+            if (ic->ValueKnown(length) || ic->GetDimExpr(length) != nullptr) {
+              DimensionHandle range_length = length;
+              if (delta > 1) {
+                DimensionHandle adjusted_length;
+                TF_RETURN_IF_ERROR(
+                    ic->Add(length, delta - 1, &adjusted_length));
+                TF_RETURN_IF_ERROR(ic->Divide(
+                    adjusted_length, delta, /*evenly_divisible=*/false,
+                    &range_length));
+              }
+              ic->set_output(0, ic->Vector(range_length));
+            }
           }
         }
       } else if (IsShape(node)) {
@@ -1998,8 +2057,12 @@ class SymbolicShapeRefiner {
             // possible.
             const ShapeHandle& shape_handle =
                 c->input_tensors_as_shapes_to_propagate[i];
-            if (ic->RankKnown(shape_handle) && ic->Rank(shape_handle) >= 1 &&
-                ic->ValueKnown(ic->Dim(shape_handle, 0))) {
+            const bool has_value =
+                ic->RankKnown(shape_handle) && ic->Rank(shape_handle) >= 1 &&
+                (ic->ValueKnown(ic->Dim(shape_handle, 0)) ||
+                 (enable_dynamic_value_inference_ &&
+                  ic->GetDimExpr(ic->Dim(shape_handle, 0)) != nullptr));
+            if (has_value) {
               dims.push_back(ic->Dim(shape_handle, 0));
             } else {
               // This is not from Const, but as it shouldn'be used as symbolic
@@ -2378,6 +2441,7 @@ class SymbolicShapeRefiner {
 
   // For more aggressive shape and value inference.
   bool aggressive_shape_inference_;
+  bool enable_dynamic_value_inference_;
   ResourceMgr resource_mgr_;
 };
 
@@ -2982,7 +3046,8 @@ absl::Status GraphProperties::UpdateEnqueue(
 
 absl::Status GraphProperties::InferStatically(
     bool assume_valid_feeds, bool aggressive_shape_inference,
-    bool include_input_tensor_values, bool include_output_tensor_values) {
+    bool include_input_tensor_values, bool include_output_tensor_values,
+    bool enable_dynamic_value_inference) {
   FunctionLibraryDefinition function_library(OpRegistry::Global(),
                                              item_.graph.library());
   absl::flat_hash_map<string, absl::flat_hash_set<int>> fed_ports;
@@ -3071,7 +3136,8 @@ absl::Status GraphProperties::InferStatically(
   // Heap-allocate SymbolicShapeRefiner in order to not consume a large amount
   // of stack space.
   auto refiner = std::make_unique<SymbolicShapeRefiner>(
-      graph_view, fed_ports, aggressive_shape_inference);
+      graph_view, fed_ports, aggressive_shape_inference,
+      enable_dynamic_value_inference);
 
   TopoQueue new_shapes(topo_order);
   // Also seed the propagation of shapes in the fanout of primary inputs.

@@ -44,6 +44,10 @@ namespace grappler {
 namespace {
 
 std::string ShapeDimExprDebugString(const TensorShapeProto& shape, int dim) {
+  if (shape.dim(dim).has_expr()) {
+    auto expr = DimExpr::FromProto(shape.dim(dim).expr());
+    return expr ? expr->DebugString() : "";
+  }
   if (dim >= shape.expressions_size()) {
     return "";
   }
@@ -2174,6 +2178,78 @@ TEST_F(GraphPropertiesTest, StridedSlicesOfShapes) {
   EXPECT_EQ(1, shape_o2.dim_size());
   EXPECT_EQ(shape_a.dim(0).size(), shape_o1.dim(0).size());
   EXPECT_EQ(shape_a.dim(1).size(), shape_o2.dim(0).size());
+}
+
+TEST_F(GraphPropertiesTest, SizeContentsPropagateToFillOutput) {
+  tensorflow::Scope scope = tensorflow::Scope::NewRootScope();
+  Output input = ops::Placeholder(
+      scope.WithOpName("input"), DT_FLOAT,
+      ops::Placeholder::Shape(PartialTensorShape({-1, 24})));
+  Output input_size = ops::Size(scope.WithOpName("input_size"), input);
+  Output fill_shape =
+      ops::Stack(scope.WithOpName("fill_shape"), {input_size});
+  Output zero = ops::Const(scope.WithOpName("zero"), 0.0f, {});
+  Output filled = ops::Fill(scope.WithOpName("filled"), fill_shape, zero);
+
+  GrapplerItem item;
+  TF_ASSERT_OK(scope.ToGraphDef(&item.graph));
+
+  GraphProperties properties(item);
+  TF_ASSERT_OK(properties.InferStatically(
+      /*assume_valid_feeds=*/false,
+      /*aggressive_shape_inference=*/false,
+      /*include_input_tensor_values=*/false,
+      /*include_output_tensor_values=*/false,
+      /*enable_dynamic_value_inference=*/true));
+
+  const TensorShapeProto& inferred_input_shape =
+      properties.GetOutputProperties("input").at(0).shape();
+  const TensorShapeProto& inferred_fill_shape =
+      properties.GetOutputProperties("filled").at(0).shape();
+
+  ASSERT_EQ(1, inferred_fill_shape.dim_size());
+  auto expected = std::make_unique<ExprMul>(
+      DimExpr::FromProto(inferred_input_shape.dim(0).expr()).release(),
+      new Constant(24));
+  EXPECT_EQ(expected->DebugString(),
+            ShapeDimExprDebugString(inferred_fill_shape, 0));
+}
+
+TEST_F(GraphPropertiesTest, SizeContentsPropagateToRangeOutput) {
+  tensorflow::Scope scope = tensorflow::Scope::NewRootScope();
+  Output input = ops::Placeholder(
+      scope.WithOpName("input"), DT_FLOAT,
+      ops::Placeholder::Shape(PartialTensorShape({-1, 1})));
+  Output input_size = ops::Size(scope.WithOpName("input_size"), input);
+  Output zero = ops::Const(scope.WithOpName("zero"), 0, {});
+  Output three = ops::Const(scope.WithOpName("three"), 3, {});
+  Output range =
+      ops::Range(scope.WithOpName("range"), zero, input_size, three);
+
+  GrapplerItem item;
+  TF_ASSERT_OK(scope.ToGraphDef(&item.graph));
+
+  GraphProperties properties(item);
+  TF_ASSERT_OK(properties.InferStatically(
+      /*assume_valid_feeds=*/false,
+      /*aggressive_shape_inference=*/false,
+      /*include_input_tensor_values=*/false,
+      /*include_output_tensor_values=*/false,
+      /*enable_dynamic_value_inference=*/true));
+
+  const TensorShapeProto& inferred_input_shape =
+      properties.GetOutputProperties("input").at(0).shape();
+  const TensorShapeProto& inferred_range_shape =
+      properties.GetOutputProperties("range").at(0).shape();
+
+  ASSERT_EQ(1, inferred_range_shape.dim_size());
+  auto expected = std::make_unique<ExprDiv>(
+      new ExprAdd(
+          DimExpr::FromProto(inferred_input_shape.dim(0).expr()).release(),
+          new Constant(2)),
+      new Constant(3));
+  EXPECT_EQ(expected->DebugString(),
+            ShapeDimExprDebugString(inferred_range_shape, 0));
 }
 
 TEST_F(GraphPropertiesTest, StridedSliceOfShapeWithShrinkAxisMask) {

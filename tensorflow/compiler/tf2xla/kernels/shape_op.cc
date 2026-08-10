@@ -352,12 +352,14 @@ class SizeOp : public XlaOpKernel {
       }
     }
 
-    XlaExpression output =
-        XlaExpression::XlaOp(size, ctx->expected_output_dtype(0));
     if (SymbolicContentEnabled()) {
+      XlaExpression output =
+          XlaExpression::XlaOp(size, ctx->expected_output_dtype(0));
       output.set_contents({size_expr});
+      ctx->SetOutputExpression(0, output);
+    } else {
+      ctx->SetOutput(0, size);
     }
-    ctx->SetOutputExpression(0, output);
   }
 };
 

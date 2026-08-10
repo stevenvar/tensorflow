@@ -314,6 +314,7 @@ class SizeOp : public XlaOpKernel {
     const TensorShape input_shape = ctx->InputShape(0);
     xla::XlaBuilder* builder = ctx->builder();
     auto size = xla::One(builder, ctx->output_xla_type(0));
+    xla::DExpr size_expr = xla::DExpr::Const(1);
 
     const int rank = input_shape.dims();
     for (int64_t dim = 0; dim < rank; ++dim) {
@@ -326,12 +327,37 @@ class SizeOp : public XlaOpKernel {
               "on all dimensions, found ",
               input_shape.dim_size(dim), " elements on dimension ", dim)));
 
-      size = xla::Mul(size, xla::ConvertElementType(
-                                xla::GetDimensionSize(ctx->Input(0), dim),
-                                ctx->output_xla_type(0)));
+      xla::DExpr dim_expr = input_shape.get_filled_expression(dim);
+      std::vector<xla::DExpr> contents = {
+          dim_expr && dim_expr->is_dynamic()
+              ? dim_expr
+              : xla::DExpr::Unknown(xla::kUnknownContentSentinel)};
+      xla::XlaOp dim_size = xla::GetDimensionSize(ctx->Input(0), dim);
+      if (SymbolicContentEnabled()) {
+        OP_REQUIRES_OK(ctx,
+                       builder->SetInstructionContents(dim_size, contents));
+      }
+      xla::XlaOp converted =
+          xla::ConvertElementType(dim_size, ctx->output_xla_type(0));
+      if (SymbolicContentEnabled()) {
+        OP_REQUIRES_OK(ctx,
+                       builder->SetInstructionContents(converted, contents));
+      }
+      size = xla::Mul(size, converted);
+      size_expr =
+          (size_expr * input_shape.get_filled_expression(dim)).simplify();
+      if (SymbolicContentEnabled()) {
+        OP_REQUIRES_OK(ctx,
+                       builder->SetInstructionContents(size, {size_expr}));
+      }
     }
 
-    ctx->SetOutput(0, size);
+    XlaExpression output =
+        XlaExpression::XlaOp(size, ctx->expected_output_dtype(0));
+    if (SymbolicContentEnabled()) {
+      output.set_contents({size_expr});
+    }
+    ctx->SetOutputExpression(0, output);
   }
 };
 

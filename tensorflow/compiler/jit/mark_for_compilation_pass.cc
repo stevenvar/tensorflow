@@ -997,7 +997,11 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
     TF_RETURN_IF_ERROR(AssignDimVars());
     for (Node* n : graph_->op_nodes()) {
       bool mark_shape_derived = false;
-      if (n->type_string() == "Shape" || n->type_string() == "ShapeN") {
+      auto is_shape_like = [](const Node* node) {
+        const string& type = node->type_string();
+        return type == "Shape" || type == "ShapeN" || type == "Size";
+      };
+      if (is_shape_like(n)) {
         mark_shape_derived = HasDynamicInputExpression(n);
       } else if (n->type_string() == "Cast") {
         for (const Edge* edge : n->in_edges()) {
@@ -1005,9 +1009,7 @@ absl::StatusOr<bool> MarkForCompilationPassImpl::Initialize() {
             continue;
           }
           const Node* src = edge->src();
-          if ((src->type_string() == "Shape" ||
-               src->type_string() == "ShapeN") &&
-              HasDynamicInputExpression(src)) {
+          if (is_shape_like(src) && HasDynamicInputExpression(src)) {
             mark_shape_derived = true;
             break;
           }

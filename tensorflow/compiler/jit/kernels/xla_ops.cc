@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/compiler/jit/kernels/xla_ops.h"
+#include "tensorflow/compiler/jit/kernels/xla_ops_internal.h"
 
 #include <cstdint>
 #include <functional>
@@ -36,6 +37,7 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
@@ -206,6 +208,675 @@ using PjRtExecutableClosure =
     ExecutableClosure<xla::PjRtLoadedExecutable, xla::PjRtClient>;
 using PjRtExecutableClosureStore =
     ExecutableClosureStore<xla::PjRtLoadedExecutable, xla::PjRtClient>;
+
+struct DynamicBatchResolutionResult {
+  bool can_run = true;
+  bool has_batch_size = false;
+  int64_t batch_size = 0;
+  bool batch_size_resource_not_found = false;
+  std::string diagnostic;
+};
+
+struct DynamicSolveCandidate {
+  int64_t solved_value;
+  int64_t observed_dim_value;
+  std::string context;
+};
+
+}  // namespace
+
+namespace xla_ops_internal {
+
+std::optional<int64_t> GetConstantArgumentElementValue(
+    const XlaArgument& arg, int index) {
+  if (index < 0 || index >= arg.constant_value.NumElements()) {
+    return std::nullopt;
+  }
+  switch (arg.constant_value.dtype()) {
+    case DT_INT32:
+      return static_cast<int64_t>(arg.constant_value.flat<int32>()(index));
+    case DT_INT64:
+      return static_cast<int64_t>(arg.constant_value.flat<int64_t>()(index));
+    default:
+      return std::nullopt;
+  }
+}
+
+void SetConstantArgumentExpressionToLiteralValue(XlaArgument* arg,
+                                                 int index) {
+  if (arg == nullptr || index < 0 ||
+      index >= arg->constant_value_expressions.size()) {
+    return;
+  }
+  std::optional<int64_t> value = GetConstantArgumentElementValue(*arg, index);
+  if (!value.has_value()) {
+    arg->constant_value_expressions[index].Clear();
+    return;
+  }
+  arg->constant_value_expressions[index].Clear();
+  arg->constant_value_expressions[index].set_constant_value(*value);
+}
+
+DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
+    absl::Span<const XlaArgument> args) {
+  struct Candidate {
+    int64_t solved_value;
+    int64_t observed_value;
+    IgnoredDynamicArgumentOccurrence occurrence;
+  };
+
+  DynamicSolveFilterDecision result;
+  std::map<std::string, std::vector<Candidate>> expr_to_candidates;
+
+  for (int arg_index = 0; arg_index < args.size(); ++arg_index) {
+    const XlaArgument& arg = args[arg_index];
+    if (absl::holds_alternative<TensorShape>(arg.shape)) {
+      const TensorShape& shape = std::get<TensorShape>(arg.shape);
+      for (int dim = 0; dim < shape.get_expressions().size(); ++dim) {
+        const xla::DExpr& expr = shape.get_expression(dim);
+        if (!(expr && expr->is_dynamic())) {
+          continue;
+        }
+        xla::DExpr simplified_expr = expr.simplify();
+        std::optional<int64_t> solved_value =
+            simplified_expr->solve(shape.dim_size(dim));
+        if (!solved_value.has_value()) {
+          continue;
+        }
+        const std::string expr_string = DExprToString(simplified_expr);
+        expr_to_candidates[expr_string].push_back(Candidate{
+            *solved_value,
+            shape.dim_size(dim),
+            IgnoredDynamicArgumentOccurrence{
+                IgnoredDynamicArgumentOccurrence::Source::kShapeDimension,
+                arg_index,
+                dim,
+                shape.dim_size(dim),
+                *solved_value,
+                expr_string,
+            },
+        });
+      }
+    }
+
+    if (arg.kind != XlaCompiler::Argument::kConstant ||
+        arg.constant_value_expressions.empty()) {
+      continue;
+    }
+    for (int element_index = 0;
+         element_index < arg.constant_value_expressions.size();
+         ++element_index) {
+      xla::DExpr expr =
+          xla::DExprFromProto(arg.constant_value_expressions[element_index]);
+      if (!(expr && expr->is_dynamic())) {
+        continue;
+      }
+      std::optional<int64_t> observed_value =
+          GetConstantArgumentElementValue(arg, element_index);
+      if (!observed_value.has_value()) {
+        continue;
+      }
+      xla::DExpr simplified_expr = expr.simplify();
+      std::optional<int64_t> solved_value =
+          simplified_expr->solve(*observed_value);
+      if (!solved_value.has_value()) {
+        continue;
+      }
+      const std::string expr_string = DExprToString(simplified_expr);
+      expr_to_candidates[expr_string].push_back(Candidate{
+          *solved_value,
+          *observed_value,
+          IgnoredDynamicArgumentOccurrence{
+              IgnoredDynamicArgumentOccurrence::Source::kConstantValueElement,
+              arg_index,
+              element_index,
+              *observed_value,
+              *solved_value,
+              expr_string,
+          },
+      });
+    }
+  }
+
+  std::vector<std::string> expr_summaries;
+  for (const auto& [expr, candidates] : expr_to_candidates) {
+    std::set<int64_t> singleton_values;
+    std::set<int64_t> nonsingleton_values;
+    for (const auto& candidate : candidates) {
+      // A singleton occurrence can legally be an implicitly broadcast operand.
+      // Prefer an agreeing non-singleton occurrence of the same expression.
+      if (candidate.observed_value == 1) {
+        singleton_values.insert(candidate.solved_value);
+      } else {
+        nonsingleton_values.insert(candidate.solved_value);
+      }
+    }
+
+    std::optional<int64_t> chosen_value;
+    if (!nonsingleton_values.empty()) {
+      if (nonsingleton_values.size() != 1) {
+        result.can_run = false;
+        expr_summaries.push_back(absl::StrCat(
+            "expr=", expr, " reason=conflicting non-singleton candidates",
+            " values={", absl::StrJoin(nonsingleton_values, ", "), "}"));
+        continue;
+      }
+      chosen_value = *nonsingleton_values.begin();
+      for (const auto& candidate : candidates) {
+        if (candidate.observed_value == 1 &&
+            candidate.solved_value != *chosen_value) {
+          LOG(INFO) << "Ignoring singleton-derived dynamic "
+                    << "occurrence during XLA signature filtering: expr="
+                    << expr
+                    << " chosen_value=" << *chosen_value
+                    << " ignored_observed_value=" << candidate.observed_value
+                    << " ignored_solved_value=" << candidate.solved_value
+                    << " arg_index=" << candidate.occurrence.arg_index
+                    << (candidate.occurrence.source ==
+                                IgnoredDynamicArgumentOccurrence::Source::
+                                    kShapeDimension
+                            ? " dim="
+                            : " element=")
+                    << candidate.occurrence.dim_or_index;
+          result.ignored_occurrences.push_back(candidate.occurrence);
+        }
+      }
+    } else if (!singleton_values.empty()) {
+      if (singleton_values.size() != 1) {
+        result.can_run = false;
+        expr_summaries.push_back(absl::StrCat(
+            "expr=", expr,
+            " reason=conflicting singleton-derived candidates",
+            " values={", absl::StrJoin(singleton_values, ", "), "}"));
+        continue;
+      }
+      chosen_value = *singleton_values.begin();
+    }
+
+    expr_summaries.push_back(absl::StrCat(
+        "expr=", expr, " chosen=",
+        chosen_value.has_value() ? std::to_string(*chosen_value)
+                                 : std::string("<none>"),
+        " singleton_derived_values={",
+        absl::StrJoin(singleton_values, ", "), "} nonsingleton_values={",
+        absl::StrJoin(nonsingleton_values, ", "),
+        "}"));
+  }
+
+  if (!result.can_run) {
+    result.diagnostic = absl::StrCat(
+        "Failed to recover a unique XLA dynamic batch size after solve-time "
+        "candidate filtering. solved_expressions=[",
+        absl::StrJoin(expr_summaries, " | "), "]");
+    return result;
+  }
+
+  if (!result.ignored_occurrences.empty()) {
+    std::vector<std::string> ignored_summaries;
+    ignored_summaries.reserve(result.ignored_occurrences.size());
+    for (const auto& occurrence : result.ignored_occurrences) {
+      ignored_summaries.push_back(absl::StrCat(
+          occurrence.source ==
+                  IgnoredDynamicArgumentOccurrence::Source::kShapeDimension
+              ? "shape_arg="
+              : "const_arg=",
+          occurrence.arg_index,
+          occurrence.source ==
+                  IgnoredDynamicArgumentOccurrence::Source::kShapeDimension
+              ? " dim="
+              : " element=",
+          occurrence.dim_or_index, " expr=", occurrence.expr,
+          " observed=", occurrence.observed_value,
+          " solved=", occurrence.solved_value));
+    }
+    result.diagnostic = absl::StrCat(
+        "Ignoring singleton-derived dynamic occurrences for XLA "
+        "signature/HLO: ",
+        absl::StrJoin(ignored_summaries, "; "));
+  }
+  return result;
+}
+
+void StripIgnoredDynamicArgumentOccurrences(
+    const std::vector<IgnoredDynamicArgumentOccurrence>& ignored_occurrences,
+    std::vector<XlaArgument>* args) {
+  if (args == nullptr) {
+    return;
+  }
+  for (const auto& occurrence : ignored_occurrences) {
+    if (occurrence.arg_index < 0 || occurrence.arg_index >= args->size()) {
+      continue;
+    }
+    XlaArgument& arg = (*args)[occurrence.arg_index];
+    if (occurrence.source ==
+        IgnoredDynamicArgumentOccurrence::Source::kShapeDimension) {
+      if (!absl::holds_alternative<TensorShape>(arg.shape)) {
+        continue;
+      }
+      LOG(INFO) << "Dropping ignored dynamic shape expression from XLA "
+                << "signature/HLO: arg_index=" << occurrence.arg_index
+                << " dim=" << occurrence.dim_or_index
+                << " expr=" << occurrence.expr
+                << " observed_value=" << occurrence.observed_value
+                << " solved_value=" << occurrence.solved_value;
+      TensorShape& shape = std::get<TensorShape>(arg.shape);
+      shape.set_expression(occurrence.dim_or_index, xla::DExpr());
+      continue;
+    }
+
+    LOG(INFO) << "Dropping ignored dynamic constant-value expression from XLA "
+              << "signature/HLO: arg_index=" << occurrence.arg_index
+              << " element=" << occurrence.dim_or_index
+              << " expr=" << occurrence.expr
+              << " observed_value=" << occurrence.observed_value
+              << " solved_value=" << occurrence.solved_value;
+    SetConstantArgumentExpressionToLiteralValue(&arg, occurrence.dim_or_index);
+  }
+}
+
+}  // namespace xla_ops_internal
+
+namespace {
+
+using xla_ops_internal::AnalyzeIgnoredDynamicArgumentOccurrences;
+using xla_ops_internal::DynamicSolveFilterDecision;
+using xla_ops_internal::StripIgnoredDynamicArgumentOccurrences;
+
+DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeInputs(
+    OpKernelContext* ctx, const XlaCompiler::CompilationResult& comp_result,
+    int num_constant_args, bool log_solves, absl::string_view cluster_name,
+    const NodeDef& op_def) {
+  DynamicBatchResolutionResult result;
+  MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
+  if (!flags->tf_xla_enable_dynamic_sizes) {
+    return result;
+  }
+  const bool enable_dynamic_solve_majority_vote =
+      flags->tf_xla_enable_dynamic_solve_majority_vote;
+
+  auto resolve_runtime_input_index = [&](int xla_input_index) -> int {
+    const bool has_runtime_key =
+        ctx->num_inputs() > 0 &&
+        ctx->input_dtype(ctx->num_inputs() - 1) == DT_STRING &&
+        ctx->num_inputs() == comp_result.xla_input_shapes.size() + 1;
+    if (has_runtime_key) {
+      return xla_input_index;
+    }
+    return num_constant_args + xla_input_index;
+  };
+
+  std::set<int64_t> dyn_vals;
+  std::map<std::string, std::vector<DynamicSolveCandidate>> expr_to_candidates;
+
+  for (int i = 0; i < comp_result.xla_input_shapes.size(); ++i) {
+    const auto& xla_shape = comp_result.xla_input_shapes[i];
+    const bool has_input_mapping = i < comp_result.input_mapping.size();
+    const int input_idx = resolve_runtime_input_index(i);
+    if (!xla_shape.IsArray() || xla_shape.expressions().empty()) {
+      continue;
+    }
+
+    for (int dim = 0; dim < xla_shape.expressions().size(); ++dim) {
+      const auto& expr = xla_shape.expressions(dim);
+      if (!(expr && expr->is_dynamic())) {
+        continue;
+      }
+      xla::DExpr simplified_expr = expr.simplify();
+      if (!has_input_mapping) {
+        continue;
+      }
+      if (input_idx < 0 || input_idx >= ctx->num_inputs()) {
+        continue;
+      }
+      const bool is_runtime_key_input =
+          ctx->input_dtype(input_idx) == DT_STRING &&
+          input_idx == op_def.input_size() - 1;
+      const std::string runtime_input_name =
+          input_idx < op_def.input_size() ? op_def.input(input_idx)
+                                          : std::string("<unknown>");
+      if (is_runtime_key_input) {
+        if (log_solves) {
+          VLOG(1) << "Skipping dynamic expression solve for runtime key input "
+                  << "cluster=" << cluster_name
+                  << " xla_input_index=" << i
+                  << " runtime_input_index=" << input_idx
+                  << " input_name=" << runtime_input_name;
+        }
+        continue;
+      }
+      int64_t size = ctx->input(input_idx).shape().dim_size(dim);
+      std::optional<int64_t> dyn_val = simplified_expr->solve(size);
+      if (log_solves) {
+        LOG(INFO) << "Dynamic solve: cluster=" << cluster_name
+                  << " runtime_input_index=" << input_idx
+                  << " xla_input_index=" << i << " dim=" << dim
+                  << " input_name=" << runtime_input_name
+                  << " expr=" << DExprToString(simplified_expr)
+                  << " target_size=" << size << " result="
+                  << (dyn_val.has_value() ? std::to_string(*dyn_val)
+                                          : std::string("<none>"));
+      }
+      if (!dyn_val.has_value()) {
+        if (log_solves) {
+          xla::StringPrinter printer;
+          simplified_expr->print(&printer);
+          LOG(INFO) << "Failed to solve dynamic expression: "
+                    << "xla_input_index=" << i
+                    << " runtime_input_index=" << input_idx
+                    << " input_name=" << runtime_input_name
+                    << " dim=" << dim
+                    << " runtime_dim_size=" << size
+                    << " expr=" << std::move(printer).ToString();
+        }
+        continue;
+      }
+      const std::string expr_string = DExprToString(simplified_expr);
+      const std::string context = absl::StrCat(
+          "xla_input_index=", i, " runtime_input_index=", input_idx,
+          " input_name=", runtime_input_name, " dim=", dim,
+          " runtime_dim_size=", size,
+          " solved_dynamic_value=", *dyn_val);
+      expr_to_candidates[expr_string].push_back(
+          DynamicSolveCandidate{*dyn_val, size, context});
+    }
+  }
+
+  std::vector<std::string> expr_summaries;
+  std::optional<std::set<int>> expected_dyn_ids;
+  bool mismatched_dyn_ids = false;
+  bool candidate_filter_rejected = false;
+  bool majority_vote_used = false;
+  bool ambiguous_majority_vote = false;
+  std::vector<std::string> voted_expr_summaries;
+  for (const auto& [expr, candidates] : expr_to_candidates) {
+    std::set<int64_t> singleton_values;
+    std::set<int64_t> nonsingleton_values;
+    std::vector<std::string> singleton_contexts;
+    std::vector<std::string> nonsingleton_contexts;
+    for (const auto& candidate : candidates) {
+      // Runtime {1} is compatible with an implicit broadcast. It is weaker
+      // evidence than a consistent non-singleton observation.
+      if (candidate.observed_dim_value == 1) {
+        singleton_values.insert(candidate.solved_value);
+        singleton_contexts.push_back(candidate.context);
+      } else {
+        nonsingleton_values.insert(candidate.solved_value);
+        nonsingleton_contexts.push_back(candidate.context);
+      }
+    }
+
+    std::optional<int64_t> chosen_value;
+    std::string filter_reason;
+    if (!nonsingleton_values.empty()) {
+      if (nonsingleton_values.size() == 1) {
+        chosen_value = *nonsingleton_values.begin();
+        filter_reason =
+            singleton_values.empty()
+                ? "used non-singleton evidence"
+                : "preferred non-singleton evidence over singleton-derived "
+                  "candidates";
+      } else {
+        if (!enable_dynamic_solve_majority_vote) {
+          candidate_filter_rejected = true;
+          filter_reason =
+              "conflicting non-singleton candidates; majority vote disabled "
+              "for debugging";
+          LOG(INFO) << "Dynamic solve encountered conflicting non-singleton "
+                       "candidates for expr="
+                    << expr
+                    << " but majority vote is disabled for debugging.";
+        } else {
+        std::map<int64_t, std::vector<std::string>> vote_contexts;
+        for (const auto& candidate : candidates) {
+          vote_contexts[candidate.solved_value].push_back(candidate.context);
+        }
+        int64_t winner_value = 0;
+        size_t winner_count = 0;
+        size_t runner_up_count = 0;
+        bool have_winner = false;
+        bool tie_for_winner = false;
+        std::vector<std::string> tally_parts;
+        for (const auto& [value, contexts] : vote_contexts) {
+          tally_parts.push_back(absl::StrCat(
+              value, " x", contexts.size(), " [",
+              absl::StrJoin(contexts, "; "), "]"));
+          if (!have_winner || contexts.size() > winner_count) {
+            runner_up_count = have_winner ? winner_count : 0;
+            winner_value = value;
+            winner_count = contexts.size();
+            have_winner = true;
+            tie_for_winner = false;
+          } else if (contexts.size() == winner_count) {
+            tie_for_winner = true;
+          } else if (contexts.size() > runner_up_count) {
+            runner_up_count = contexts.size();
+          }
+        }
+        const bool clear_majority = !tie_for_winner && winner_count >= 2 &&
+                                    winner_count > runner_up_count;
+        if (clear_majority) {
+          chosen_value = winner_value;
+          majority_vote_used = true;
+          filter_reason =
+              "singleton filtering conflicted; majority vote kept value";
+          std::vector<std::string> dropped_parts;
+          for (const auto& [value, contexts] : vote_contexts) {
+            if (value == winner_value) continue;
+            dropped_parts.push_back(
+                absl::StrCat(value, " x", contexts.size()));
+          }
+          LOG(INFO) << "Dynamic solve majority vote kept value for expr="
+                    << expr << " kept=" << winner_value
+                    << " kept_count=" << winner_count
+                    << " runner_up_count=" << runner_up_count
+                    << " dropped=["
+                    << (dropped_parts.empty() ? std::string()
+                                              : absl::StrJoin(dropped_parts, ", "))
+                    << "] tallies=[" << absl::StrJoin(tally_parts, " | ")
+                    << "]";
+          voted_expr_summaries.push_back(absl::StrCat(
+              "expr=", expr, " kept=", winner_value, " count=", winner_count,
+              " dropped=[",
+              dropped_parts.empty() ? std::string()
+                                    : absl::StrJoin(dropped_parts, ", "),
+              "]"));
+        } else {
+          candidate_filter_rejected = true;
+          ambiguous_majority_vote = true;
+          filter_reason =
+              "conflicting non-singleton candidates and no clear majority "
+              "vote";
+          LOG(INFO) << "Dynamic solve majority vote could not choose a unique "
+                       "value for expr="
+                    << expr << " tallies=[" << absl::StrJoin(tally_parts, " | ")
+                    << "]";
+        }
+        }
+      }
+    } else if (!singleton_values.empty()) {
+      if (singleton_values.size() == 1) {
+        chosen_value = *singleton_values.begin();
+        filter_reason = "used singleton-derived evidence only";
+      } else {
+        if (!enable_dynamic_solve_majority_vote) {
+          candidate_filter_rejected = true;
+          filter_reason =
+              "conflicting singleton-derived candidates; majority "
+              "vote disabled for debugging";
+          LOG(INFO) << "Dynamic solve encountered conflicting "
+                       "singleton-derived candidates for expr="
+                    << expr
+                    << " but majority vote is disabled for debugging.";
+        } else {
+        std::map<int64_t, std::vector<std::string>> vote_contexts;
+        for (const auto& candidate : candidates) {
+          vote_contexts[candidate.solved_value].push_back(candidate.context);
+        }
+        int64_t winner_value = 0;
+        size_t winner_count = 0;
+        size_t runner_up_count = 0;
+        bool have_winner = false;
+        bool tie_for_winner = false;
+        std::vector<std::string> tally_parts;
+        for (const auto& [value, contexts] : vote_contexts) {
+          tally_parts.push_back(absl::StrCat(
+              value, " x", contexts.size(), " [",
+              absl::StrJoin(contexts, "; "), "]"));
+          if (!have_winner || contexts.size() > winner_count) {
+            runner_up_count = have_winner ? winner_count : 0;
+            winner_value = value;
+            winner_count = contexts.size();
+            have_winner = true;
+            tie_for_winner = false;
+          } else if (contexts.size() == winner_count) {
+            tie_for_winner = true;
+          } else if (contexts.size() > runner_up_count) {
+            runner_up_count = contexts.size();
+          }
+        }
+        const bool clear_majority = !tie_for_winner && winner_count >= 2 &&
+                                    winner_count > runner_up_count;
+        if (clear_majority) {
+          chosen_value = winner_value;
+          majority_vote_used = true;
+          filter_reason =
+              "singleton-only evidence conflicted; majority vote kept value";
+          std::vector<std::string> dropped_parts;
+          for (const auto& [value, contexts] : vote_contexts) {
+            if (value == winner_value) continue;
+            dropped_parts.push_back(
+                absl::StrCat(value, " x", contexts.size()));
+          }
+          LOG(INFO) << "Dynamic solve majority vote kept value for expr="
+                    << expr << " kept=" << winner_value
+                    << " kept_count=" << winner_count
+                    << " runner_up_count=" << runner_up_count
+                    << " dropped=["
+                    << (dropped_parts.empty() ? std::string()
+                                              : absl::StrJoin(dropped_parts, ", "))
+                    << "] tallies=[" << absl::StrJoin(tally_parts, " | ")
+                    << "]";
+          voted_expr_summaries.push_back(absl::StrCat(
+              "expr=", expr, " kept=", winner_value, " count=", winner_count,
+              " dropped=[",
+              dropped_parts.empty() ? std::string()
+                                    : absl::StrJoin(dropped_parts, ", "),
+              "]"));
+        } else {
+          candidate_filter_rejected = true;
+          ambiguous_majority_vote = true;
+          filter_reason =
+              "conflicting singleton-derived candidates and no clear "
+              "majority vote";
+          LOG(INFO) << "Dynamic solve majority vote could not choose a unique "
+                       "value for expr="
+                    << expr << " tallies=[" << absl::StrJoin(tally_parts, " | ")
+                    << "]";
+        }
+        }
+      }
+    } else {
+      filter_reason = "no dynamic values were solved";
+    }
+
+    if (chosen_value.has_value()) {
+      dyn_vals.insert(*chosen_value);
+    }
+
+    expr_summaries.push_back(absl::StrCat(
+        "expr=", expr, " chosen=",
+        chosen_value.has_value() ? std::to_string(*chosen_value)
+                                 : std::string("<none>"),
+        " singleton_derived_values={",
+        absl::StrJoin(singleton_values, ", "), "} nonsingleton_values={",
+        absl::StrJoin(nonsingleton_values, ", "), "} reason=", filter_reason,
+        " singleton_derived_contexts=[",
+        absl::StrJoin(singleton_contexts, "; "), "] nonsingleton_contexts=[",
+        absl::StrJoin(nonsingleton_contexts, "; "), "]"));
+  }
+  for (int i = 0; i < comp_result.xla_input_shapes.size(); ++i) {
+    const auto& xla_shape = comp_result.xla_input_shapes[i];
+    if (!xla_shape.IsArray() || xla_shape.expressions().empty()) continue;
+    for (int dim = 0; dim < xla_shape.expressions().size(); ++dim) {
+      const auto& expr = xla_shape.expressions(dim);
+      if (!(expr && expr->is_dynamic())) {
+        continue;
+      }
+      std::set<int> ids = expr->get_all_ids();
+      if (!expected_dyn_ids.has_value()) {
+        expected_dyn_ids = ids;
+      } else if (*expected_dyn_ids != ids) {
+        mismatched_dyn_ids = true;
+      }
+    }
+  }
+
+  if (dyn_vals.size() == 1 && expected_dyn_ids.has_value() &&
+      expected_dyn_ids->size() == 1 && !mismatched_dyn_ids) {
+    result.has_batch_size = true;
+    result.batch_size = *dyn_vals.begin();
+    result.diagnostic = absl::StrCat(
+        "shared variable ids={", absl::StrJoin(*expected_dyn_ids, ", "),
+        "} value=", result.batch_size);
+    return result;
+  }
+
+  if (expr_to_candidates.empty()) {
+    result.diagnostic = "no dynamic values were solved";
+  } else if (candidate_filter_rejected) {
+    result.can_run = false;
+    result.diagnostic = absl::StrCat(
+        "Failed to recover a unique XLA dynamic batch size after solve-time "
+        "candidate filtering. solved_expressions=[",
+        absl::StrJoin(expr_summaries, " | "), "] voted_expressions=[",
+        absl::StrJoin(voted_expr_summaries, " | "), "] all_values={",
+        absl::StrJoin(dyn_vals, ", "), "}",
+        ambiguous_majority_vote ? " reason=no clear majority vote" : "");
+    return result;
+  } else if (dyn_vals.size() == 1 && mismatched_dyn_ids) {
+    result.diagnostic = absl::StrCat(
+        "solved dynamic expressions do not share the same variable ids: ",
+        absl::StrJoin(expr_summaries, " | "), " voted_expressions=[",
+        absl::StrJoin(voted_expr_summaries, " | "), "]");
+  } else if (dyn_vals.size() == 1) {
+    result.diagnostic = absl::StrCat(
+        "solved dynamic expressions do not map to exactly one shared dynamic "
+        "variable id: ",
+        absl::StrJoin(expr_summaries, " | "), " voted_expressions=[",
+        absl::StrJoin(voted_expr_summaries, " | "), "]");
+  } else {
+    result.can_run = false;
+    result.diagnostic = absl::StrCat(
+        "Failed to recover a unique XLA dynamic batch size from runtime "
+        "input expressions. solved_expressions=[",
+        absl::StrJoin(expr_summaries, " | "), "] voted_expressions=[",
+        absl::StrJoin(voted_expr_summaries, " | "), "] all_values={",
+        absl::StrJoin(dyn_vals, ", "), "}",
+        majority_vote_used ? " after majority-vote filtering" : "");
+    return result;
+  }
+
+  BatchSizeResource* bsr = nullptr;
+  ScopedStepContainer* step_container = ctx->step_container();
+  absl::Status st = step_container->Lookup<BatchSizeResource>(
+      ctx->resource_manager(), BatchSizeResourceName, &bsr);
+
+  if (st.ok()) {
+    CHECK(bsr != nullptr);
+    result.has_batch_size = true;
+    result.batch_size = bsr->GetBatchSize();
+    result.diagnostic = absl::StrCat(
+        "BatchSizeResource fallback value=", result.batch_size);
+    bsr->Unref();
+  } else if (IsNotFound(st)) {
+    result.batch_size_resource_not_found = true;
+  } else {
+    result.can_run = false;
+    result.diagnostic = st.ToString();
+  }
+
+  return result;
+}
 
 se::Stream* GetStream(OpKernelContext* ctx) {
   return ctx->op_device_context() ? ctx->op_device_context()->stream()
@@ -450,18 +1121,30 @@ absl::Status CompileToLocalExecutable(
         xla_device_compiler->xla_batch_matcher();
     std::optional<xla::DExpr> dynamic_dim_expr;
     std::optional<xla::DExpr> shared_dynamic_subexpr;
-    auto normalize_dynamic_expr = [&](xla::DExpr expr) {
-      if (!expr || !expr->is_dynamic()) {
-        return expr;
-      }
-      if (!shared_dynamic_subexpr.has_value()) {
-        shared_dynamic_subexpr =
-            expr.find_smallest_subexpression_covering_all_variables();
-      }
-      return expr
-          .replace_subexpression(*shared_dynamic_subexpr, xla::DExpr::Var(1))
-          .simplify();
-    };
+    auto normalize_dynamic_expr =
+        [&](xla::DExpr expr, absl::string_view context = "") {
+          if (!expr || !expr->is_dynamic()) {
+            return expr;
+          }
+          if (!shared_dynamic_subexpr.has_value()) {
+            shared_dynamic_subexpr =
+                expr.find_smallest_subexpression_covering_all_variables();
+            LOG(INFO) << "Using shared dynamic subexpression "
+                      << DExprToString(*shared_dynamic_subexpr)
+                      << " for XLA dynamic input normalization. context="
+                      << context;
+          }
+          xla::DExpr normalized_expr =
+              expr.replace_subexpression(*shared_dynamic_subexpr,
+                                         xla::DExpr::Var(1))
+                  .simplify();
+          LOG(INFO) << "Rewriting dynamic input expression "
+                    << DExprToString(expr)
+                    << " to shared-core form "
+                    << DExprToString(normalized_expr)
+                    << " before XLA compilation. context=" << context;
+          return normalized_expr;
+        };
     auto maybe_attach_shape_contents_from_attrs =
         [&](int arg_index, const auto& attr_map,
             const std::string& node_name) {
@@ -508,8 +1191,10 @@ absl::Status CompileToLocalExecutable(
             xla::ExpressionProto expr;
             const xla::DExpr& dim_expr = inferred_shape.get_expression(i);
             if (dim_expr && dim_expr->is_dynamic()) {
-              xla::DExpr normalized_expr =
-                  normalize_dynamic_expr(dim_expr);
+              xla::DExpr normalized_expr = normalize_dynamic_expr(
+                  dim_expr,
+                  absl::StrCat("const_arg=", arg_index, " node=", node_name,
+                               " dim=", i));
               normalized_expr->to_proto(&expr);
             } else if (arg.constant_value.dtype() == DT_INT32) {
               expr.set_constant_value(arg.constant_value.flat<int32>()(i));
@@ -576,15 +1261,23 @@ absl::Status CompileToLocalExecutable(
           const TensorShapeProto& proto = it->second.list().shape(0);
           const auto& exp = proto.expressions();
           TensorShape& shp = std::get<TensorShape>(norm_args[arg_index].shape);
-
           if (!filled_batch && xla_batch_matcher) {
             for (int idx = 0; idx < exp.size(); ++idx) {
               // Look for dynamic expression. If found then compute padding
               // value and exit loop.
               auto e = normalize_dynamic_expr(DimExprFromProto(exp[idx]));
               if (e->is_dynamic()) {
+                LOG(INFO) << "Calling dynamic expression solve for compile "
+                          << "argument " << arg_index << " dimension " << idx
+                          << " expr=" << DExprToString(e)
+                          << " target_size=" << shp.dim_size(idx);
                 std::optional<int64_t> solved_value =
                     e->solve(shp.dim_size(idx));
+                LOG(INFO) << "Dynamic expression solve for compile argument "
+                          << arg_index << " dimension " << idx << " returned "
+                          << (solved_value.has_value()
+                                  ? std::to_string(*solved_value)
+                                  : std::string("<none>"));
                 int64_t var_value;
                 if (!solved_value.has_value()) {
                   LOG(WARNING)
@@ -613,11 +1306,55 @@ absl::Status CompileToLocalExecutable(
           for (int j = 0; j < exp.size(); ++j) {
             auto e = DimExprFromProto(exp[j]);
             if (e->is_dynamic()) {
-              e = normalize_dynamic_expr(e);
+              e = normalize_dynamic_expr(
+                  e, absl::StrCat("arg=", arg_index, " dim=", j,
+                                  " input_shape"));
               dyn_exprs[j] = e;
             }
           }
           shp.set_expressions(std::move(dyn_exprs));
+        }
+      }
+    }
+
+    DynamicSolveFilterDecision solve_filter_decision =
+        AnalyzeIgnoredDynamicArgumentOccurrences(norm_args);
+    if (!solve_filter_decision.can_run) {
+      if (compile_mode == DeviceCompileMode::kLazy) {
+        return errors::Unimplemented(solve_filter_decision.diagnostic);
+      }
+      return errors::InvalidArgument(solve_filter_decision.diagnostic);
+    }
+    if (!solve_filter_decision.ignored_occurrences.empty()) {
+      LOG(INFO) << solve_filter_decision.diagnostic;
+      StripIgnoredDynamicArgumentOccurrences(
+          solve_filter_decision.ignored_occurrences, &norm_args);
+      saw_dynamic_dim_value = false;
+      has_multiple_dynamic_dim_values = false;
+      dynamic_dim_value = 0;
+      dynamic_dim_expr.reset();
+      filled_batch = 0;
+      for (int arg_index = 0; arg_index < norm_args.size(); ++arg_index) {
+        if (!absl::holds_alternative<TensorShape>(norm_args[arg_index].shape)) {
+          continue;
+        }
+        TensorShape& shape = std::get<TensorShape>(norm_args[arg_index].shape);
+        for (int dim = 0; dim < shape.get_expressions().size(); ++dim) {
+          xla::DExpr expr = shape.get_expression(dim);
+          if (!(expr && expr->is_dynamic())) {
+            continue;
+          }
+          xla::DExpr simplified_expr = expr.simplify();
+          std::optional<int64_t> solved_value =
+              simplified_expr->solve(shape.dim_size(dim));
+          if (!solved_value.has_value()) {
+            continue;
+          }
+          record_dynamic_dim_value(*solved_value, simplified_expr);
+          if (!filled_batch && xla_batch_matcher) {
+            filled_batch =
+                xla_batch_matcher->get_xla_compile_batch(*solved_value);
+          }
         }
       }
     }
@@ -726,8 +1463,16 @@ absl::Status CompileToLocalExecutable(
                   " variables in expression ", DExprToString(e));
             }
             const int substitute_var_id = *ids.begin();
+            LOG(INFO) << "Calling dynamic expression substitute for compile "
+                      << "argument " << i << " dimension " << j
+                      << " expr=" << DExprToString(e)
+                      << " substitute Var(" << substitute_var_id
+                      << ")=" << filled_batch;
             xla::DExpr subst_expr =
                 e.substitute(substitute_var_id, padded_expr).simplify();
+            LOG(INFO) << "Dynamic expression substitute for compile argument "
+                      << i << " dimension " << j
+                      << " returned " << DExprToString(subst_expr);
             if (!subst_expr->is_constant()) {
               return errors::InvalidArgument(
                   "Dynamic shape padding substitution did not produce an "
@@ -1165,6 +1910,27 @@ void XlaCompileOp::Compute(OpKernelContext* ctx) {
     }
   }
 
+  if ((executable || pjrt_executable) && kernel != nullptr &&
+      GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes) {
+    DynamicBatchResolutionResult resolution =
+        ResolveDynamicBatchSizeFromRuntimeInputs(ctx, *kernel, constants_.size(),
+                                                 /*log_solves=*/true,
+                                                 function_.name(), def());
+    if (!resolution.can_run) {
+      const std::string error_message = absl::StrCat(
+          "Rejecting XLA cluster at compile time because dynamic expressions "
+          "cannot be solved consistently for this request. ",
+          resolution.diagnostic);
+      if (must_compile_) {
+        OP_REQUIRES(ctx, false, errors::InvalidArgument(error_message));
+      }
+      LOG(WARNING) << error_message;
+      executable = nullptr;
+      pjrt_executable = nullptr;
+      kernel = nullptr;
+    }
+  }
+
   AllocatorAttributes host_alloc_attrs;
   host_alloc_attrs.set_gpu_compatible(true);
   host_alloc_attrs.set_on_host(true);
@@ -1224,6 +1990,14 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
     const PjRtExecutableClosureStore::KeyT& key = key_tensor.flat<tstring>()(0);
     PjRtExecutableClosure closure =
         PjRtExecutableClosureStore::Global()->Consume(key);
+    const std::string cluster_name =
+        closure.compilation_result() != nullptr &&
+                closure.compilation_result()->computation != nullptr
+            ? closure.compilation_result()->computation->name()
+            : std::string("<unknown>");
+    LOG(INFO) << "Entering XLA cluster: cluster=" << cluster_name
+              << " op=" << def().name() << " key=" << key
+              << " mode=pjrt step_id=" << ctx->step_id();
 
     // Fetch inputs from the OpKernelContext. Inputs are the same as the ones
     // for XlaCompile, except that the must-be-constant inputs that appear in
@@ -1260,6 +2034,14 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
 
   XlaExecutableClosure closure =
       XlaExecutableClosureStore::Global()->Consume(key);
+  const std::string cluster_name =
+      closure.compilation_result() != nullptr &&
+              closure.compilation_result()->computation != nullptr
+          ? closure.compilation_result()->computation->name()
+          : std::string("<unknown>");
+  LOG(INFO) << "Entering XLA cluster: cluster=" << cluster_name
+            << " op=" << def().name() << " key=" << key
+            << " mode=local step_id=" << ctx->step_id();
   std::shared_ptr<se::DeviceMemoryAllocator> allocator =
       GetAllocator(ctx->device(), GetStream(ctx), platform_info_);
   XlaComputationLaunchContext launch_context =
@@ -1298,94 +2080,33 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
 
   MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
   if (flags->tf_xla_enable_dynamic_sizes) {
+    DynamicBatchResolutionResult batch_resolution =
+        ResolveDynamicBatchSizeFromRuntimeInputs(
+            ctx, *closure.compilation_result(), closure.num_constant_args(),
+            /*log_solves=*/true, cluster_name, def());
     bool is_set = false;
-    std::set<int64_t> dyn_vals;
-    const auto* comp_result = closure.compilation_result();
-    const int num_constant_args = closure.num_constant_args();
-    for (int i = 0; i < comp_result->xla_input_shapes.size(); i++) {
-      const auto& xla_shape = closure.compilation_result()->xla_input_shapes[i];
-      if (!xla_shape.IsArray() || xla_shape.expressions().empty()) continue;
-
-      for (int dim = 0; dim < xla_shape.expressions().size(); dim++) {
-        const auto& expr = xla_shape.expressions(dim);
-        if (expr && expr->is_dynamic()) {
-          xla::DExpr simplified_expr = expr.simplify();
-          int input_idx = comp_result->input_mapping[i] - num_constant_args;
-          if (input_idx < 0 || input_idx >= ctx->num_inputs()) {
-            VLOG(1) << "Warning: Input index is out of range";
-            continue;
-          }
-          VLOG(1) << "input shape is " << ctx->input(input_idx).shape()
-                  << ", corresponding xla input shape is " << xla_shape;
-          int64_t size = ctx->input(input_idx).shape().dim_size(dim);
-          std::optional<int64_t> dyn_val =
-              simplified_expr->solve(
-                  size);  // TODO: check if the result is correct later.
-          if (dyn_val.has_value()) {
-            VLOG(1) << "Found dynamic input. Real size is: " << size
-                    << ", solved dynamic value is " << *dyn_val;
-          } else {
-            xla::StringPrinter printer;
-            simplified_expr->print(&printer);
-            VLOG(1) << "Warning: Failed to solve the expression "
-                    << std::move(printer).ToString();
-            continue;
-          }
-          dyn_vals.insert(*dyn_val);
-        }
-      }
-    }
-  
-    std::optional<std::set<int>> expected_dyn_ids;
-    bool mismatched_dyn_ids = false;
-    for (int i = 0; i < comp_result->xla_input_shapes.size(); i++) {
-      const auto& xla_shape = closure.compilation_result()->xla_input_shapes[i];
-      if (!xla_shape.IsArray() || xla_shape.expressions().empty()) continue;
-      for (int dim = 0; dim < xla_shape.expressions().size(); dim++) {
-        const auto& expr = xla_shape.expressions(dim);
-        if (!(expr && expr->is_dynamic())) {
-          continue;
-        }
-        std::set<int> ids = expr->get_all_ids();
-        if (!expected_dyn_ids.has_value()) {
-          expected_dyn_ids = ids;
-        } else if (*expected_dyn_ids != ids) {
-          mismatched_dyn_ids = true;
-        }
-      }
-    }
-    if (dyn_vals.size() == 1 && expected_dyn_ids.has_value() &&
-        expected_dyn_ids->size() == 1 && !mismatched_dyn_ids) {
-      run_options.set_batch_size(*dyn_vals.begin());
-      is_set = true;
-    } else if (dyn_vals.size() > 1) {
-      const std::string error_message =
-          "Failed to recover a unique XLA dynamic batch size from runtime "
-          "input expressions. Refusing to run the XLA cluster with an invalid "
-          "batch size.";
-      ctx->CtxFailure(errors::InvalidArgument(error_message));
+    if (!batch_resolution.can_run) {
+      LOG(ERROR) << batch_resolution.diagnostic;
+      ctx->CtxFailure(errors::InvalidArgument(batch_resolution.diagnostic));
       return;
     }
-    
+    if (batch_resolution.has_batch_size) {
+      LOG(INFO) << "Setting run_options.batch_size "
+                << batch_resolution.diagnostic;
+      run_options.set_batch_size(batch_resolution.batch_size);
+      is_set = true;
+    } else {
+      LOG(INFO) << "Not setting run_options.batch_size because "
+                << batch_resolution.diagnostic;
+    }
     if (!is_set) {
-      // TODO: Fallback to BatchSizeResource for now. Remove it later.
-      BatchSizeResource* bsr = nullptr;
-      ScopedStepContainer* step_container = ctx->step_container();
-
-      absl::Status st = step_container->Lookup<BatchSizeResource>(
-          ctx->resource_manager(), BatchSizeResourceName, &bsr);
-
-      if (st.ok()) {
-        run_options.set_batch_size(bsr->GetBatchSize());
-        VLOG(1) << "run_options.batch_size is set to: "
-                << run_options.batch_size() << ". step_id: " << ctx->step_id();
-        bsr->Unref();
-
-      } else if (IsNotFound(st)) {
-        VLOG(1) << "Warning: Not found BatchSizeResource in step_container.";
-      } else {
-        OP_REQUIRES_OK(ctx, st);
-      }
+      LOG(WARNING) << "Entering XLA cluster without run_options.batch_size "
+                   << "being set. op=" << def().name() << " closure_key="
+                   << key << " step_id=" << ctx->step_id()
+                   << " current_run_options_batch_size="
+                   << run_options.batch_size()
+                   << " batch_size_resource_not_found="
+                   << batch_resolution.batch_size_resource_not_found;
     }
   }
 

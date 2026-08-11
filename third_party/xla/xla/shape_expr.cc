@@ -543,6 +543,11 @@ std::unique_ptr<DynExpr> SimplifyCanonical(const DynExpr* expr) {
     return std::make_unique<UnknownExpr>();
   }
   if (auto canonical = ToCanonicalAffine(expr); canonical.has_value()) {
+    if (canonical->IsPureConstant()) {
+      CHECK_NE(canonical->denominator, 0);
+      return std::make_unique<Constant>(canonical->constant /
+                                        canonical->denominator);
+    }
     return BuildCanonicalExpr(*canonical);
   }
   return SimplifyFallback(expr);

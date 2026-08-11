@@ -437,6 +437,39 @@ DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
   return result;
 }
 
+std::vector<XlaArgument> BuildStaticCompilationArguments(
+    absl::Span<const XlaArgument> args) {
+  std::vector<XlaArgument> static_args(args.begin(), args.end());
+  auto clear_shape_expressions = [&](auto&& self, xla::Shape* shape) -> void {
+    if (shape->IsTuple()) {
+      for (xla::Shape& subshape : *shape->mutable_tuple_shapes()) {
+        self(self, &subshape);
+      }
+    } else if (shape->IsArray()) {
+      shape->set_expressions({});
+      for (int dim = 0; dim < shape->dimensions().size(); ++dim) {
+        if (shape->dimensions(dim) >= 0) {
+          shape->set_dynamic_dimension(dim, false);
+        }
+      }
+    }
+  };
+
+  // Preserve concrete runtime dimensions and values so CompileIfNeeded uses
+  // its ordinary static-shape cache key. Only symbolic/dynamic annotations
+  // are removed.
+  for (XlaArgument& arg : static_args) {
+    if (absl::holds_alternative<TensorShape>(arg.shape)) {
+      std::get<TensorShape>(arg.shape).set_expressions({});
+    } else {
+      clear_shape_expressions(clear_shape_expressions,
+                              &std::get<xla::Shape>(arg.shape));
+    }
+    arg.constant_value_expressions.clear();
+  }
+  return static_args;
+}
+
 void StripIgnoredDynamicArgumentOccurrences(
     const std::vector<IgnoredDynamicArgumentOccurrence>& ignored_occurrences,
     std::vector<XlaArgument>* args) {
@@ -479,6 +512,7 @@ void StripIgnoredDynamicArgumentOccurrences(
 namespace {
 
 using xla_ops_internal::AnalyzeIgnoredDynamicArgumentOccurrences;
+using xla_ops_internal::BuildStaticCompilationArguments;
 using xla_ops_internal::DynamicSolveFilterDecision;
 using xla_ops_internal::StripIgnoredDynamicArgumentOccurrences;
 
@@ -1063,6 +1097,7 @@ absl::Status CompileToLocalExecutable(
     const XlaPlatformInfo& platform_info,
     const std::vector<XlaCompiler::Argument>& args,
     DeviceCompileMode compile_mode, bool may_alias_resource_update,
+    bool force_static_shapes, bool* dynamic_solve_conflict,
     xla::LocalClient** client,
     const XlaCompiler::CompilationResult** compilation_result,
     xla::LocalExecutable** executable) {
@@ -1106,8 +1141,11 @@ absl::Status CompileToLocalExecutable(
   XlaCompiler::CompileOptions compile_options =
       GenerateCompileOptions(has_ref_vars, may_alias_resource_update);
 
+  if (dynamic_solve_conflict != nullptr) {
+    *dynamic_solve_conflict = false;
+  }
   MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
-  if (flags->tf_xla_enable_dynamic_sizes) {
+  if (flags->tf_xla_enable_dynamic_sizes && !force_static_shapes) {
     // Rewriting the argument with expressions if they have dynamic
     // dimension, detecting dynamic dimension via either _dynamic_dim or the
     // inferred-output-shapes attr attached during encapsulation.
@@ -1320,6 +1358,9 @@ absl::Status CompileToLocalExecutable(
     DynamicSolveFilterDecision solve_filter_decision =
         AnalyzeIgnoredDynamicArgumentOccurrences(norm_args);
     if (!solve_filter_decision.can_run) {
+      if (dynamic_solve_conflict != nullptr) {
+        *dynamic_solve_conflict = true;
+      }
       if (compile_mode == DeviceCompileMode::kLazy) {
         return errors::Unimplemented(solve_filter_decision.diagnostic);
       }
@@ -1659,11 +1700,25 @@ void XlaLocalLaunchBase::ComputeAsync(OpKernelContext* ctx, DoneCallback done) {
     return;
   }
 
+  bool dynamic_solve_conflict = false;
   absl::Status status = CompileToLocalExecutable(
       ctx, function_, /*has_ref_vars=*/has_ref_vars_, platform_info_,
       xla_compiler_args, DeviceCompileMode::kStrict,
-      /*may_alias_resource_update=*/true, &client, &compilation_result,
+      /*may_alias_resource_update=*/true, /*force_static_shapes=*/false,
+      &dynamic_solve_conflict, &client, &compilation_result,
       &executable);
+  if (dynamic_solve_conflict) {
+    LOG(WARNING) << "Retrying XLA cluster " << function_.name()
+                 << " with concrete static argument shapes";
+    std::vector<XlaCompiler::Argument> static_args =
+        BuildStaticCompilationArguments(xla_compiler_args);
+    status = CompileToLocalExecutable(
+        ctx, function_, /*has_ref_vars=*/has_ref_vars_, platform_info_,
+        static_args, DeviceCompileMode::kStrict,
+        /*may_alias_resource_update=*/true, /*force_static_shapes=*/true,
+        /*dynamic_solve_conflict=*/nullptr, &client, &compilation_result,
+        &executable);
+  }
   OP_REQUIRES_OK_ASYNC(ctx, status, done);
 
   // Continuation of the execution, may be run in a different thread.
@@ -1852,6 +1907,27 @@ void XlaCompileOp::Compute(OpKernelContext* ctx) {
       GetXlaOpsCommonFlags()
           ->tf_xla_use_device_api.IsEnabledInXlaCompileAndRunForDevice(
               platform_info_.device_type());
+  std::vector<XlaCompiler::Argument> compiler_args;
+  auto compile_static_fallback = [&]() -> absl::Status {
+    std::vector<XlaCompiler::Argument> static_args =
+        BuildStaticCompilationArguments(compiler_args);
+    kernel = nullptr;
+    executable = nullptr;
+    pjrt_executable = nullptr;
+    LOG(WARNING) << "Retrying XLA cluster " << function_.name()
+                 << " with concrete static argument shapes";
+    if (use_pjrt) {
+      return CompileToPjRtLoadedExecutable(
+          *ctx, platform_info_, function_, static_args, compile_mode,
+          has_ref_vars_, /*may_alias_resource_update=*/false, &kernel,
+          &pjrt_client, &pjrt_executable);
+    }
+    return CompileToLocalExecutable(
+        ctx, function_, has_ref_vars_, platform_info_, static_args,
+        compile_mode, /*may_alias_resource_update=*/false,
+        /*force_static_shapes=*/true,
+        /*dynamic_solve_conflict=*/nullptr, &client, &kernel, &executable);
+  };
 
   if (GetXlaOpsCommonFlags()->tf_xla_always_defer_compilation ||
       cannot_compile_cluster) {
@@ -1860,13 +1936,14 @@ void XlaCompileOp::Compute(OpKernelContext* ctx) {
     auto args_and_variables_snapshot = GetXlaCompilerArgsAndSnapshotVariables(
         resources_, constants_, inputs, ctx);
     OP_REQUIRES_OK(ctx, args_and_variables_snapshot.status());
-    const std::vector<XlaCompiler::Argument>& args =
-        args_and_variables_snapshot->first;
+    compiler_args = std::move(args_and_variables_snapshot->first);
+    const std::vector<XlaCompiler::Argument>& args = compiler_args;
     variables_snapshot = std::move(args_and_variables_snapshot->second);
 
     // Do not alias resource updates as locking variables in XlaCompile and
     // unlocking them in XlaRun may lead to deadlocks.
     absl::Status status;
+    bool dynamic_solve_conflict = false;
     if (use_pjrt) {
       VLOG(2) << "Using PJRT for compilation. Function name: "
               << function_.name();
@@ -1877,7 +1954,11 @@ void XlaCompileOp::Compute(OpKernelContext* ctx) {
     } else {
       status = CompileToLocalExecutable(
           ctx, function_, has_ref_vars_, platform_info_, args, compile_mode,
-          /*may_alias_resource_update=*/false, &client, &kernel, &executable);
+          /*may_alias_resource_update=*/false, /*force_static_shapes=*/false,
+          &dynamic_solve_conflict, &client, &kernel, &executable);
+    }
+    if (dynamic_solve_conflict) {
+      status = compile_static_fallback();
     }
 
     if (compile_mode != DeviceCompileMode::kLazy ||
@@ -1921,13 +2002,21 @@ void XlaCompileOp::Compute(OpKernelContext* ctx) {
           "Rejecting XLA cluster at compile time because dynamic expressions "
           "cannot be solved consistently for this request. ",
           resolution.diagnostic);
-      if (must_compile_) {
-        OP_REQUIRES(ctx, false, errors::InvalidArgument(error_message));
-      }
       LOG(WARNING) << error_message;
-      executable = nullptr;
-      pjrt_executable = nullptr;
-      kernel = nullptr;
+      absl::Status static_status = compile_static_fallback();
+      if (!static_status.ok()) {
+        if (must_compile_) {
+          OP_REQUIRES_OK(ctx, static_status);
+        }
+        LOG(WARNING) << "Static XLA fallback failed for cluster "
+                     << function_.name() << ": " << static_status;
+        executable = nullptr;
+        pjrt_executable = nullptr;
+        kernel = nullptr;
+      } else {
+        LOG(INFO) << "Using static XLA fallback for cluster "
+                  << function_.name();
+      }
     }
   }
 

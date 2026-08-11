@@ -49,6 +49,9 @@ struct DynamicSolveFilterDecision {
 DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
     absl::Span<const XlaArgument> args);
 
+std::vector<XlaArgument> BuildStaticCompilationArguments(
+    absl::Span<const XlaArgument> args);
+
 void StripIgnoredDynamicArgumentOccurrences(
     const std::vector<IgnoredDynamicArgumentOccurrence>& ignored_occurrences,
     std::vector<XlaArgument>* args);

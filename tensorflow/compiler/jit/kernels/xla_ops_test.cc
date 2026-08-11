@@ -88,6 +88,47 @@ TEST(DynamicSolveFilterTest, KeepsConsistentSingletonOnlyEvidence) {
   EXPECT_TRUE(decision.ignored_occurrences.empty());
 }
 
+TEST(DynamicSolveFilterTest, StaticArgumentsKeepConcreteRuntimeShapes) {
+  XlaArgument dynamic_arg = MakeDynamicArgument(37);
+  dynamic_arg.constant_value_expressions.resize(1);
+  dynamic_arg.constant_value_expressions[0].set_variable_id(1);
+
+  std::vector<XlaArgument> args = {dynamic_arg};
+  std::vector<XlaArgument> static_args =
+      BuildStaticCompilationArguments(args);
+
+  ASSERT_EQ(static_args.size(), 1);
+  const TensorShape& static_shape =
+      std::get<TensorShape>(static_args[0].shape);
+  EXPECT_EQ(static_shape.dim_size(0), 37);
+  EXPECT_EQ(static_shape.dim_size(1), 16);
+  EXPECT_TRUE(static_shape.get_expressions().empty());
+  EXPECT_TRUE(static_args[0].constant_value_expressions.empty());
+}
+
+TEST(DynamicSolveFilterTest, StaticArgumentsClearXlaShapeDynamism) {
+  xla::Shape dynamic_shape;
+  dynamic_shape.set_element_type(xla::F32);
+  dynamic_shape.add_dimensions(37, /*is_dynamic=*/true,
+                               xla::DExpr::Var(1));
+
+  XlaArgument dynamic_arg;
+  dynamic_arg.kind = XlaArgument::kParameter;
+  dynamic_arg.type = DT_FLOAT;
+  dynamic_arg.shape = dynamic_shape;
+  std::vector<XlaArgument> args = {dynamic_arg};
+
+  std::vector<XlaArgument> static_args =
+      BuildStaticCompilationArguments(args);
+
+  const xla::Shape& static_shape = std::get<xla::Shape>(static_args[0].shape);
+  EXPECT_EQ(static_shape.dimensions(0), 37);
+  EXPECT_FALSE(static_shape.is_dynamic_dimension(0));
+  ASSERT_EQ(static_shape.expressions().size(), 1);
+  EXPECT_TRUE(static_shape.expressions(0)->is_constant());
+  EXPECT_EQ(static_shape.expressions(0)->get_val(), 37);
+}
+
 }  // namespace
 }  // namespace xla_ops_internal
 }  // namespace tensorflow

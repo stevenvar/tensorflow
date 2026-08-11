@@ -46,6 +46,10 @@ struct DynamicSolveFilterDecision {
   std::vector<IgnoredDynamicArgumentOccurrence> ignored_occurrences;
 };
 
+int GetRuntimeInputIndex(absl::Span<const int> input_mapping,
+                         int xla_input_index, int num_constant_args,
+                         bool constants_omitted);
+
 DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
     absl::Span<const XlaArgument> args);
 

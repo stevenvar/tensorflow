@@ -461,6 +461,12 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
           VLOG(1) << "Current expression is " << expr;
           if (run_options) {
             const int64_t run_options_batch_size = run_options->batch_size();
+            if (run_options_batch_size <= 0) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Cannot substitute dynamic output shape for output ", i,
+                  ", dimension ", dim,
+                  ": the XLA runtime batch size was not initialized"));
+            }
             LOG(INFO) << "PopulateOutputs read run_options->batch_size()="
                       << run_options_batch_size << " for output " << i
                       << " dimension " << dim;
@@ -503,7 +509,15 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
               return errors::Internal(
                   "BatchSizeResource lookup succeeded but returned null");
             }
-            xla::DExpr batch_size = xla::DExpr::Const(bsr->GetBatchSize());
+            core::ScopedUnref bsr_ref(bsr);
+            const int64_t runtime_batch_size = bsr->GetBatchSize();
+            if (runtime_batch_size <= 0) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Cannot substitute dynamic output shape for output ", i,
+                  ", dimension ", dim,
+                  ": the XLA runtime batch size was not initialized"));
+            }
+            xla::DExpr batch_size = xla::DExpr::Const(runtime_batch_size);
             const std::set<int> ids = expr->get_all_ids();
             if (ids.size() != 1) {
               return absl::InvalidArgumentError(absl::StrCat(
@@ -531,7 +545,6 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
                   i, ", dimension ", dim, ": ", DExprToString(subst_expr)));
             }
             shape.set_dim(dim, subst_expr->get_val());
-            bsr->Unref();
           }
         }
       }

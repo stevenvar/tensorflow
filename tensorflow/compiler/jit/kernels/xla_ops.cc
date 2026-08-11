@@ -227,6 +227,16 @@ struct DynamicSolveCandidate {
 
 namespace xla_ops_internal {
 
+int GetRuntimeInputIndex(absl::Span<const int> input_mapping,
+                         int xla_input_index, int num_constant_args,
+                         bool constants_omitted) {
+  if (xla_input_index < 0 || xla_input_index >= input_mapping.size()) {
+    return -1;
+  }
+  const int missing_input_prefix = constants_omitted ? num_constant_args : 0;
+  return input_mapping[xla_input_index] - missing_input_prefix;
+}
+
 std::optional<int64_t> GetConstantArgumentElementValue(
     const XlaArgument& arg, int index) {
   if (index < 0 || index >= arg.constant_value.NumElements()) {
@@ -514,6 +524,7 @@ namespace {
 using xla_ops_internal::AnalyzeIgnoredDynamicArgumentOccurrences;
 using xla_ops_internal::BuildStaticCompilationArguments;
 using xla_ops_internal::DynamicSolveFilterDecision;
+using xla_ops_internal::GetRuntimeInputIndex;
 using xla_ops_internal::StripIgnoredDynamicArgumentOccurrences;
 
 DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeInputs(
@@ -526,14 +537,11 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeInputs(
     return result;
   }
   auto resolve_runtime_input_index = [&](int xla_input_index) -> int {
-    const bool has_runtime_key =
-        ctx->num_inputs() > 0 &&
-        ctx->input_dtype(ctx->num_inputs() - 1) == DT_STRING &&
-        ctx->num_inputs() == comp_result.xla_input_shapes.size() + 1;
-    if (has_runtime_key) {
-      return xla_input_index;
-    }
-    return num_constant_args + xla_input_index;
+    // input_mapping maps each XLA parameter to its original function argument.
+    // _XlaRun omits the compile-time constant prefix from its inputs.
+    return GetRuntimeInputIndex(comp_result.input_mapping, xla_input_index,
+                                num_constant_args,
+                                /*constants_omitted=*/op_def.op() == "_XlaRun");
   };
 
   std::set<int64_t> dyn_vals;
@@ -541,7 +549,6 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeInputs(
 
   for (int i = 0; i < comp_result.xla_input_shapes.size(); ++i) {
     const auto& xla_shape = comp_result.xla_input_shapes[i];
-    const bool has_input_mapping = i < comp_result.input_mapping.size();
     const int input_idx = resolve_runtime_input_index(i);
     if (!xla_shape.IsArray() || xla_shape.expressions().empty()) {
       continue;
@@ -553,9 +560,6 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeInputs(
         continue;
       }
       xla::DExpr simplified_expr = expr.simplify();
-      if (!has_input_mapping) {
-        continue;
-      }
       if (input_idx < 0 || input_idx >= ctx->num_inputs()) {
         continue;
       }

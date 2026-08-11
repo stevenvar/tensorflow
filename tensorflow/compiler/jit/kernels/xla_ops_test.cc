@@ -27,6 +27,26 @@ namespace tensorflow {
 namespace xla_ops_internal {
 namespace {
 
+TEST(XlaInputMappingTest, UsesCompilationInputMapping) {
+  const std::vector<int> input_mapping = {1, 3};
+
+  EXPECT_EQ(GetRuntimeInputIndex(input_mapping, 0, /*num_constant_args=*/1,
+                                 /*constants_omitted=*/false),
+            1);
+  EXPECT_EQ(GetRuntimeInputIndex(input_mapping, 1, /*num_constant_args=*/1,
+                                 /*constants_omitted=*/false),
+            3);
+  EXPECT_EQ(GetRuntimeInputIndex(input_mapping, 0, /*num_constant_args=*/1,
+                                 /*constants_omitted=*/true),
+            0);
+  EXPECT_EQ(GetRuntimeInputIndex(input_mapping, 1, /*num_constant_args=*/1,
+                                 /*constants_omitted=*/true),
+            2);
+  EXPECT_EQ(GetRuntimeInputIndex(input_mapping, 2, /*num_constant_args=*/1,
+                                 /*constants_omitted=*/true),
+            -1);
+}
+
 XlaArgument MakeDynamicArgument(int64_t observed_size) {
   XlaArgument arg;
   arg.kind = XlaArgument::kParameter;

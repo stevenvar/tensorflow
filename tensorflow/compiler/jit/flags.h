@@ -102,10 +102,6 @@ struct MarkForCompilationPassFlags {
   // If true enables support of dynamic sizes.
   bool tf_xla_enable_dynamic_sizes;
 
-  // If true enables solve-time majority vote when dynamic expression solving
-  // observes conflicting candidates.
-  bool tf_xla_enable_dynamic_solve_majority_vote;
-
   // If true enables symbolic content propagation.
   bool tf_xla_enable_symbolic_content;
 

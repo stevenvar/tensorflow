@@ -525,9 +525,6 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeInputs(
   if (!flags->tf_xla_enable_dynamic_sizes) {
     return result;
   }
-  const bool enable_dynamic_solve_majority_vote =
-      flags->tf_xla_enable_dynamic_solve_majority_vote;
-
   auto resolve_runtime_input_index = [&](int xla_input_index) -> int {
     const bool has_runtime_key =
         ctx->num_inputs() > 0 &&
@@ -619,9 +616,6 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeInputs(
   std::optional<std::set<int>> expected_dyn_ids;
   bool mismatched_dyn_ids = false;
   bool candidate_filter_rejected = false;
-  bool majority_vote_used = false;
-  bool ambiguous_majority_vote = false;
-  std::vector<std::string> voted_expr_summaries;
   for (const auto& [expr, candidates] : expr_to_candidates) {
     std::set<int64_t> singleton_values;
     std::set<int64_t> nonsingleton_values;
@@ -650,164 +644,22 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeInputs(
                 : "preferred non-singleton evidence over singleton-derived "
                   "candidates";
       } else {
-        if (!enable_dynamic_solve_majority_vote) {
-          candidate_filter_rejected = true;
-          filter_reason =
-              "conflicting non-singleton candidates; majority vote disabled "
-              "for debugging";
-          LOG(INFO) << "Dynamic solve encountered conflicting non-singleton "
-                       "candidates for expr="
-                    << expr
-                    << " but majority vote is disabled for debugging.";
-        } else {
-        std::map<int64_t, std::vector<std::string>> vote_contexts;
-        for (const auto& candidate : candidates) {
-          vote_contexts[candidate.solved_value].push_back(candidate.context);
-        }
-        int64_t winner_value = 0;
-        size_t winner_count = 0;
-        size_t runner_up_count = 0;
-        bool have_winner = false;
-        bool tie_for_winner = false;
-        std::vector<std::string> tally_parts;
-        for (const auto& [value, contexts] : vote_contexts) {
-          tally_parts.push_back(absl::StrCat(
-              value, " x", contexts.size(), " [",
-              absl::StrJoin(contexts, "; "), "]"));
-          if (!have_winner || contexts.size() > winner_count) {
-            runner_up_count = have_winner ? winner_count : 0;
-            winner_value = value;
-            winner_count = contexts.size();
-            have_winner = true;
-            tie_for_winner = false;
-          } else if (contexts.size() == winner_count) {
-            tie_for_winner = true;
-          } else if (contexts.size() > runner_up_count) {
-            runner_up_count = contexts.size();
-          }
-        }
-        const bool clear_majority = !tie_for_winner && winner_count >= 2 &&
-                                    winner_count > runner_up_count;
-        if (clear_majority) {
-          chosen_value = winner_value;
-          majority_vote_used = true;
-          filter_reason =
-              "singleton filtering conflicted; majority vote kept value";
-          std::vector<std::string> dropped_parts;
-          for (const auto& [value, contexts] : vote_contexts) {
-            if (value == winner_value) continue;
-            dropped_parts.push_back(
-                absl::StrCat(value, " x", contexts.size()));
-          }
-          LOG(INFO) << "Dynamic solve majority vote kept value for expr="
-                    << expr << " kept=" << winner_value
-                    << " kept_count=" << winner_count
-                    << " runner_up_count=" << runner_up_count
-                    << " dropped=["
-                    << (dropped_parts.empty() ? std::string()
-                                              : absl::StrJoin(dropped_parts, ", "))
-                    << "] tallies=[" << absl::StrJoin(tally_parts, " | ")
-                    << "]";
-          voted_expr_summaries.push_back(absl::StrCat(
-              "expr=", expr, " kept=", winner_value, " count=", winner_count,
-              " dropped=[",
-              dropped_parts.empty() ? std::string()
-                                    : absl::StrJoin(dropped_parts, ", "),
-              "]"));
-        } else {
-          candidate_filter_rejected = true;
-          ambiguous_majority_vote = true;
-          filter_reason =
-              "conflicting non-singleton candidates and no clear majority "
-              "vote";
-          LOG(INFO) << "Dynamic solve majority vote could not choose a unique "
-                       "value for expr="
-                    << expr << " tallies=[" << absl::StrJoin(tally_parts, " | ")
-                    << "]";
-        }
-        }
+        candidate_filter_rejected = true;
+        filter_reason = "conflicting non-singleton candidates";
+        LOG(INFO) << "Dynamic solve encountered conflicting non-singleton "
+                     "candidates for expr="
+                  << expr;
       }
     } else if (!singleton_values.empty()) {
       if (singleton_values.size() == 1) {
         chosen_value = *singleton_values.begin();
         filter_reason = "used singleton-derived evidence only";
       } else {
-        if (!enable_dynamic_solve_majority_vote) {
-          candidate_filter_rejected = true;
-          filter_reason =
-              "conflicting singleton-derived candidates; majority "
-              "vote disabled for debugging";
-          LOG(INFO) << "Dynamic solve encountered conflicting "
-                       "singleton-derived candidates for expr="
-                    << expr
-                    << " but majority vote is disabled for debugging.";
-        } else {
-        std::map<int64_t, std::vector<std::string>> vote_contexts;
-        for (const auto& candidate : candidates) {
-          vote_contexts[candidate.solved_value].push_back(candidate.context);
-        }
-        int64_t winner_value = 0;
-        size_t winner_count = 0;
-        size_t runner_up_count = 0;
-        bool have_winner = false;
-        bool tie_for_winner = false;
-        std::vector<std::string> tally_parts;
-        for (const auto& [value, contexts] : vote_contexts) {
-          tally_parts.push_back(absl::StrCat(
-              value, " x", contexts.size(), " [",
-              absl::StrJoin(contexts, "; "), "]"));
-          if (!have_winner || contexts.size() > winner_count) {
-            runner_up_count = have_winner ? winner_count : 0;
-            winner_value = value;
-            winner_count = contexts.size();
-            have_winner = true;
-            tie_for_winner = false;
-          } else if (contexts.size() == winner_count) {
-            tie_for_winner = true;
-          } else if (contexts.size() > runner_up_count) {
-            runner_up_count = contexts.size();
-          }
-        }
-        const bool clear_majority = !tie_for_winner && winner_count >= 2 &&
-                                    winner_count > runner_up_count;
-        if (clear_majority) {
-          chosen_value = winner_value;
-          majority_vote_used = true;
-          filter_reason =
-              "singleton-only evidence conflicted; majority vote kept value";
-          std::vector<std::string> dropped_parts;
-          for (const auto& [value, contexts] : vote_contexts) {
-            if (value == winner_value) continue;
-            dropped_parts.push_back(
-                absl::StrCat(value, " x", contexts.size()));
-          }
-          LOG(INFO) << "Dynamic solve majority vote kept value for expr="
-                    << expr << " kept=" << winner_value
-                    << " kept_count=" << winner_count
-                    << " runner_up_count=" << runner_up_count
-                    << " dropped=["
-                    << (dropped_parts.empty() ? std::string()
-                                              : absl::StrJoin(dropped_parts, ", "))
-                    << "] tallies=[" << absl::StrJoin(tally_parts, " | ")
-                    << "]";
-          voted_expr_summaries.push_back(absl::StrCat(
-              "expr=", expr, " kept=", winner_value, " count=", winner_count,
-              " dropped=[",
-              dropped_parts.empty() ? std::string()
-                                    : absl::StrJoin(dropped_parts, ", "),
-              "]"));
-        } else {
-          candidate_filter_rejected = true;
-          ambiguous_majority_vote = true;
-          filter_reason =
-              "conflicting singleton-derived candidates and no clear "
-              "majority vote";
-          LOG(INFO) << "Dynamic solve majority vote could not choose a unique "
-                       "value for expr="
-                    << expr << " tallies=[" << absl::StrJoin(tally_parts, " | ")
-                    << "]";
-        }
-        }
+        candidate_filter_rejected = true;
+        filter_reason = "conflicting singleton-derived candidates";
+        LOG(INFO) << "Dynamic solve encountered conflicting singleton-derived "
+                     "candidates for expr="
+                  << expr;
       }
     } else {
       filter_reason = "no dynamic values were solved";
@@ -862,31 +714,25 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeInputs(
     result.diagnostic = absl::StrCat(
         "Failed to recover a unique XLA dynamic batch size after solve-time "
         "candidate filtering. solved_expressions=[",
-        absl::StrJoin(expr_summaries, " | "), "] voted_expressions=[",
-        absl::StrJoin(voted_expr_summaries, " | "), "] all_values={",
-        absl::StrJoin(dyn_vals, ", "), "}",
-        ambiguous_majority_vote ? " reason=no clear majority vote" : "");
+        absl::StrJoin(expr_summaries, " | "), "] all_values={",
+        absl::StrJoin(dyn_vals, ", "), "}");
     return result;
   } else if (dyn_vals.size() == 1 && mismatched_dyn_ids) {
     result.diagnostic = absl::StrCat(
         "solved dynamic expressions do not share the same variable ids: ",
-        absl::StrJoin(expr_summaries, " | "), " voted_expressions=[",
-        absl::StrJoin(voted_expr_summaries, " | "), "]");
+        absl::StrJoin(expr_summaries, " | "));
   } else if (dyn_vals.size() == 1) {
     result.diagnostic = absl::StrCat(
         "solved dynamic expressions do not map to exactly one shared dynamic "
         "variable id: ",
-        absl::StrJoin(expr_summaries, " | "), " voted_expressions=[",
-        absl::StrJoin(voted_expr_summaries, " | "), "]");
+        absl::StrJoin(expr_summaries, " | "));
   } else {
     result.can_run = false;
     result.diagnostic = absl::StrCat(
         "Failed to recover a unique XLA dynamic batch size from runtime "
         "input expressions. solved_expressions=[",
-        absl::StrJoin(expr_summaries, " | "), "] voted_expressions=[",
-        absl::StrJoin(voted_expr_summaries, " | "), "] all_values={",
-        absl::StrJoin(dyn_vals, ", "), "}",
-        majority_vote_used ? " after majority-vote filtering" : "");
+        absl::StrJoin(expr_summaries, " | "), "] all_values={",
+        absl::StrJoin(dyn_vals, ", "), "}");
     return result;
   }
 

@@ -233,6 +233,19 @@ TEST_F(ShapeInferenceTest, SelectRejectsMismatchedOperandExpressions) {
               HasSubstr("mismatched expressions in dimension 0"));
 }
 
+TEST_F(ShapeInferenceTest, SelectRejectsMissingDynamicOperandExpression) {
+  const Shape pred = ShapeUtil::MakeShape(PRED, {});
+  const Shape on_true = ShapeUtil::MakeShape(
+      F32, {8, 5}, std::vector<DExpr>{DExpr::Var(33), DExpr::Const(5)});
+  const Shape on_false = ShapeUtil::MakeShape(F32, {8, 5});
+  const absl::StatusOr<Shape> inferred_shape =
+      ShapeInference::InferTernaryOpShape(HloOpcode::kSelect, pred, on_true,
+                                          on_false);
+  ASSERT_FALSE(inferred_shape.ok());
+  EXPECT_THAT(inferred_shape.status().message(),
+              HasSubstr("mismatched expressions in dimension 0"));
+}
+
 TEST_F(ShapeInferenceTest, SelectBadShapes) {
   const absl::StatusOr<Shape> inferred_shape_error1 =
       ShapeInference::InferTernaryOpShape(HloOpcode::kSelect, pred_,

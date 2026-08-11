@@ -148,6 +148,13 @@ TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
   EXPECT_EQ(DExpr::Kind::kConstant, evaluated.kind());
   EXPECT_EQ(7, evaluated->get_val());
 
+  DExpr divided =
+      DExpr::Max((DExpr::Var(1) + 1) / 2, DExpr::Const(0));
+  DExpr divided_evaluated =
+      divided.substitute(1, DExpr::Const(100)).simplify();
+  EXPECT_EQ(DExpr::Kind::kConstant, divided_evaluated.kind());
+  EXPECT_EQ(50, divided_evaluated->get_val());
+
   ExpressionProto proto;
   expr.to_proto(&proto);
   EXPECT_TRUE(expr == DExprFromProto(proto));

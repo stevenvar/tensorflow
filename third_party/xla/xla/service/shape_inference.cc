@@ -4167,15 +4167,22 @@ ShapeInference::InferCollectivePermuteDoneShape(const Shape& operand_shape) {
                          on_true.is_dynamic_dimension(dimension) ||
                          on_false.is_dynamic_dimension(dimension));
     }
-    if (!DynExpr::equal(on_true.expressions(dimension),
-                        on_false.expressions(dimension))) {
-      return InvalidArgument(
-          "Select operands have mismatched expressions in dimension %d: "
-          "on_true=%s, on_false=%s.",
-          dimension, ShapeUtil::HumanString(on_true),
-          ShapeUtil::HumanString(on_false));
+    const DExpr& on_true_expr = on_true.expressions(dimension);
+    const DExpr& on_false_expr = on_false.expressions(dimension);
+    const bool has_dynamic_expression =
+        (on_true_expr && on_true_expr->is_dynamic()) ||
+        (on_false_expr && on_false_expr->is_dynamic());
+    if (has_dynamic_expression) {
+      if (!on_true_expr || !on_false_expr ||
+          !DynExpr::equal(on_true_expr, on_false_expr)) {
+        return InvalidArgument(
+            "Select operands have mismatched expressions in dimension %d: "
+            "on_true=%s, on_false=%s.",
+            dimension, ShapeUtil::HumanString(on_true),
+            ShapeUtil::HumanString(on_false));
+      }
+      result.set_expression(dimension, on_true_expr);
     }
-    result.set_expression(dimension, on_true.expressions(dimension));
   }
   if (result.has_layout()) {
     result.mutable_layout()->set_element_size_in_bits(

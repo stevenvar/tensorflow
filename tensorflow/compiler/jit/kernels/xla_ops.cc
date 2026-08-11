@@ -375,19 +375,18 @@ DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
       for (const auto& candidate : candidates) {
         if (candidate.observed_value == 1 &&
             candidate.solved_value != *chosen_value) {
-          LOG(INFO) << "Ignoring singleton-derived dynamic "
-                    << "occurrence during XLA signature filtering: expr="
-                    << expr
-                    << " chosen_value=" << *chosen_value
-                    << " ignored_observed_value=" << candidate.observed_value
-                    << " ignored_solved_value=" << candidate.solved_value
-                    << " arg_index=" << candidate.occurrence.arg_index
-                    << (candidate.occurrence.source ==
-                                IgnoredDynamicArgumentOccurrence::Source::
-                                    kShapeDimension
-                            ? " dim="
-                            : " element=")
-                    << candidate.occurrence.dim_or_index;
+          VLOG(1) << "Ignoring singleton-derived dynamic "
+                  << "occurrence during XLA signature filtering: expr="
+                  << expr << " chosen_value=" << *chosen_value
+                  << " ignored_observed_value=" << candidate.observed_value
+                  << " ignored_solved_value=" << candidate.solved_value
+                  << " arg_index=" << candidate.occurrence.arg_index
+                  << (candidate.occurrence.source ==
+                              IgnoredDynamicArgumentOccurrence::Source::
+                                  kShapeDimension
+                          ? " dim="
+                          : " element=")
+                  << candidate.occurrence.dim_or_index;
           result.ignored_occurrences.push_back(candidate.occurrence);
         }
       }
@@ -496,23 +495,23 @@ void StripIgnoredDynamicArgumentOccurrences(
       if (!absl::holds_alternative<TensorShape>(arg.shape)) {
         continue;
       }
-      LOG(INFO) << "Dropping ignored dynamic shape expression from XLA "
-                << "signature/HLO: arg_index=" << occurrence.arg_index
-                << " dim=" << occurrence.dim_or_index
-                << " expr=" << occurrence.expr
-                << " observed_value=" << occurrence.observed_value
-                << " solved_value=" << occurrence.solved_value;
+      VLOG(1) << "Dropping ignored dynamic shape expression from XLA "
+              << "signature/HLO: arg_index=" << occurrence.arg_index
+              << " dim=" << occurrence.dim_or_index
+              << " expr=" << occurrence.expr
+              << " observed_value=" << occurrence.observed_value
+              << " solved_value=" << occurrence.solved_value;
       TensorShape& shape = std::get<TensorShape>(arg.shape);
       shape.set_expression(occurrence.dim_or_index, xla::DExpr());
       continue;
     }
 
-    LOG(INFO) << "Dropping ignored dynamic constant-value expression from XLA "
-              << "signature/HLO: arg_index=" << occurrence.arg_index
-              << " element=" << occurrence.dim_or_index
-              << " expr=" << occurrence.expr
-              << " observed_value=" << occurrence.observed_value
-              << " solved_value=" << occurrence.solved_value;
+    VLOG(1) << "Dropping ignored dynamic constant-value expression from XLA "
+            << "signature/HLO: arg_index=" << occurrence.arg_index
+            << " element=" << occurrence.dim_or_index
+            << " expr=" << occurrence.expr
+            << " observed_value=" << occurrence.observed_value
+            << " solved_value=" << occurrence.solved_value;
     SetConstantArgumentExpressionToLiteralValue(&arg, occurrence.dim_or_index);
   }
 }
@@ -581,7 +580,7 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeInputs(
       }
       int64_t size = ctx->input(input_idx).shape().dim_size(dim);
       std::optional<int64_t> dyn_val = simplified_expr->solve(size);
-      if (log_solves) {
+      if (log_solves && dyn_val.has_value()) {
         LOG(INFO) << "Dynamic solve: cluster=" << cluster_name
                   << " runtime_input_index=" << input_idx
                   << " xla_input_index=" << i << " dim=" << dim
@@ -593,15 +592,12 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeInputs(
       }
       if (!dyn_val.has_value()) {
         if (log_solves) {
-          xla::StringPrinter printer;
-          simplified_expr->print(&printer);
-          LOG(INFO) << "Failed to solve dynamic expression: "
-                    << "xla_input_index=" << i
-                    << " runtime_input_index=" << input_idx
-                    << " input_name=" << runtime_input_name
-                    << " dim=" << dim
-                    << " runtime_dim_size=" << size
-                    << " expr=" << std::move(printer).ToString();
+          LOG(WARNING) << "Dynamic solve failed: cluster=" << cluster_name
+                       << " runtime_input_index=" << input_idx
+                       << " xla_input_index=" << i << " dim=" << dim
+                       << " input_name=" << runtime_input_name
+                       << " expr=" << DExprToString(simplified_expr)
+                       << " target_size=" << size;
         }
         continue;
       }
@@ -650,9 +646,9 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeInputs(
       } else {
         candidate_filter_rejected = true;
         filter_reason = "conflicting non-singleton candidates";
-        LOG(INFO) << "Dynamic solve encountered conflicting non-singleton "
-                     "candidates for expr="
-                  << expr;
+        LOG(WARNING) << "Dynamic solve encountered conflicting non-singleton "
+                        "candidates for expr="
+                     << expr;
       }
     } else if (!singleton_values.empty()) {
       if (singleton_values.size() == 1) {
@@ -661,9 +657,10 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeInputs(
       } else {
         candidate_filter_rejected = true;
         filter_reason = "conflicting singleton-derived candidates";
-        LOG(INFO) << "Dynamic solve encountered conflicting singleton-derived "
-                     "candidates for expr="
-                  << expr;
+        LOG(WARNING)
+            << "Dynamic solve encountered conflicting singleton-derived "
+               "candidates for expr="
+            << expr;
       }
     } else {
       filter_reason = "no dynamic values were solved";
@@ -1217,7 +1214,7 @@ absl::Status CompileToLocalExecutable(
       return errors::InvalidArgument(solve_filter_decision.diagnostic);
     }
     if (!solve_filter_decision.ignored_occurrences.empty()) {
-      LOG(INFO) << solve_filter_decision.diagnostic;
+      LOG(WARNING) << solve_filter_decision.diagnostic;
       StripIgnoredDynamicArgumentOccurrences(
           solve_filter_decision.ignored_occurrences, &norm_args);
       saw_dynamic_dim_value = false;
@@ -2034,14 +2031,12 @@ void XlaRunOp::Compute(OpKernelContext* ctx) {
                 << batch_resolution.diagnostic;
       run_options.set_batch_size(batch_resolution.batch_size);
       is_set = true;
-    } else {
-      LOG(INFO) << "Not setting run_options.batch_size because "
-                << batch_resolution.diagnostic;
     }
     if (!is_set) {
       LOG(WARNING) << "Entering XLA cluster without run_options.batch_size "
-                   << "being set. op=" << def().name() << " closure_key="
-                   << key << " step_id=" << ctx->step_id()
+                   << "being set because " << batch_resolution.diagnostic
+                   << ". op=" << def().name() << " closure_key=" << key
+                   << " step_id=" << ctx->step_id()
                    << " current_run_options_batch_size="
                    << run_options.batch_size()
                    << " batch_size_resource_not_found="

@@ -499,8 +499,9 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
             shape.set_dim(dim, subst_expr->get_val());
           } else {
             // TODO: Fallback to BatchSizeResource for now. Remove it later.
-            LOG(INFO) << "PopulateOutputs did not receive run_options for "
-                      << "output " << i << " dimension " << dim;
+            LOG(WARNING) << "PopulateOutputs did not receive run_options for "
+                         << "output " << i << " dimension " << dim
+                         << "; falling back to BatchSizeResource";
             BatchSizeResource* bsr = nullptr;
             ScopedStepContainer* step_container = ctx->step_container();
             TF_RETURN_IF_ERROR(step_container->Lookup<BatchSizeResource>(

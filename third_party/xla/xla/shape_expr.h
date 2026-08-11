@@ -241,7 +241,8 @@ class Constant : public DynExpr {
   DynExpr* s() override;
 };
 
-// var id (int)
+// Root variables represent strictly positive dynamic dimensions. Potentially
+// signed values must be represented by expressions derived from these roots.
 class Variable : public DynExpr {
   int id;
 
@@ -528,7 +529,9 @@ class Div : public DynExpr {
     if (lhs->is_dynamic() && rhs->is_dynamic()) return std::nullopt;
     if (lhs->get_all_ids().size() == 1 && rhs->is_constant()) {
       // (A / c) = x <=> A = x * c => solve A = y with y = x * c
-      return lhs->solve(x * rhs->get_val());
+      const int64_t divisor = rhs->get_val();
+      if (divisor == 0) return std::nullopt;
+      return lhs->solve(x * divisor);
     }
     if (rhs->get_all_ids().size() == 1 && lhs->is_constant()) {
       // (c / A) = x <=> A = c / x => solve A = y with y = c / x

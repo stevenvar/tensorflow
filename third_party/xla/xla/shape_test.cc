@@ -126,6 +126,11 @@ TEST_F(ShapeTest, DExprSimplifyCombinesEqualFractions) {
   EXPECT_EQ("A", DExprToString(expr.simplify()));
 }
 
+TEST_F(ShapeTest, DExprSolveRejectsZeroDivisor) {
+  DExpr expr = DExpr::Var(1) / DExpr::Const(0);
+  EXPECT_FALSE(expr->solve(7).has_value());
+}
+
 TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
   DExpr expr = DExpr::Max(DExpr::Var(1), DExpr::Const(4));
   EXPECT_EQ("max(A, 4)", DExprToString(expr.simplify()));
@@ -136,7 +141,7 @@ TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
 
   DExpr positive_affine =
       DExpr::Max(2 * DExpr::Var(1) - 1, DExpr::Const(0));
-  EXPECT_EQ("((2 * A) + (-1))",
+  EXPECT_EQ("((2 * A) - 1)",
             DExprToString(positive_affine.simplify()));
 
   DExpr unbounded_below =
@@ -161,16 +166,27 @@ TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
 }
 
 TEST_F(ShapeTest, DExprSelectUsesDynamicPredicate) {
-  DExpr delta = DExpr::Var(1);
+  DExpr delta = DExpr::Var(1) - 3;
   DExpr expr = DExpr::Select(DExpr::Gt(delta, DExpr::Const(0)),
                              DExpr::Const(7), DExpr::Const(11));
-  EXPECT_EQ("select((A > 0), 7, 11)", DExprToString(expr.simplify()));
-  EXPECT_EQ(7, expr.substitute(1, DExpr::Const(2))->s()->get_val());
-  EXPECT_EQ(11, expr.substitute(1, DExpr::Const(-2))->s()->get_val());
+  EXPECT_EQ("select(((A - 3) > 0), 7, 11)",
+            DExprToString(expr.simplify()));
+  EXPECT_EQ(7, expr.substitute(1, DExpr::Const(5))->s()->get_val());
+  EXPECT_EQ(11, expr.substitute(1, DExpr::Const(1))->s()->get_val());
 
   ExpressionProto proto;
   expr.to_proto(&proto);
   EXPECT_TRUE(expr == DExprFromProto(proto));
+}
+
+TEST_F(ShapeTest, DExprUnknownPropagatesThroughGtAndSelect) {
+  DExpr gt = DExpr::Gt(DExpr::Unknown(), DExpr::Const(0)).simplify();
+  EXPECT_TRUE(gt.is_unknown());
+
+  DExpr select =
+      DExpr::Select(DExpr::Unknown(), DExpr::Const(7), DExpr::Const(11))
+          .simplify();
+  EXPECT_TRUE(select.is_unknown());
 }
 
 TEST_F(ShapeTest, DExprFindsSmallestSubexpressionCoveringAllVariables) {

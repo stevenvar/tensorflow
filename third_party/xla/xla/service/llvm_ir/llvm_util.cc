@@ -905,7 +905,7 @@ static llvm::Value* EmitExpressionImpl(llvm::IRBuilderBase* b,
     auto* div_node = static_cast<const Div*>(&expr);
     llvm::Value* v_lhs = EmitExpressionImpl(b, *div_node->get_lhs());
     llvm::Value* v_rhs = EmitExpressionImpl(b, *div_node->get_rhs());
-    return b->CreateUDiv(v_lhs, v_rhs, "div_dims");
+    return b->CreateSDiv(v_lhs, v_rhs, "div_dims");
   }
   if (expr.kind() == DExpr::Kind::kAdd) {
     auto* add_node = static_cast<const Add*>(&expr);

@@ -372,11 +372,14 @@ std::unique_ptr<DynExpr> BuildAffineNumerator(const CanonicalAffineExpr& expr) {
     }
   }
   if (expr.constant != 0 || result == nullptr) {
-    auto constant_term = std::make_unique<Constant>(expr.constant);
     if (result == nullptr) {
-      result = std::move(constant_term);
+      result = std::make_unique<Constant>(expr.constant);
+    } else if (expr.constant > 0) {
+      result = std::make_unique<Add>(result.release(),
+                                     DynExpr::_(expr.constant));
     } else {
-      result = std::make_unique<Add>(result.release(), constant_term.release());
+      result = std::make_unique<Sub>(result.release(),
+                                     DynExpr::_(-expr.constant));
     }
   }
   return result;
@@ -515,6 +518,10 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
       const auto* gt = static_cast<const GtExpr*>(expr);
       auto lhs = std::unique_ptr<DynExpr>(gt->get_lhs()->s());
       auto rhs = std::unique_ptr<DynExpr>(gt->get_rhs()->s());
+      if (lhs->kind() == DExpr::Kind::kUnknown ||
+          rhs->kind() == DExpr::Kind::kUnknown) {
+        return std::make_unique<UnknownExpr>();
+      }
       if (lhs->is_constant() && rhs->is_constant()) {
         return std::make_unique<Constant>(lhs->get_val() > rhs->get_val());
       }
@@ -526,10 +533,17 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
       auto pred = std::unique_ptr<DynExpr>(select->get_pred()->s());
       auto on_true = std::unique_ptr<DynExpr>(select->get_on_true()->s());
       auto on_false = std::unique_ptr<DynExpr>(select->get_on_false()->s());
-      if (*on_true == *on_false) return on_true;
+      if (pred->kind() == DExpr::Kind::kUnknown) {
+        return std::make_unique<UnknownExpr>();
+      }
       if (pred->is_constant()) {
         return pred->get_val() != 0 ? std::move(on_true) : std::move(on_false);
       }
+      if (on_true->kind() == DExpr::Kind::kUnknown ||
+          on_false->kind() == DExpr::Kind::kUnknown) {
+        return std::make_unique<UnknownExpr>();
+      }
+      if (*on_true == *on_false) return on_true;
       return std::make_unique<SelectExpr>(pred.release(), on_true.release(),
                                            on_false.release());
     }

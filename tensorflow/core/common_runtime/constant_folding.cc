@@ -198,13 +198,18 @@ bool GetTensorIntValues(const Tensor& tensor, std::vector<int64_t>* values) {
 void CopyContentAt(const TensorShapeProto& input_contents, int64_t index,
                    TensorShapeProto* output_contents) {
   output_contents->add_dim()->CopyFrom(input_contents.dim(index));
+  ExpressionProto* output_expression = output_contents->add_expressions();
   if (index < input_contents.expressions_size()) {
-    output_contents->add_expressions()->CopyFrom(input_contents.expressions(index));
+    output_expression->CopyFrom(input_contents.expressions(index));
+  } else {
+    output_expression->set_constant_value(input_contents.dim(index).size());
   }
 }
 
-void AppendScalarConstantContent(int64_t value, TensorShapeProto* output_contents) {
+void AppendScalarConstantContent(int64_t value,
+                                 TensorShapeProto* output_contents) {
   output_contents->add_dim()->set_size(value);
+  output_contents->add_expressions()->set_constant_value(value);
 }
 
 void AppendScalarContentFromTensor(const Tensor& tensor,
@@ -693,7 +698,8 @@ bool IsConstantFoldable(
         shape_map,
     const std::function<bool(const Node*)>& consider,
     int64_t max_constant_size_in_bytes,
-    std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map) {
+    std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map,
+    std::unordered_map<const Node*, bool>* dynamic_contents_memo) {
   TensorShapeProto exact_contents;
   const bool has_exact_contents =
       TryGetFoldedValueContents(n, 0, &exact_contents);
@@ -701,10 +707,9 @@ bool IsConstantFoldable(
   const bool has_dynamic = GetShapeFromDirectDynamicSource(n, &dynamic_shape);
   const bool is_shape_derived =
       n->attrs().FindByString(kXlaShapeDerivedAttrName) != nullptr;
-  std::unordered_map<const Node*, bool> dynamic_contents_memo;
   absl::flat_hash_set<const Node*> dynamic_contents_visiting;
   const bool has_transitive_dynamic_contents =
-      HasTransitiveDynamicShapeContents(n, &dynamic_contents_memo,
+      HasTransitiveDynamicShapeContents(n, dynamic_contents_memo,
                                         &dynamic_contents_visiting);
   if ((has_dynamic || is_shape_derived || has_transitive_dynamic_contents) &&
       (!has_exact_contents || n->num_outputs() > 1)) {
@@ -792,10 +797,11 @@ void ConsiderConstantFoldableNode(
     Node* n, const ConstantFoldingOptions& opts, std::vector<Node*>* nodes,
     std::unordered_map<const Node*, gtl::FlatSet<Node*>>* constant_control_deps,
     std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map,
+    std::unordered_map<const Node*, bool>* dynamic_contents_memo,
     bool* internal_node_inserted) {
   if (!IsConstantFoldable(n, opts.shape_map, opts.consider,
                           opts.max_constant_size_in_bytes,
-                          shape_replacement_map)) {
+                          shape_replacement_map, dynamic_contents_memo)) {
     return;
   }
   // A node is constant provided all of its non-control incoming Tensors come
@@ -851,13 +857,15 @@ void FindConstantFoldableNodes(
     std::unordered_map<const Node*, gtl::FlatSet<Node*>>* constant_control_deps,
     std::unordered_map<const Node*, std::vector<Tensor>>* shape_replacement_map) {
   bool internal_node_inserted = false;
+  std::unordered_map<const Node*, bool> dynamic_contents_memo;
   // Walk the nodes in data flow order.
   ReverseDFS(
       *graph, nullptr,
       [nodes, constant_control_deps, shape_replacement_map,
-       &internal_node_inserted, &opts](Node* n) {
+       &dynamic_contents_memo, &internal_node_inserted, &opts](Node* n) {
         ConsiderConstantFoldableNode(n, opts, nodes, constant_control_deps,
                                      shape_replacement_map,
+                                     &dynamic_contents_memo,
                                      &internal_node_inserted);
       },
       NodeComparatorName());

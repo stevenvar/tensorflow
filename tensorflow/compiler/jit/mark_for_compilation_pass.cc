@@ -1821,15 +1821,6 @@ absl::Status MarkForCompilationPassImpl::FindCompilationCandidates() {
       continue;
     }
 
-    if (debug_options_.enable_dynamic_sizes &&
-        XlaOpRegistry::IsMlirXlaOp(node->type_string()) &&
-        HasDynamicInputExpression(node)) {
-      VLOG(1) << "Rejecting " << node->name()
-              << " from XLA clustering: MlirXlaOpKernel does not support "
-                 "dynamic input expressions";
-      continue;
-    }
-
     if (node->type_string() == "Const") {
       // Skip Const op with type DT_STRING, since XLA autoclustering doesn't
       // support it.

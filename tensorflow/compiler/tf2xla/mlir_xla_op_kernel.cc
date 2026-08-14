@@ -15,17 +15,21 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/mlir_xla_op_kernel.h"
 
+#include <map>
 #include <string>
 #include <variant>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
+#include "tensorflow/compiler/jit/shape_inference.h"
 #include "tensorflow/compiler/jit/xla_compile_util.h"
 #include "tensorflow/compiler/mlir/tf2xla/api/v1/compile_mlir_util.h"
 #include "tensorflow/compiler/mlir/utils/array_container_utils.h"
+#include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "tensorflow/compiler/tf2xla/xla_expression.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
@@ -71,75 +75,53 @@ class MLIRContextResource : public ResourceBase {
   mlir::MLIRContext mlir_ctx_;
 };
 
-bool HasDynamicExpressions(const TensorShape& shape) {
-  for (const auto& expr : shape.get_expressions()) {
-    if (expr && expr->is_dynamic()) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool HasDynamicExpressions(const PartialTensorShape& shape) {
-  for (const auto& expr : shape.get_expressions()) {
-    if (expr && expr->is_dynamic()) {
-      return true;
-    }
-  }
-  return false;
-}
-
 bool HasDynamicExpressions(const xla::Shape& shape) {
-  for (const auto& expr : shape.expressions()) {
-    if (expr && expr->is_dynamic()) {
-      return true;
-    }
+  for (int64_t dim = 0; dim < shape.dimensions_size(); ++dim) {
+    const xla::DExpr& expression = shape.expressions(dim);
+    if (expression && expression->is_dynamic()) return true;
   }
   return false;
 }
 
-absl::Status RejectDynamicShapeExpressionsInMlirXlaOpKernel(
-    llvm::ArrayRef<XlaCompiler::Argument> args, const Graph& graph) {
-  for (int i = 0; i < args.size(); ++i) {
-    const auto& shape = args[i].shape;
-    const bool has_dynamic_exprs =
-        std::holds_alternative<TensorShape>(shape)
-            ? HasDynamicExpressions(std::get<TensorShape>(shape))
-            : HasDynamicExpressions(std::get<xla::Shape>(shape));
-    if (has_dynamic_exprs) {
-      return errors::Unimplemented(
-          "MlirXlaOpKernel does not support dynamic shape expressions. "
-          "Argument ",
-          i, " carries a dynamic expression.");
-    }
+absl::StatusOr<xla::XlaOp> StripDynamicExpressions(xla::XlaOp input) {
+  TF_ASSIGN_OR_RETURN(xla::Shape shape, input.builder()->GetShape(input));
+  if (!HasDynamicExpressions(shape)) return input;
+
+  xla::Shape static_shape = shape;
+  for (int64_t dim = 0; dim < shape.dimensions_size(); ++dim) {
+    static_shape.set_expression(dim, xla::DExpr::Const(shape.dimensions(dim)));
+  }
+  xla::XlaOp result = xla::Reshape(static_shape, input);
+  TF_RETURN_IF_ERROR(input.builder()->GetShape(result).status());
+  return result;
+}
+
+absl::StatusOr<xla::XlaOp> RestoreOutputExpressions(
+    xla::XlaOp output, const PartialTensorShape& inferred_shape) {
+  TF_ASSIGN_OR_RETURN(xla::Shape output_shape,
+                      output.builder()->GetShape(output));
+  if (inferred_shape.unknown_rank() ||
+      inferred_shape.dims() != output_shape.dimensions_size()) {
+    return errors::InvalidArgument(
+        "MLIR output rank does not match its TensorFlow-inferred shape");
   }
 
-  for (Node* node : graph.nodes()) {
-    for (const auto& name_attr_pair : node->attrs()) {
-      const auto& attr_name = name_attr_pair.first;
-      const auto& attr_value = name_attr_pair.second;
-      auto maybe_reject_shape = [&](const TensorShapeProto& shape_proto) {
-        const PartialTensorShape shape(shape_proto);
-        if (!HasDynamicExpressions(shape)) {
-          return absl::OkStatus();
-        }
-        return errors::Unimplemented(
-            "MlirXlaOpKernel does not support dynamic shape expressions. "
-            "Node '",
-            node->name(), "' attribute '", attr_name,
-            "' carries a dynamic expression.");
-      };
-
-      if (attr_value.value_case() == AttrValue::kShape) {
-        TF_RETURN_IF_ERROR(maybe_reject_shape(attr_value.shape()));
-      } else if (attr_value.value_case() == AttrValue::kList) {
-        for (const auto& shape_proto : attr_value.list().shape()) {
-          TF_RETURN_IF_ERROR(maybe_reject_shape(shape_proto));
-        }
-      }
+  bool has_dynamic_expression = false;
+  for (int64_t dim = 0; dim < output_shape.dimensions_size(); ++dim) {
+    const xla::DExpr& expression = inferred_shape.get_expression(dim);
+    if (expression && expression->is_dynamic()) {
+      output_shape.set_expression(dim, expression);
+      has_dynamic_expression = true;
+    } else {
+      output_shape.set_expression(
+          dim, xla::DExpr::Const(output_shape.dimensions(dim)));
     }
   }
-  return absl::OkStatus();
+  if (!has_dynamic_expression) return output;
+
+  xla::XlaOp result = xla::Reshape(output_shape, output);
+  TF_RETURN_IF_ERROR(output.builder()->GetShape(result).status());
+  return result;
 }
 
 }  // namespace
@@ -217,8 +199,46 @@ absl::Status MlirXlaOpKernel::ConstructXlaOp(XlaOpKernelContext* ctx) {
   // Create a graph that wraps the kernel.
   TF_ASSIGN_OR_RETURN(auto graph,
                       CreateSingleOpGraph(def(), xla_args, result_dtypes));
-  TF_RETURN_IF_ERROR(
-      RejectDynamicShapeExpressionsInMlirXlaOpKernel(xla_args, *graph));
+
+  bool has_dynamic_expressions = false;
+  std::map<int, InferredShape> input_shapes;
+  for (int i = 0; i < xla_args.size(); ++i) {
+    if (!std::holds_alternative<xla::Shape>(xla_args[i].shape)) continue;
+    const xla::Shape& xla_shape = std::get<xla::Shape>(xla_args[i].shape);
+    has_dynamic_expressions |= HasDynamicExpressions(xla_shape);
+    TensorShape tensor_shape;
+    TF_RETURN_IF_ERROR(XLAShapeToTensorShape(xla_shape, &tensor_shape));
+    input_shapes.emplace(i, InferredShape{PartialTensorShape(tensor_shape)});
+  }
+
+  std::vector<PartialTensorShape> inferred_output_shapes;
+  if (has_dynamic_expressions) {
+    // Infer the logical output expressions before hiding the input expressions
+    // from the MLIR bridge. MLIR then lowers an ordinary statically shaped
+    // region, and the inferred expressions are restored at its boundary.
+    GraphShapeInfo shape_info;
+    TF_RETURN_IF_ERROR(InferShapes(
+        graph.get(), input_shapes,
+        ctx->function_library()->GetFunctionLibraryDefinition(), &shape_info));
+    auto output_shapes = shape_info.find(def().name());
+    if (output_shapes == shape_info.end() ||
+        output_shapes->second.size() != result_dtypes.size()) {
+      return errors::InvalidArgument(
+          "TensorFlow shape inference did not produce all MLIR op outputs");
+    }
+    inferred_output_shapes.reserve(output_shapes->second.size());
+    for (const InferredShape& output_shape : output_shapes->second) {
+      inferred_output_shapes.push_back(output_shape.shape);
+    }
+
+    for (int i = 0; i < xla_params.size(); ++i) {
+      if (xla_args[i].kind != XlaCompiler::Argument::kParameter) continue;
+      TF_ASSIGN_OR_RETURN(xla_params[i],
+                          StripDynamicExpressions(xla_params[i]));
+      TF_ASSIGN_OR_RETURN(xla_args[i].shape,
+                          xla_params[i].builder()->GetShape(xla_params[i]));
+    }
+  }
 
   ResourceMgr* res_manager = ctx->op_kernel_context()->resource_manager();
   MLIRContextResource* ctx_res;
@@ -250,6 +270,11 @@ absl::Status MlirXlaOpKernel::ConstructXlaOp(XlaOpKernelContext* ctx) {
 
   // Set context outputs.
   for (int i = 0, end = returns.size(); i < end; ++i) {
+    if (has_dynamic_expressions) {
+      TF_ASSIGN_OR_RETURN(
+          returns[i],
+          RestoreOutputExpressions(returns[i], inferred_output_shapes[i]));
+    }
     ctx->SetOutput(i, returns[i]);
   }
 

@@ -59,6 +59,115 @@ XlaArgument MakeDynamicArgument(int64_t observed_size,
   return arg;
 }
 
+xla::Shape MakeDynamicXlaInput(xla::DExpr leading_expr) {
+  xla::Shape shape;
+  shape.set_element_type(xla::F32);
+  shape.add_dimensions(1024, /*is_dynamic=*/true,
+                       std::move(leading_expr));
+  shape.add_dimensions(16, /*is_dynamic=*/false, xla::DExpr::Const(16));
+  return shape;
+}
+
+DynamicBatchResolutionResult ResolveForTest(
+    absl::Span<const xla::Shape> xla_shapes,
+    absl::Span<const TensorShape> runtime_shapes,
+    absl::Span<const int> runtime_input_indices,
+    absl::Span<const std::string> runtime_input_names) {
+  return ResolveDynamicBatchSizeFromRuntimeShapes(
+      xla_shapes, runtime_shapes.size(),
+      [&](int i) { return runtime_input_indices[i]; },
+      [&](int i) -> const TensorShape& { return runtime_shapes[i]; },
+      [&](int i) -> absl::string_view { return runtime_input_names[i]; });
+}
+
+TEST(DynamicRuntimeSolveTest, UsesMappedRuntimeShapesToSolveExpressions) {
+  const xla::DExpr variable = xla::DExpr::Var(1);
+  const std::vector<xla::Shape> xla_shapes = {
+      MakeDynamicXlaInput(variable),
+      MakeDynamicXlaInput(variable / 2),
+  };
+  // XLA parameters are deliberately ordered differently from runtime inputs.
+  const std::vector<TensorShape> runtime_shapes = {
+      TensorShape({120, 16}),
+      TensorShape({240, 16}),
+  };
+  const std::vector<int> runtime_input_indices = {1, 0};
+  const std::vector<std::string> runtime_input_names = {"half", "full"};
+
+  DynamicBatchResolutionResult result = ResolveForTest(
+      xla_shapes, runtime_shapes, runtime_input_indices, runtime_input_names);
+
+  EXPECT_TRUE(result.can_run);
+  ASSERT_TRUE(result.has_batch_size);
+  EXPECT_EQ(result.batch_size, 240);
+}
+
+TEST(DynamicRuntimeSolveTest,
+     PrefersNonSingletonEvidenceAcrossEquivalentExpressions) {
+  const xla::DExpr variable = xla::DExpr::Var(1);
+  const std::vector<xla::Shape> xla_shapes = {
+      MakeDynamicXlaInput(variable),
+      MakeDynamicXlaInput(variable + 1),
+  };
+  // The first occurrence may be a broadcast singleton. A + 1 = 241 gives
+  // the stronger runtime evidence A = 240.
+  const std::vector<TensorShape> runtime_shapes = {
+      TensorShape({1, 16}),
+      TensorShape({241, 16}),
+  };
+  const std::vector<int> runtime_input_indices = {0, 1};
+  const std::vector<std::string> runtime_input_names = {"singleton", "full"};
+
+  DynamicBatchResolutionResult result = ResolveForTest(
+      xla_shapes, runtime_shapes, runtime_input_indices, runtime_input_names);
+
+  EXPECT_TRUE(result.can_run);
+  ASSERT_TRUE(result.has_batch_size);
+  EXPECT_EQ(result.batch_size, 240);
+}
+
+TEST(DynamicRuntimeSolveTest, KeepsConsistentNonSingletonEvidence) {
+  const xla::DExpr variable = xla::DExpr::Var(1);
+  const std::vector<xla::Shape> xla_shapes = {
+      MakeDynamicXlaInput(variable),
+      MakeDynamicXlaInput(variable / 3),
+  };
+  const std::vector<TensorShape> runtime_shapes = {
+      TensorShape({720, 16}),
+      TensorShape({240, 16}),
+  };
+  const std::vector<int> runtime_input_indices = {0, 1};
+  const std::vector<std::string> runtime_input_names = {"full", "third"};
+
+  DynamicBatchResolutionResult result = ResolveForTest(
+      xla_shapes, runtime_shapes, runtime_input_indices, runtime_input_names);
+
+  EXPECT_TRUE(result.can_run);
+  ASSERT_TRUE(result.has_batch_size);
+  EXPECT_EQ(result.batch_size, 720);
+}
+
+TEST(DynamicRuntimeSolveTest, RejectsConflictingNonSingletonEvidence) {
+  const std::vector<xla::Shape> xla_shapes = {
+      MakeDynamicXlaInput(xla::DExpr::Var(1)),
+      MakeDynamicXlaInput(xla::DExpr::Var(1)),
+  };
+  const std::vector<TensorShape> runtime_shapes = {
+      TensorShape({240, 16}),
+      TensorShape({720, 16}),
+  };
+  const std::vector<int> runtime_input_indices = {0, 1};
+  const std::vector<std::string> runtime_input_names = {"first", "second"};
+
+  DynamicBatchResolutionResult result = ResolveForTest(
+      xla_shapes, runtime_shapes, runtime_input_indices, runtime_input_names);
+
+  EXPECT_FALSE(result.can_run);
+  EXPECT_FALSE(result.has_batch_size);
+  EXPECT_NE(result.diagnostic.find("conflicting non-singleton candidates"),
+            std::string::npos);
+}
+
 TEST(DynamicSolveFilterTest, IgnoresSingletonWhenNonSingletonEvidenceExists) {
   std::vector<XlaArgument> args = {
       MakeDynamicArgument(1),

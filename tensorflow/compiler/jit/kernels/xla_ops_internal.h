@@ -20,6 +20,8 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "absl/functional/function_ref.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/xla_argument.h"
 
@@ -46,9 +48,25 @@ struct DynamicSolveFilterDecision {
   std::vector<IgnoredDynamicArgumentOccurrence> ignored_occurrences;
 };
 
+struct DynamicBatchResolutionResult {
+  bool can_run = true;
+  bool has_batch_size = false;
+  int64_t batch_size = 0;
+  bool batch_size_resource_not_found = false;
+  std::string diagnostic;
+};
+
 int GetRuntimeInputIndex(absl::Span<const int> input_mapping,
                          int xla_input_index, int num_constant_args,
                          bool constants_omitted);
+
+DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeShapes(
+    absl::Span<const xla::Shape> xla_input_shapes,
+    int runtime_input_count,
+    absl::FunctionRef<int(int)> get_runtime_input_index,
+    absl::FunctionRef<const TensorShape&(int)> get_runtime_input_shape,
+    absl::FunctionRef<absl::string_view(int)> get_runtime_input_name,
+    bool log_solves = false, absl::string_view cluster_name = {});
 
 DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
     absl::Span<const XlaArgument> args);

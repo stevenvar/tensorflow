@@ -38,6 +38,7 @@ limitations under the License.
 #include "xla/client/client_library.h"
 #include "xla/client/local_client.h"
 #include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/literal.h"
 #include "xla/service/hlo.pb.h"
 #include "xla/service/hlo_module_util.h"
@@ -363,6 +364,58 @@ TEST_F(XlaCompilerDynamicSizesTest, DynamicShapeParameterPreservesExpressions) {
       xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
   EXPECT_TRUE(
       xla::DynExpr::equal(result_shape.expressions(0), xla::DExpr::Var(1)));
+}
+
+// MLIR-only kernels lower against static physical shapes, then return to the
+// surrounding XLA computation with the inferred expression intact.
+TEST_F(XlaCompilerDynamicSizesTest, MlirKernelPreservesExpressions) {
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto gradients = ops::_Arg(scope.WithOpName("gradients"), DT_FLOAT, 0);
+  auto features = ops::_Arg(scope.WithOpName("features"), DT_FLOAT, 1);
+  Node* relu_grad;
+  auto builder = NodeBuilder("relu_grad", "ReluGrad")
+                     .Input(ops::AsNodeOut(scope, gradients))
+                     .Input(ops::AsNodeOut(scope, features));
+  scope.UpdateBuilder(&builder);
+  scope.UpdateStatus(builder.Finalize(scope.graph(), &relu_grad));
+  TF_ASSERT_OK(scope.status());
+  TF_ASSERT_OK(scope.DoShapeInference(relu_grad));
+  auto retval = ops::_Retval(scope.WithOpName("retval"),
+                             Output(relu_grad, 0), 0);
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  std::vector<XlaCompiler::Argument> args(2);
+  for (XlaCompiler::Argument& arg : args) {
+    arg.kind = XlaCompiler::Argument::kParameter;
+    arg.type = DT_FLOAT;
+    arg.shape = xla::ShapeUtil::MakeShape(
+        xla::F32, {8, 4},
+        std::vector<xla::DExpr>{xla::DExpr::Var(1), xla::DExpr::Const(4)});
+  }
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(),
+                                     "mlir_relu_grad", std::move(graph), args,
+                                     &result));
+
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_FALSE(result_shape.is_dynamic_dimension(0));
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(0), xla::DExpr::Var(1)));
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(1), xla::DExpr::Const(4)));
+
+  TF_ASSERT_OK_AND_ASSIGN(auto module,
+                          LoadModuleFromHloProto(result.computation->proto()));
+  for (const xla::HloComputation* computation : module->computations()) {
+    for (const xla::HloInstruction* instruction :
+         computation->instructions()) {
+      EXPECT_NE(instruction->opcode(), xla::HloOpcode::kSetDimensionSize);
+    }
+  }
 }
 
 TEST_F(XlaCompilerDynamicSizesTest, ReverseSequencePreservesExpressions) {

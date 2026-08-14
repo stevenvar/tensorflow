@@ -1565,9 +1565,11 @@ cc_library(
     srcs = ["mlir_xla_op_kernel.cc"],
     hdrs = ["mlir_xla_op_kernel.h"],
     deps = [
+        ":common",
         ":xla_compiler",
         ":xla_expression",
         "//tensorflow/compiler/jit:flags",
+        "//tensorflow/compiler/jit:shape_inference",
         "//tensorflow/compiler/jit:xla_compile_util",
         "//tensorflow/compiler/mlir/tf2xla/api/v1:compile_mlir_util_no_tf_dialect_passes",
         "//tensorflow/compiler/mlir/utils:array_container_utils",

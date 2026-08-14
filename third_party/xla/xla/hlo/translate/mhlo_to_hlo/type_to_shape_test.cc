@@ -135,7 +135,7 @@ TEST(TypeToShapeTest, ConvertTensorTypeToTypes) {
                                         b.getF32Type(), extensions))
           .ToProto(),
       EqualsProto(
-          ShapeUtil::MakeShape(PrimitiveType::F32, {8, 128}, {true, false})
+          ShapeUtil::MakeShape(PrimitiveType::F32, {8, 128}, std::vector<bool>{true, false}, {})
               .ToProto()));
 
   auto extensions_stablehlo =
@@ -145,7 +145,7 @@ TEST(TypeToShapeTest, ConvertTensorTypeToTypes) {
                                         b.getF32Type(), extensions_stablehlo))
           .ToProto(),
       EqualsProto(
-          ShapeUtil::MakeShape(PrimitiveType::F32, {8, 128}, {true, false})
+          ShapeUtil::MakeShape(PrimitiveType::F32, {8, 128}, std::vector<bool>{true, false}, {})
               .ToProto()));
 
   EXPECT_THAT(
@@ -153,8 +153,7 @@ TEST(TypeToShapeTest, ConvertTensorTypeToTypes) {
                                         b.getF32Type()))
           .ToProto(),
       EqualsProto(ShapeUtil::MakeShape(PrimitiveType::F32,
-                                       {Shape::kUnboundedSize, 784},
-                                       {true, false})
+                                       {Shape::kUnboundedSize, 784}, std::vector<bool>{true, false}, {})
                       .ToProto()));
 
   EXPECT_THAT(TypeToShape(UnrankedTensorType::get(b.getF32Type())).ToProto(),

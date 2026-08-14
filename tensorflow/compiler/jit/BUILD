@@ -498,6 +498,14 @@ cc_library(
     ],
 )
 
+# Declares flags.h without linking the flags implementation or exposing its
+# transitive op registrations to wrapper generation.
+cc_library(
+    name = "flags_link_free_headers",
+    hdrs = ["flags.h"],
+    visibility = ["//tensorflow/compiler/tf2xla/ops:__pkg__"],
+)
+
 cc_header_only_library(
     name = "flags_headers_only",
     features = [

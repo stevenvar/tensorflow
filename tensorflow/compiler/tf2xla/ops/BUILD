@@ -16,7 +16,7 @@ cc_library(
     name = "xla_ops",
     srcs = ["xla_ops.cc"],
     deps = [
-        "//tensorflow/compiler/jit:flags",
+        "//tensorflow/compiler/jit:flags_link_free_headers",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:protos_all_cc",
@@ -53,6 +53,7 @@ tf_custom_op_library(
         "xla_ops.cc",
     ],
     deps = [
+        "//tensorflow/compiler/jit:flags_link_free_headers",
         "@com_google_absl//absl/algorithm:container",
         "@local_xla//xla:shape_util",
         "@local_xla//xla:xla_data_proto_cc",

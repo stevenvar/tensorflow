@@ -105,17 +105,23 @@ class ScopedTfXlaDynamicSizesFlag {
  public:
   ScopedTfXlaDynamicSizesFlag() {
     old_value_ = GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes;
+    old_symbolic_content_value_ =
+        GetMarkForCompilationPassFlags()->tf_xla_enable_symbolic_content;
     GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes = true;
+    GetMarkForCompilationPassFlags()->tf_xla_enable_symbolic_content = true;
     SetTensorShapeExpressionsEnabledForTesting(true);
   }
 
   ~ScopedTfXlaDynamicSizesFlag() {
     SetTensorShapeExpressionsEnabledForTesting(std::nullopt);
     GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes = old_value_;
+    GetMarkForCompilationPassFlags()->tf_xla_enable_symbolic_content =
+        old_symbolic_content_value_;
   }
 
  private:
   bool old_value_ = false;
+  bool old_symbolic_content_value_ = false;
 };
 
 class XlaCompilerDynamicSizesTest : public XlaCompilerTest {
@@ -443,6 +449,215 @@ TEST_F(XlaCompilerDynamicSizesTest,
                                   inferred_output_expr));
   EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(1),
                                   xla::DExpr::Const(12)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       ShapeValueChainPreservesExpressionThroughTile) {
+  // Shape turns the dynamic input dimension into the symbolic value A.
+  // Slicing, squeezing, and packing must preserve it as {A, 1}, which Tile
+  // then uses as the shape of a repeated static row.
+  Scope scope = Scope::NewRootScope().ExitOnError();
+  auto arg = ops::_Arg(scope.WithOpName("arg"), DT_FLOAT, 0);
+  auto input_shape = ops::Shape(scope.WithOpName("input_shape"), arg);
+  auto begin = ops::Const<int32>(scope.WithOpName("begin"), {0}, {1});
+  auto end = ops::Const<int32>(scope.WithOpName("end"), {1}, {1});
+  auto strides = ops::Const<int32>(scope.WithOpName("strides"), {1}, {1});
+  auto first_dim_vector = ops::StridedSlice(
+      scope.WithOpName("first_dim_vector"), input_shape, begin, end, strides);
+  auto first_dim = ops::Squeeze(scope.WithOpName("first_dim"),
+                                first_dim_vector, ops::Squeeze::Axis({0}));
+  auto one = ops::Const<int32>(scope.WithOpName("one"), 1, {});
+  auto multiples = ops::Stack(scope.WithOpName("multiples"),
+                              std::vector<Output>{first_dim, one});
+  auto base_row = ops::Const<float>(
+      scope.WithOpName("base_row"),
+      {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+       1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+      {1, 24});
+  auto tile = ops::Tile(scope.WithOpName("tile"), base_row, multiples);
+  auto retval = ops::_Retval(scope.WithOpName("retval"), tile, 0);
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(scope.ToGraph(graph.get()));
+
+  // Compile with a physical bound of 8 while keeping its logical size as A.
+  const xla::DExpr input_expr = xla::DExpr::Var(1);
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_FLOAT;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {8, 24},
+      std::vector<xla::DExpr>{input_expr, xla::DExpr::Const(24)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "tile",
+                                     std::move(graph), args, &result));
+
+  // The physical output remains bounded by 8, but its first dimension must
+  // still describe the runtime value A rather than the bound.
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_EQ(result_shape.dimensions(0), 8);
+  EXPECT_EQ(result_shape.dimensions(1), 24);
+  EXPECT_TRUE(
+      xla::DynExpr::equal(result_shape.expressions(0), input_expr));
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(1),
+                                  xla::DExpr::Const(24)));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       SizeValueChainPreservesExpressionThroughRange) {
+  // Size returns a scalar, so the relationship to A is carried as symbolic
+  // value content rather than as a dimension expression. Range must consume
+  // that content when it infers the length of its one-dimensional output.
+  Scope inference_scope = Scope::NewRootScope().ExitOnError();
+  auto placeholder = ops::Placeholder(
+      inference_scope.WithOpName("placeholder"), DT_FLOAT,
+      ops::Placeholder::Shape(PartialTensorShape({-1, 1})));
+  auto size = ops::Size(inference_scope.WithOpName("size"), placeholder);
+  auto zero = ops::Const<int32>(inference_scope.WithOpName("zero"), 0, {});
+  auto three = ops::Const<int32>(inference_scope.WithOpName("three"), 3, {});
+  auto inferred_range =
+      ops::Range(inference_scope.WithOpName("range"), zero, size, three);
+
+  grappler::GrapplerItem item;
+  TF_ASSERT_OK(inference_scope.ToGraphDef(&item.graph));
+  grappler::GraphProperties properties(item);
+  TF_ASSERT_OK(properties.InferStatically(
+      /*assume_valid_feeds=*/false,
+      /*aggressive_shape_inference=*/false,
+      /*include_input_tensor_values=*/false,
+      /*include_output_tensor_values=*/false,
+      /*enable_dynamic_value_inference=*/true));
+
+  const TensorShapeProto& inferred_input_shape =
+      properties.GetOutputProperties("placeholder").at(0).shape();
+  const TensorShapeProto& inferred_range_shape =
+      properties.GetOutputProperties("range").at(0).shape();
+  ASSERT_EQ(inferred_input_shape.expressions_size(), 2);
+  ASSERT_EQ(inferred_range_shape.expressions_size(), 1);
+  const xla::DExpr input_expr =
+      DimExprFromProto(inferred_input_shape.expressions(0));
+  const xla::DExpr expected_output_expr =
+      DimExprFromProto(inferred_range_shape.expressions(0));
+  // With start 0 and delta 3, the number of elements is ceil(A / 3).
+  EXPECT_TRUE(xla::DynExpr::equal(
+      expected_output_expr,
+      ((input_expr + xla::DExpr::Const(2)) / xla::DExpr::Const(3))
+          .simplify()));
+
+  // Compile the equivalent graph and check the same expression reaches HLO.
+  Scope compilation_scope = Scope::NewRootScope().ExitOnError();
+  auto arg = ops::_Arg(compilation_scope.WithOpName("arg"), DT_FLOAT, 0);
+  auto compiled_size = ops::Size(compilation_scope.WithOpName("size"), arg);
+  auto compiled_zero =
+      ops::Const<int32>(compilation_scope.WithOpName("zero"), 0, {});
+  auto compiled_three =
+      ops::Const<int32>(compilation_scope.WithOpName("three"), 3, {});
+  auto range = ops::Range(compilation_scope.WithOpName("range"), compiled_zero,
+                          compiled_size, compiled_three);
+  auto retval =
+      ops::_Retval(compilation_scope.WithOpName("retval"), range, 0);
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(compilation_scope.ToGraph(graph.get()));
+
+  // Reuse the variable inferred by TensorFlow at the tf2xla boundary so both
+  // layers describe the same logical input dimension.
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_FLOAT;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {8, 1},
+      std::vector<xla::DExpr>{input_expr, xla::DExpr::Const(1)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "range",
+                                     std::move(graph), args, &result));
+
+  // The bound is ceil(8 / 3) = 3, while the logical size remains ceil(A / 3).
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_EQ(result_shape.dimensions(0), 3);
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(0),
+                                  expected_output_expr));
+}
+
+TEST_F(XlaCompilerDynamicSizesTest,
+       ShapeValueChainPreservesExpressionsThroughFill) {
+  // Shape converts [A, 24] into the value vector {A, 24}. Fill then consumes
+  // those values as dimensions, so its output should recover [A, 24].
+  Scope inference_scope = Scope::NewRootScope().ExitOnError();
+  auto placeholder = ops::Placeholder(
+      inference_scope.WithOpName("placeholder"), DT_FLOAT,
+      ops::Placeholder::Shape(PartialTensorShape({-1, 24})));
+  auto fill_shape =
+      ops::Shape(inference_scope.WithOpName("fill_shape"), placeholder);
+  auto fill_value =
+      ops::Const<float>(inference_scope.WithOpName("fill_value"), 1.0f, {});
+  auto inferred_fill = ops::Fill(inference_scope.WithOpName("fill"),
+                                 fill_shape, fill_value);
+
+  grappler::GrapplerItem item;
+  TF_ASSERT_OK(inference_scope.ToGraphDef(&item.graph));
+  grappler::GraphProperties properties(item);
+  TF_ASSERT_OK(properties.InferStatically(
+      /*assume_valid_feeds=*/false,
+      /*aggressive_shape_inference=*/false,
+      /*include_input_tensor_values=*/false,
+      /*include_output_tensor_values=*/false,
+      /*enable_dynamic_value_inference=*/true));
+
+  const TensorShapeProto& inferred_input_shape =
+      properties.GetOutputProperties("placeholder").at(0).shape();
+  const TensorShapeProto& inferred_fill_shape =
+      properties.GetOutputProperties("fill").at(0).shape();
+  ASSERT_EQ(inferred_input_shape.expressions_size(), 2);
+  ASSERT_EQ(inferred_fill_shape.expressions_size(), 2);
+  const xla::DExpr input_expr =
+      DimExprFromProto(inferred_input_shape.expressions(0));
+  const xla::DExpr expected_output_expr =
+      DimExprFromProto(inferred_fill_shape.expressions(0));
+  EXPECT_TRUE(xla::DynExpr::equal(expected_output_expr, input_expr));
+
+  // Compile the equivalent graph and check both dimensions reach HLO.
+  Scope compilation_scope = Scope::NewRootScope().ExitOnError();
+  auto arg = ops::_Arg(compilation_scope.WithOpName("arg"), DT_FLOAT, 0);
+  auto compiled_fill_shape =
+      ops::Shape(compilation_scope.WithOpName("fill_shape"), arg);
+  auto compiled_fill_value =
+      ops::Const<float>(compilation_scope.WithOpName("fill_value"), 1.0f, {});
+  auto fill = ops::Fill(compilation_scope.WithOpName("fill"),
+                        compiled_fill_shape, compiled_fill_value);
+  auto retval =
+      ops::_Retval(compilation_scope.WithOpName("retval"), fill, 0);
+  std::unique_ptr<Graph> graph(new Graph(OpRegistry::Global()));
+  TF_ASSERT_OK(compilation_scope.ToGraph(graph.get()));
+
+  // Use the same inferred variable at the tf2xla boundary to compare the two
+  // inference paths structurally rather than by variable spelling.
+  std::vector<XlaCompiler::Argument> args(1);
+  args[0].kind = XlaCompiler::Argument::kParameter;
+  args[0].type = DT_FLOAT;
+  args[0].shape = xla::ShapeUtil::MakeShape(
+      xla::F32, {8, 24},
+      std::vector<xla::DExpr>{input_expr, xla::DExpr::Const(24)});
+
+  XlaCompiler compiler(DefaultOptions());
+  XlaCompiler::CompilationResult result;
+  TF_ASSERT_OK(compiler.CompileGraph(XlaCompiler::CompileOptions(), "fill",
+                                     std::move(graph), args, &result));
+
+  // Compilation keeps the physical [8, 24] bounds and the logical [A, 24]
+  // expressions at the cluster output.
+  const xla::Shape& result_shape =
+      xla::ShapeUtil::GetSubshape(result.xla_output_shape, {0});
+  EXPECT_EQ(result_shape.dimensions(0), 8);
+  EXPECT_EQ(result_shape.dimensions(1), 24);
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(0),
+                                  expected_output_expr));
+  EXPECT_TRUE(xla::DynExpr::equal(result_shape.expressions(1),
+                                  xla::DExpr::Const(24)));
 }
 
 TEST_F(XlaCompilerDynamicSizesTest, ReverseSequencePreservesExpressions) {

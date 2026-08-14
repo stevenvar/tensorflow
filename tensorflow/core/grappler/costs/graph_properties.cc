@@ -1748,44 +1748,56 @@ class SymbolicShapeRefiner {
     const bool is_bin =
         (op == "Sub" || op == "Add" || op == "Mul" || op == "Div");
     if (!is_fed) {
-      if (is_bin) {
-        if (c->input_tensors_as_shapes_to_propagate.size() < 2)
-          return absl::OkStatus();
+      // Fall through to regular value inference when symbolic shape-value
+      // propagation does not apply.
+      if (enable_dynamic_value_inference_ && is_bin &&
+          c->input_tensors_as_shapes_to_propagate.size() >= 2) {
         auto va = c->input_tensors_as_shapes_to_propagate[0];
         auto vb = c->input_tensors_as_shapes_to_propagate[1];
 
-        if (va.SameHandle(tensorflow::shape_inference::ShapeHandle()) ||
-            vb.SameHandle(tensorflow::shape_inference::ShapeHandle())) {
-          return absl::OkStatus();
+        if (!va.SameHandle(tensorflow::shape_inference::ShapeHandle()) &&
+            !vb.SameHandle(tensorflow::shape_inference::ShapeHandle()) &&
+            ic->RankKnown(va) && ic->RankKnown(vb) &&
+            ic->Rank(va) == ic->Rank(vb)) {
+          std::vector<tensorflow::shape_inference::DimensionHandle> out_elems;
+          out_elems.reserve(ic->Rank(va));
+          const auto is_unknown_from_const = [&](DimensionHandle dim) {
+            return ic->ValueKnown(dim) &&
+                   ic->Value(dim) == kUnknownDimFromConst;
+          };
+          bool symbolic_propagation_succeeded = true;
+
+          for (int i = 0; i < ic->Rank(va); ++i) {
+            auto da = ic->Dim(va, i);
+            auto db = ic->Dim(vb, i);
+            if (is_unknown_from_const(da) || is_unknown_from_const(db)) {
+              symbolic_propagation_succeeded = false;
+              break;
+            }
+
+            tensorflow::shape_inference::DimensionHandle r;
+            absl::Status status;
+            if (op == "Sub")
+              status = ic->Subtract(da, db, &r);
+            else if (op == "Add")
+              status = ic->Add(da, db, &r);
+            else if (op == "Mul")
+              status = ic->Multiply(da, db, &r);
+            else
+              status =
+                  ic->Divide(da, db, /*evenly_divisible=*/false, &r);
+            if (!status.ok()) {
+              symbolic_propagation_succeeded = false;
+              break;
+            }
+            out_elems.push_back(r);
+          }
+          if (symbolic_propagation_succeeded) {
+            c->output_tensors_as_shapes.resize(1);
+            c->output_tensors_as_shapes[0] = ic->MakeShape(out_elems);
+            return absl::OkStatus();
+          }
         }
-
-        if (!ic->RankKnown(va) || !ic->RankKnown(vb)) return absl::OkStatus();
-        if (ic->Rank(va) != ic->Rank(vb)) return absl::OkStatus();
-
-        std::vector<tensorflow::shape_inference::DimensionHandle> out_elems;
-        out_elems.reserve(ic->Rank(va));
-
-        for (int i = 0; i < ic->Rank(va); ++i) {
-          auto da = ic->Dim(va, i);
-          auto db = ic->Dim(vb, i);
-
-          tensorflow::shape_inference::DimensionHandle r;
-          if (op == "Sub")
-            TF_RETURN_IF_ERROR(ic->Subtract(da, db, &r));
-          else if (op == "Add")
-            TF_RETURN_IF_ERROR(ic->Add(da, db, &r));
-          else if (op == "Mul")
-            TF_RETURN_IF_ERROR(ic->Multiply(da, db, &r));
-          else
-            TF_RETURN_IF_ERROR(
-                ic->Divide(da, db, /*evenly_divisible=*/false, &r));
-          out_elems.push_back(r);
-        }
-        c->output_tensors_as_shapes.resize(1);
-        c->output_tensors_as_shapes[0] = ic->MakeShape(out_elems);
-        // @TODO: Check if we need to do anything with output_tensor_protos.
-        // S.t  c->output_tensor_protos[0] = nullptr;
-        return absl::OkStatus();
       }
 
       if (IsConstant(node)) {

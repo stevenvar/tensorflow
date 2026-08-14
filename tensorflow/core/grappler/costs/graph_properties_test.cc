@@ -2481,6 +2481,37 @@ TEST_F(GraphPropertiesTest, ValuePropagationThroughArithmeticOps) {
   ExpectTensorValues({20, 24}, c_plus_b_plus_2a_prop.value());
 }
 
+TEST_F(GraphPropertiesTest,
+       DynamicArithmeticFallsBackToTensorValueInference) {
+  tensorflow::Scope scope = tensorflow::Scope::NewRootScope();
+  Output one = ops::Const(scope.WithOpName("one"), {1}, {1});
+  Output two = ops::Const(scope.WithOpName("two"), {2}, {1});
+  Output unknown = ops::Const(scope.WithOpName("unknown"), {-1}, {1});
+  Output negative = ops::Sub(scope.WithOpName("negative"), one, two);
+  Output unknown_plus_one =
+      ops::Add(scope.WithOpName("unknown_plus_one"), unknown, one);
+
+  GrapplerItem item;
+  TF_ASSERT_OK(scope.ToGraphDef(&item.graph));
+  GraphProperties properties(item);
+  TF_ASSERT_OK(properties.InferStatically(
+      /*assume_valid_feeds=*/false,
+      /*aggressive_shape_inference=*/true,
+      /*include_input_tensor_values=*/true,
+      /*include_output_tensor_values=*/true,
+      /*enable_dynamic_value_inference=*/true));
+
+  const auto& negative_prop =
+      properties.GetOutputProperties("negative").at(0);
+  ASSERT_TRUE(negative_prop.has_value());
+  ExpectTensorValues({-1}, negative_prop.value());
+
+  const auto& unknown_plus_one_prop =
+      properties.GetOutputProperties("unknown_plus_one").at(0);
+  ASSERT_TRUE(unknown_plus_one_prop.has_value());
+  ExpectTensorValues({0}, unknown_plus_one_prop.value());
+}
+
 TEST_F(GraphPropertiesTest, ShapeAnnotation) {
   GrapplerItem item;
   TF_ASSERT_OK(NodeDefBuilder("Input", "Placeholder")

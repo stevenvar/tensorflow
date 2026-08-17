@@ -32,6 +32,10 @@ class IdentityOp : public XlaOpKernel {
     for (int i = 0; i < ctx->num_inputs(); ++i) {
       if (IsTensorListInput(ctx, i)) {
         ctx->SetTensorListOutput(i, ctx->Input(i));
+      } else if (ctx->InputExpression(i).kind() !=
+                     XlaExpression::Kind::kResource &&
+                 ctx->input_type(i) != DT_VARIANT) {
+        ctx->SetOutputExpression(i, ctx->InputExpression(i));
       } else {
         DCHECK(ctx->input_type(i) != DT_VARIANT);
         // Forwards using the underlying op_kernel_context so both tensor and
@@ -58,7 +62,8 @@ REGISTER_XLA_OP(Name("IdentityN")
                     .CompilationOnly(),
                 IdentityOp);
 REGISTER_XLA_OP(Name("PlaceholderWithDefault"), IdentityOp);
-REGISTER_XLA_OP(Name("PreventGradient"), MlirXlaOpKernel);
+REGISTER_XLA_OP_FACTORY(
+    Name("PreventGradient"), CreateDynamicNativeXlaOpKernel<IdentityOp>);
 REGISTER_XLA_OP(Name("StopGradient").AllowVariantTypes(), IdentityOp);
 REGISTER_XLA_OP(Name("Snapshot"), IdentityOp);
 REGISTER_XLA_OP(Name("_EagerConst"), IdentityOp);

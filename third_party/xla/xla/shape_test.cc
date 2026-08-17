@@ -191,6 +191,16 @@ TEST_F(ShapeTest, DExprUnknownPropagatesThroughGtAndSelect) {
   EXPECT_TRUE(select.is_unknown());
 }
 
+TEST_F(ShapeTest, ShapePreservesExplicitUnknownExpressions) {
+  Shape shape = ShapeUtil::MakeShape(F32, {8});
+
+  shape.set_expression(0, DExpr::Unknown());
+  EXPECT_TRUE(shape.expressions(0).is_unknown());
+
+  shape.set_expressions(std::vector<DExpr>{DExpr::Unknown()});
+  EXPECT_TRUE(shape.expressions(0).is_unknown());
+}
+
 TEST_F(ShapeTest, DExprConstantDivisionIsNotDynamic) {
   const DExpr expr = DExpr::Const(7) / DExpr::Const(3);
 

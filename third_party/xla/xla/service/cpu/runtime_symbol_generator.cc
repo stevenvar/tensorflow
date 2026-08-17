@@ -37,6 +37,7 @@ limitations under the License.
 #include "llvm/Support/Error.h"
 #include "mlir/ExecutionEngine/CRunnerUtils.h"
 #include "xla/service/cpu/cpu_runtime.h"
+#include "xla/service/cpu/runtime_batch_size.h"
 #include "xla/service/cpu/runtime_conv2d.h"
 #include "xla/service/cpu/runtime_conv2d_acl.h"
 #include "xla/service/cpu/runtime_conv2d_mkl.h"
@@ -160,6 +161,7 @@ static bool RegisterKnownJITSymbols() {
   registry->Register("puts", reinterpret_cast<void*>(&puts), "Host");
 
   REGISTER_CPU_RUNTIME_SYMBOL(AcquireInfeedBufferForDequeue);
+  REGISTER_CPU_RUNTIME_SYMBOL(GetBatchSize);
   REGISTER_CPU_RUNTIME_SYMBOL(AcquireOutfeedBufferForPopulation);
   REGISTER_CPU_RUNTIME_SYMBOL(AllReduce);
   REGISTER_CPU_RUNTIME_SYMBOL(CollectivePermute);

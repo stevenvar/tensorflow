@@ -37,6 +37,26 @@ namespace xla {
 
 namespace {
 
+bool HasDynamicConstantContents(const HloInstruction* instruction) {
+  if (!instruction->has_contents()) {
+    return false;
+  }
+  for (const auto& content : instruction->contents()) {
+    if (content.node_type_case() != ExpressionProto::kConstantValue &&
+        content.node_type_case() != ExpressionProto::NODE_TYPE_NOT_SET) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool HasDynamicConstantFrontendAttributes(const HloInstruction* instruction) {
+  const auto& attrs = instruction->frontend_attributes().map();
+  return HasDynamicConstantContents(instruction) ||
+         attrs.contains("dynamic_constant_index") ||
+         attrs.contains("dynamic_constant_expr");
+}
+
 template <bool kIsLayoutSensitive>
 struct ConstantKey {
   template <typename H>
@@ -89,6 +109,13 @@ absl::StatusOr<bool> CombineConstants(HloComputation* computation,
     ++inst_it;
 
     if (only_scalars && !ShapeUtil::IsScalar(instruction->shape())) {
+      continue;
+    }
+
+    // Dynamic constant frontend attrs carry semantic metadata for a later
+    // rewrite pass, so these constants are not interchangeable with otherwise
+    // identical plain constants.
+    if (HasDynamicConstantFrontendAttributes(instruction)) {
       continue;
     }
 
@@ -307,6 +334,12 @@ absl::StatusOr<bool> HloCSE::RunOnComputation(HloComputation* computation) {
     }
 
     if (only_scalars_ && !ShapeUtil::IsScalar(instruction->shape())) {
+      continue;
+    }
+
+    // These frontend attrs are semantic, not just decorative, so do not CSE
+    // across them.
+    if (HasDynamicConstantFrontendAttributes(instruction)) {
       continue;
     }
 

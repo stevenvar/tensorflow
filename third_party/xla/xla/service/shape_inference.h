@@ -245,13 +245,17 @@ class ShapeInference {
   // e.g. slice f32[32x32] 0:16 0:16 -> f32[16x16]
   static absl::StatusOr<Shape> InferSliceShape(
       const Shape& arg, absl::Span<const int64_t> starts,
-      absl::Span<const int64_t> limits, absl::Span<const int64_t> strides);
+      absl::Span<const int64_t> limits, absl::Span<const int64_t> strides,
+      absl::Span<const DExpr> start_exprs = {},
+      absl::Span<const DExpr> limit_exprs = {});
 
   // Infers the shape produced by a dynamic slice operation of size specified
   // in 'slice_sizes', with dynamic start indices shape 'start_indices_shape'.
   static absl::StatusOr<Shape> InferDynamicSliceShape(
       const Shape& operand_shape, absl::Span<const Shape> start_index_shapes,
-      absl::Span<const int64_t> slice_sizes, bool allow_scalar_indices = true);
+      absl::Span<const int64_t> slice_sizes,
+      absl::Span<const DExpr> slice_exprs = {},
+      bool allow_scalar_indices = true);
 
   // Infers the shape produced by a dynamic update slice operation based
   // on the shape of operand and update.
@@ -283,7 +287,8 @@ class ShapeInference {
 
   // Infers the shape produced by a broadcast operation.
   static absl::StatusOr<Shape> InferBroadcastShape(
-      const Shape& operand, absl::Span<const int64_t> broadcast_sizes);
+      const Shape& operand, absl::Span<const int64_t> broadcast_sizes,
+      absl::Span<const DExpr> broadcast_exprs = {});
 
   // Checks whether the given parameters can form a broadcast. Returns the same
   // output_shape if it's legal.
@@ -295,7 +300,7 @@ class ShapeInference {
   // its operand and the new dimension sizes specified.
   static absl::StatusOr<Shape> InferReshapeShape(
       const Shape& operand, absl::Span<const int64_t> dimensions,
-      int64_t inferred_dimension);
+      int64_t inferred_dimension, absl::Span<const DExpr> expressions);
 
   // Infers the shape produced by a dynamic reshape operation from the element
   // type of its operand and the new dimension sizes specified. The result shape
@@ -304,7 +309,8 @@ class ShapeInference {
   static absl::StatusOr<Shape> InferDynamicReshapeShape(
       const Shape& operand, absl::Span<const Shape* const> dim_size_shapes,
       absl::Span<const int64_t> new_size_bounds,
-      const std::vector<bool>& dims_are_dynamic);
+      const std::vector<bool>& dims_are_dynamic,
+      absl::Span<const DExpr> expressions);
 
   // Infers the shape produced by a transpose operation from the element type of
   // its operand and its dimensions field.

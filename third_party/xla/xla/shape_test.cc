@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "xla/shape.h"
 
+#include <optional>
+#include <set>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -22,6 +24,7 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "xla/hlo/testlib/test.h"
 #include "xla/layout.h"
+#include "xla/printer.h"
 #include "xla/shape_util.h"
 #include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/tsl/platform/test_benchmark.h"
@@ -29,6 +32,12 @@ limitations under the License.
 
 namespace xla {
 namespace {
+
+std::string DExprToString(const DExpr& expr) {
+  StringPrinter printer;
+  expr->print(&printer);
+  return std::move(printer).ToString();
+}
 
 class ShapeTest : public ::testing::Test {
  protected:
@@ -46,9 +55,10 @@ class ShapeTest : public ::testing::Test {
   const Shape nested_tuple_ =
       ShapeUtil::MakeTupleShape({tuple_, matrix_, token_});
   const Shape dynamic_matrix_ =
-      ShapeUtil::MakeShape(S32, {5, 2}, {true, false});
+      ShapeUtil::MakeShape(S32, {5, 2}, std::vector<bool>{true, false}, {});
   const Shape unbounded_ =
-      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, 784}, {true, false});
+      ShapeUtil::MakeShape(F32, {Shape::kUnboundedSize, 784},
+                           std::vector<bool>{true, false}, {});
 };
 
 // Tests that if the dynamic_dimensions parameter empty in the Shape
@@ -98,14 +108,173 @@ TEST_F(ShapeTest, ShapeToString) {
 }
 
 TEST_F(ShapeTest, DynamicShapeToString) {
-  Shape array_shape =
-      ShapeUtil::MakeShape(F32, {23, 44, 55}, {true, false, true});
+  Shape array_shape = ShapeUtil::MakeShape(
+      F32, {23, 44, 55}, std::vector<bool>{true, false, true}, {});
   EXPECT_EQ("f32[<=23,44,<=55]", array_shape.ToString());
 
   array_shape.set_dynamic_dimension(2, false);
   EXPECT_EQ("f32[<=23,44,55]", array_shape.ToString());
 
   EXPECT_EQ("f32[?,784]", unbounded_.ToString());
+}
+
+TEST_F(ShapeTest, DExprSimplifyScalesMixedDenominators) {
+  DExpr expr = (DExpr::Var(1) / 2) + (DExpr::Var(1) / 3);
+  EXPECT_EQ("((5 * A) / 6)", DExprToString(expr.simplify()));
+}
+
+TEST_F(ShapeTest, DExprSimplifyCombinesEqualFractions) {
+  DExpr expr = (DExpr::Var(1) / 2) + (DExpr::Var(1) / 2);
+  EXPECT_EQ("A", DExprToString(expr.simplify()));
+}
+
+TEST_F(ShapeTest, DExprSolveRejectsZeroDivisor) {
+  DExpr expr = DExpr::Var(1) / DExpr::Const(0);
+  EXPECT_FALSE(expr->solve(7).has_value());
+}
+
+TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
+  DExpr expr = DExpr::Max(DExpr::Var(1), DExpr::Const(4));
+  EXPECT_EQ("max(A, 4)", DExprToString(expr.simplify()));
+  EXPECT_FALSE(expr->solve(7).has_value());
+
+  DExpr clamped = DExpr::Max(DExpr::Var(1), DExpr::Const(0));
+  EXPECT_EQ("A", DExprToString(clamped.simplify()));
+
+  DExpr positive_affine =
+      DExpr::Max(2 * DExpr::Var(1) - 1, DExpr::Const(0));
+  EXPECT_EQ("((2 * A) - 1)",
+            DExprToString(positive_affine.simplify()));
+
+  DExpr unbounded_below =
+      DExpr::Max(DExpr::Var(1) - DExpr::Var(2), DExpr::Const(0));
+  EXPECT_EQ("max((A + ((-1) * B)), 0)",
+            DExprToString(unbounded_below.simplify()));
+
+  DExpr evaluated = expr.substitute(1, DExpr::Const(7)).simplify();
+  EXPECT_EQ(DExpr::Kind::kConstant, evaluated.kind());
+  EXPECT_EQ(7, evaluated->get_val());
+
+  DExpr divided =
+      DExpr::Max((DExpr::Var(1) + 1) / 2, DExpr::Const(0));
+  DExpr divided_evaluated =
+      divided.substitute(1, DExpr::Const(100)).simplify();
+  EXPECT_EQ(DExpr::Kind::kConstant, divided_evaluated.kind());
+  EXPECT_EQ(50, divided_evaluated->get_val());
+
+  ExpressionProto proto;
+  expr.to_proto(&proto);
+  EXPECT_TRUE(expr == DExprFromProto(proto));
+}
+
+TEST_F(ShapeTest, DExprSelectUsesDynamicPredicate) {
+  DExpr delta = DExpr::Var(1) - 3;
+  DExpr expr = DExpr::Select(DExpr::Gt(delta, DExpr::Const(0)),
+                             DExpr::Const(7), DExpr::Const(11));
+  EXPECT_EQ("select(((A - 3) > 0), 7, 11)",
+            DExprToString(expr.simplify()));
+  EXPECT_EQ(7, expr.substitute(1, DExpr::Const(5))->s()->get_val());
+  EXPECT_EQ(11, expr.substitute(1, DExpr::Const(1))->s()->get_val());
+
+  ExpressionProto proto;
+  expr.to_proto(&proto);
+  EXPECT_TRUE(expr == DExprFromProto(proto));
+}
+
+TEST_F(ShapeTest, DExprUnknownPropagatesThroughGtAndSelect) {
+  DExpr gt = DExpr::Gt(DExpr::Unknown(), DExpr::Const(0)).simplify();
+  EXPECT_TRUE(gt.is_unknown());
+
+  DExpr select =
+      DExpr::Select(DExpr::Unknown(), DExpr::Const(7), DExpr::Const(11))
+          .simplify();
+  EXPECT_TRUE(select.is_unknown());
+}
+
+TEST_F(ShapeTest, DExprConstantDivisionIsNotDynamic) {
+  const DExpr expr = DExpr::Const(7) / DExpr::Const(3);
+
+  EXPECT_FALSE(expr->is_dynamic());
+  EXPECT_EQ(expr->get_val(), 2);
+}
+
+TEST_F(ShapeTest, DExprSubstitutionReplacesEveryVariableOccurrence) {
+  const DExpr a = DExpr::Var(1);
+  const DExpr b = DExpr::Var(2);
+  const DExpr expr = (a + b) * (a - b);
+
+  const DExpr substituted = expr.substitute(1, DExpr::Const(7));
+
+  EXPECT_EQ(substituted, (DExpr::Const(7) + b) * (DExpr::Const(7) - b));
+  const std::set<int> remaining_ids = substituted->get_all_ids();
+  EXPECT_EQ(remaining_ids.size(), 1);
+  EXPECT_EQ(remaining_ids.count(2), 1);
+  EXPECT_EQ(expr->get_all_ids().size(), 2);
+}
+
+TEST_F(ShapeTest, DExprSolveInvertsNestedSingleVariableArithmetic) {
+  const DExpr a = DExpr::Var(1);
+  const DExpr expr = ((3 * a) + 6) / 3;
+
+  const std::optional<int64_t> solved = expr->solve(8);
+
+  ASSERT_TRUE(solved.has_value());
+  EXPECT_EQ(*solved, 6);
+  EXPECT_FALSE((a + DExpr::Var(2))->solve(8).has_value());
+}
+
+TEST_F(ShapeTest, DExprRoundTripPreservesRepeatedVariableStructure) {
+  const DExpr a = DExpr::Var(1);
+  const DExpr b = DExpr::Var(2);
+  const DExpr expr = (a + b) * (a - b);
+  ExpressionProto proto;
+
+  expr.to_proto(&proto);
+  const DExpr decoded = DExprFromProto(proto);
+  ExpressionProto round_tripped_proto;
+  decoded.to_proto(&round_tripped_proto);
+
+  EXPECT_EQ(proto.SerializeAsString(),
+            round_tripped_proto.SerializeAsString());
+}
+
+TEST_F(ShapeTest, DExprFindsSmallestSubexpressionCoveringAllVariables) {
+  const DExpr shared_core = DExpr::Var(1) + DExpr::Var(2);
+  const DExpr expr = (shared_core + 2) * (shared_core + 3);
+
+  EXPECT_EQ(
+      shared_core,
+      expr.find_smallest_subexpression_covering_all_variables());
+}
+
+TEST_F(ShapeTest, DExprFindsCommonCoreAcrossRepeatedBranches) {
+  const DExpr shared_core = DExpr::Var(1) + DExpr::Var(2);
+
+  EXPECT_EQ(shared_core,
+            (shared_core * shared_core)
+                .find_smallest_subexpression_covering_all_variables());
+  EXPECT_EQ(shared_core,
+            (shared_core * (DExpr::Const(3) + shared_core))
+                .find_smallest_subexpression_covering_all_variables());
+}
+
+TEST_F(ShapeTest, DExprUsesParentWhenChildCoresDiffer) {
+  const DExpr complete_expr =
+      (DExpr::Var(1) + DExpr::Var(2)) *
+      (DExpr::Var(1) - DExpr::Var(2));
+
+  EXPECT_EQ(
+      complete_expr,
+      complete_expr.find_smallest_subexpression_covering_all_variables());
+}
+
+TEST_F(ShapeTest, DExprReplacesEveryMatchingSubexpression) {
+  const DExpr shared_core = DExpr::Var(1) + DExpr::Var(2);
+  const DExpr expr = (shared_core + 2) * (shared_core + 3);
+  const DExpr replacement = DExpr::Var(7);
+
+  EXPECT_EQ((replacement + 2) * (replacement + 3),
+            expr.replace_subexpression(shared_core, replacement));
 }
 
 TEST_F(ShapeTest, DeleteDimensions) {

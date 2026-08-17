@@ -38,6 +38,7 @@ limitations under the License.
 #include "xla/tsl/platform/logging.h"  // IWYU pragma: keep
 #include "xla/util.h"
 #include "xla/xla_data.pb.h"
+#include "xla/shape_expr.h"
 
 namespace xla {
 
@@ -218,6 +219,29 @@ class Shape {
     return array_state().dynamic_dimensions[dimension];
   }
 
+  bool has_dynamic_expr() const {
+    if (auto* const state = if_array_state()) {
+      return absl::c_any_of(state->expressions,
+                            [](const DExpr& e) {
+                              return e && e->is_dynamic();
+                            });
+    }
+    if (auto* const state = if_tuple_state()) {
+      return absl::c_any_of(state->tuple_shapes, [](Shape subshape) {
+        return subshape.has_dynamic_expr();
+      });
+    }
+    return false;
+  }
+
+  const DExpr& expressions(int dimension) const {
+    if (dimension < 0) return MissingExpression();
+    const auto& exprs = array_state().expressions;
+    const size_t dim = static_cast<size_t>(dimension);
+    if (dim >= exprs.size()) return MissingExpression();
+    return exprs[dim] ? exprs[dim] : MissingExpression();
+  }
+
   // Returns true if the given dimension is statically-sized.
   // Precondition: this is an array shape and `dimension` is a valid dimension
   // index.
@@ -232,11 +256,17 @@ class Shape {
   //   - The dimension's size is valid for the given dynamic-ness.
   void set_dynamic_dimension(int dimension, bool is_dynamic);
 
+  void set_expression(int dimension, DExpr e);
+
+  void set_expressions(std::vector<DExpr> exprs);
+
   // Returns a span to indicate whether each dimension is dynamic.
   // Precondition: this is an array shape.
   absl::Span<const bool> dynamic_dimensions() const {
     return array_state().dynamic_dimensions;
   }
+
+  absl::Span<const DExpr> expressions() const { return array_state().expressions; }
 
   // Removes the given dimension from the shape. Layout, if it exists, is
   // adjusted to match the modified shape.
@@ -313,7 +343,8 @@ class Shape {
   //   - This is an array shape.
   //   - Either `value` is >= 0, or `is_dynamic` is true and `value` is
   //     kUnboundedSize.
-  void add_dimensions(int64_t value, bool is_dynamic = false);
+  void add_dimensions(int64_t value, bool is_dynamic = false,
+                      DExpr expr = DExpr());
 
   // Clears all dimensions (i.e. makes this shape a scalar).
   // Precondition: this is an array shape.
@@ -321,6 +352,7 @@ class Shape {
     auto& state = array_state();
     state.dimensions.clear();
     state.dynamic_dimensions.clear();
+    state.expressions.clear();
   }
 
   // Returns a span to indicate the size of each dimension.
@@ -434,6 +466,10 @@ class Shape {
 
     bool operator()(const Shape& lhs, const Shape& rhs);
 
+    Equal& IgnoreBatch(bool ignore_batch = true) {
+      ignore_batch_ = ignore_batch;
+      return *this;
+    }
     Equal& IgnoreLayout(bool ignore_layout = true) {
       ignore_layout_ = ignore_layout;
       return *this;
@@ -488,6 +524,7 @@ class Shape {
     }
 
    private:
+    bool ignore_batch_ = false;
     bool ignore_layout_ = false;
     bool ignore_tiles_in_layout_ = false;
     bool ignore_element_size_in_layout_ = false;
@@ -515,7 +552,7 @@ class Shape {
     }
     if (const auto* const state = s.if_array_state()) {
       h = H::combine(std::move(h), s.element_type_, state->dimensions,
-                     state->dynamic_dimensions);
+                     state->dynamic_dimensions, state->expressions);
       if (kIsLayoutSensitive) {
         h = H::combine(std::move(h), state->layout);
       }
@@ -532,7 +569,11 @@ class Shape {
     return Shape::Hash(std::move(h), s);
   }
 
+  int64_t outer_multiplier() const { return outer_multiplier_; }
+  void set_outer_multiplier(int64_t m) { outer_multiplier_ = m; }
  private:
+  int64_t outer_multiplier_ = -1;
+
   friend absl::Status ValidateNonLayoutProperties(const Shape& shape);
 
   // Define one state struct for each shape category. Depending on the element
@@ -560,8 +601,27 @@ class Shape {
     // respective dimension is dynamically sized.
     absl::InlinedVector<bool, InlineRank()> dynamic_dimensions;
 
+    absl::InlinedVector<DExpr, InlineRank()> expressions;
+
     // The layout of the shape.
     std::optional<Layout> layout;
+
+    ArrayState() = default;
+    ArrayState(const ArrayState& other)
+        : dimensions(other.dimensions),
+          dynamic_dimensions(other.dynamic_dimensions),
+          expressions(other.expressions),
+          layout(other.layout) {}
+    ArrayState& operator=(const ArrayState& other) {
+      if (this == &other) return *this;
+      dimensions = other.dimensions;
+      dynamic_dimensions = other.dynamic_dimensions;
+      expressions = other.expressions;
+      layout = other.layout;
+      return *this;
+    }
+    ArrayState(ArrayState&&) noexcept = default;
+    ArrayState& operator=(ArrayState&&) noexcept = default;
   };
   struct TupleState {
     // The tuple element subshapes.
@@ -578,12 +638,13 @@ class Shape {
 
   // CHECKs that the dimension size is valid.
   void CheckDimensionSize(int dim_index, int64_t size, bool is_dynamic);
+  static const DExpr& MissingExpression();
 
   // Like add_dimensions(), but does not CHECK that the arguments are valid.
   // Instead, we rely on validation down the road to catch invalid shapes.
   // This is useful for code that should not crash, such as constructing a
   // Shape from an unvalidated proto.
-  void UnsafeAddDimension(int64_t value, bool is_dynamic);
+  void UnsafeAddDimension(int64_t value, bool is_dynamic, DExpr exp);
 
   // Convenience accessors for the state_ variant. Each if_*_state() accessor
   // returns a pointer to the corresponding state struct, or nullptr if the

@@ -191,7 +191,8 @@ Shape TypeToShape(mlir::Type type) {
       return sparse_shape;
     }
 
-    return ShapeUtil::MakeShape(primitive_type, shape, is_dynamic);
+    return ShapeUtil::MakeShape(primitive_type, shape, is_dynamic,
+                                /*expressions=*/{});
   } else if (auto tuple_type = mlir::dyn_cast<mlir::TupleType>(type)) {
     llvm::SmallVector<Shape, 4> shapes;
     shapes.reserve(tuple_type.size());

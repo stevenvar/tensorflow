@@ -361,6 +361,8 @@ message ShapeProto {
   // The layout used to back this shape.
   LayoutProto layout = 5;
 
+  repeated ExpressionProto expressions = 7;
+
   // Important: if any field is added, be sure to modify ShapeUtil::Equal(),
   // ShapeUtil::Compatible() and Shape::Hash() appropriately to account for the
   // new field.
@@ -1203,4 +1205,54 @@ message OriginalArrayProto {
 
 message OriginalValueProto {
   repeated OriginalArrayProto leaves = 1;
+}
+
+message ExpressionProto {
+  oneof node_type {
+    int32 constant_value = 1;  // cons
+    int32 variable_id = 2;     // var
+    AddNode add_node = 3;      // exp + exp
+    SubNode sub_node = 4;      // exp - exp
+    MulNode mul_node = 5;      // exp * exp
+    DivNode div_node = 6;      // exp / exp
+    MaxNode max_node = 7;      // max(exp, exp)
+    GtNode gt_node = 8;        // exp > exp
+    SelectNode select_node = 9;  // select(pred, on_true, on_false)
+  }
+}
+
+message AddNode {
+  ExpressionProto lhs = 1;
+  ExpressionProto rhs = 2;
+}
+
+message SubNode {
+  ExpressionProto lhs = 1;
+  ExpressionProto rhs = 2;
+}
+
+message MulNode {
+  ExpressionProto lhs = 1;
+  ExpressionProto rhs = 2;
+}
+
+message DivNode {
+  ExpressionProto lhs = 1;
+  ExpressionProto rhs = 2;
+}
+
+message MaxNode {
+  ExpressionProto lhs = 1;
+  ExpressionProto rhs = 2;
+}
+
+message GtNode {
+  ExpressionProto lhs = 1;
+  ExpressionProto rhs = 2;
+}
+
+message SelectNode {
+  ExpressionProto pred = 1;
+  ExpressionProto on_true = 2;
+  ExpressionProto on_false = 3;
 }

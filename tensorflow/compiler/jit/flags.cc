@@ -155,6 +155,9 @@ void AppendMarkForCompilationPassFlagsInternal(std::vector<Flag>* flag_list) {
            &mark_for_compilation_flags->tf_xla_deterministic_cluster_names,
            "Causes the function names assigned by auto clustering to be "
            "deterministic from run to run."),
+      Flag("tf_xla_enable_dynamic_sizes",
+           &mark_for_compilation_flags->tf_xla_enable_dynamic_sizes,
+           "Enable dynamic sizes support."),
       Flag("tf_xla_persistent_cache_directory",
            &mark_for_compilation_flags->tf_xla_persistent_cache_directory,
            "If non-empty, JIT-compiled executables are saved to and loaded "
@@ -241,6 +244,7 @@ void AllocateAndParseFlags() {
   mark_for_compilation_flags
       ->tf_xla_disable_resource_variable_safety_checks_for_debugging = false;
   mark_for_compilation_flags->tf_xla_deterministic_cluster_names = false;
+  mark_for_compilation_flags->tf_xla_enable_dynamic_sizes = false;
   mark_for_compilation_flags->tf_xla_persistent_cache_directory = "";
   mark_for_compilation_flags->tf_xla_persistent_cache_device_types = "";
   mark_for_compilation_flags->tf_xla_persistent_cache_read_only = false;
@@ -404,7 +408,8 @@ void AllocateAndParseFlags() {
             "and creates TPUReshardVariables ops.")});
 
   AppendMarkForCompilationPassFlagsInternal(flag_list);
-  xla::ParseFlagsFromEnvAndDieIfUnknown("TF_XLA_FLAGS", *flag_list);
+  xla::ParseFlagsFromEnvAndDieIfUnknown("TF_XLA_FLAGS", *flag_list,
+                                        /*reset_envvar=*/true);
 
   mlir_flags = new MlirCommonFlags;
   if (!enable_mlir_bridge_is_explicit) {

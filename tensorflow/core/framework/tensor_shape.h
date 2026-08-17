@@ -17,6 +17,7 @@ limitations under the License.
 #define TENSORFLOW_CORE_FRAMEWORK_TENSOR_SHAPE_H_
 
 #include <string>
+#include <vector>
 
 #include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/types.pb.h"
@@ -28,6 +29,7 @@ limitations under the License.
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/platform/statusor.h"
+#include "xla/shape_expr.h"
 
 namespace tensorflow {
 
@@ -73,7 +75,63 @@ class TensorShapeRep {
   std::string DebugString() const;
   static std::string DebugString(const TensorShapeProto& proto);
 
+  void set_expression(int d, xla::DExpr expr);
+
+  void AddExpression(xla::DExpr expr);
+
+  // Set the array of dynamic multipliers.
+  void set_expressions(std::vector<xla::DExpr> exprs);
+
+  // Get the array of dynamic multipliers.
+  absl::Span<const xla::DExpr> get_expressions() const {
+    return expressions_;
+  }
+
+  // Get the array of dynamic multipliers, filling missing entries with
+  // constant expressions derived from the concrete dimensions.
+  std::vector<xla::DExpr> get_filled_expressions() const {
+    if (ndims_byte() == kUnknownRank) {
+      return {};
+    }
+    std::vector<xla::DExpr> exprs(ndims_byte());
+    for (int i = 0; i < ndims_byte(); ++i) {
+      exprs[i] = get_filled_expression(i);
+    }
+    return exprs;
+  }
+
+  // Return the multiplier for a specific dynamic dimension.
+  // -1 if the dimension is not dynamic.
+  const xla::DExpr& get_expression(int64_t dimension) const {
+    static const xla::DExpr kMissingExpression =
+        xla::DExpr::Unknown(xla::kMissingExpressionSentinel);
+    if (dimension < 0) return kMissingExpression;
+    const size_t dim = static_cast<size_t>(dimension);
+    if (dim >= expressions_.size()) {
+      return kMissingExpression;
+    }
+    return expressions_[dim];
+  }
+
+  xla::DExpr get_filled_expression(int64_t dimension) const {
+    if (dimension < 0) {
+      return xla::DExpr::Unknown(xla::kMissingExpressionSentinel);
+    }
+    const size_t dim = static_cast<size_t>(dimension);
+    if (dim < expressions_.size() && expressions_[dim]) {
+      return expressions_[dim];
+    }
+
+    if (ndims_byte() == kUnknownRank || dim >= ndims_byte()) {
+      return xla::DExpr::Unknown(xla::kMissingExpressionSentinel);
+    }
+
+    return constant_expression_for_dim(dim);
+  }
+
  protected:
+  std::vector<xla::DExpr> expressions_;
+
   // Constructable only via TensorShapeBase
   TensorShapeRep() = default;
 
@@ -143,6 +201,20 @@ class TensorShapeRep {
   void set_num_elements(int64_t n) { num_elements_ = n; }
 
  private:
+  xla::DExpr constant_expression_for_dim(size_t dim) const {
+    int64_t dim_value = -1;
+    if (tag() == REP16) {
+      uint16 raw_dim = as16()->dims_[dim];
+      dim_value = raw_dim == kUnknownRep16 ? -1 : raw_dim;
+    } else if (tag() == REP32) {
+      uint32 raw_dim = as32()->dims_[dim];
+      dim_value = raw_dim == kUnknownRep32 ? -1 : raw_dim;
+    } else {
+      dim_value = (*as64()->dims_)[dim];
+    }
+    return xla::DExpr::Const(dim_value);
+  }
+
   void DestructorOutOfLine();
   void SlowCopyFrom(const TensorShapeRep& b);
 
@@ -710,6 +782,7 @@ absl::Status TensorShape::AsEigenDSizesWithPaddingWithStatus(
 
 inline TensorShapeRep::TensorShapeRep(const TensorShapeRep& b) {
   num_elements_ = b.num_elements_;
+  expressions_ = b.expressions_;
   if (b.tag() != REP_OUT_OF_LINE) {
     memcpy(buf(), b.buf(), sizeof(u_.buf));
     // memcpy above Implicitly does:
@@ -723,6 +796,7 @@ inline TensorShapeRep::TensorShapeRep(const TensorShapeRep& b) {
 
 inline TensorShapeRep::TensorShapeRep(TensorShapeRep&& b) {
   num_elements_ = b.num_elements_;
+  expressions_ = b.expressions_;
   memcpy(buf(), b.buf(), sizeof(u_.buf));
   // memcpy above Implicitly does:
   //   set_ndims_byte(b.ndims_byte());
@@ -738,6 +812,8 @@ inline TensorShapeRep::~TensorShapeRep() {
 
 inline void TensorShapeRep::operator=(const TensorShapeRep& b) {
   num_elements_ = b.num_elements_;
+  expressions_ = b.expressions_;
+
   if (tag() != REP_OUT_OF_LINE && b.tag() != REP_OUT_OF_LINE) {
     memcpy(buf(), b.buf(), sizeof(u_.buf));
     // memcpy above implicitly also does:
@@ -753,6 +829,8 @@ inline void TensorShapeRep::operator=(TensorShapeRep&& b) {
     DestructorOutOfLine();
   }
   num_elements_ = b.num_elements_;
+  expressions_ = b.expressions_;
+
   memcpy(buf(), b.buf(), sizeof(u_.buf));
   // memcpy above Implicitly does:
   //   set_ndims_byte(b.ndims_byte());

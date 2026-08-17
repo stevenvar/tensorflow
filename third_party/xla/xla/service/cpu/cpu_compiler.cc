@@ -40,6 +40,7 @@ limitations under the License.
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
@@ -152,6 +153,7 @@ limitations under the License.
 #include "xla/map_util.h"
 #include "xla/mlir_hlo/transforms/passes.h"
 #include "xla/service/all_reduce_promotion.h"
+#include "xla/service/dynamic_constant_rewriter.h"
 #include "xla/service/all_to_all_decomposer.h"
 #include "xla/service/batched_gather_scatter_normalizer.h"
 #include "xla/service/batchnorm_expander.h"
@@ -450,6 +452,23 @@ void AddHloVerifier(HloPassPipeline* pipeline, HloVerifierOpts&& opts = {},
   }
 }
 
+bool DynamicConstantRewriterEnabled(const HloModule* module) {
+  const auto& extra_options =
+      module->config().debug_options().xla_backend_extra_options();
+  auto it = extra_options.find("xla_cpu_disable_dynamic_constant_rewriter");
+  if (it == extra_options.end()) {
+    return true;
+  }
+  bool disabled = false;
+  if (!absl::SimpleAtob(it->second, &disabled)) {
+    LOG(WARNING)
+        << "Ignoring invalid xla_cpu_disable_dynamic_constant_rewriter value: "
+        << it->second;
+    return true;
+  }
+  return !disabled;
+}
+
 std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
     absl::string_view name, HloModule* module, bool is_fusion_emitters) {
   // Run the following passes to a fixed point.
@@ -475,7 +494,7 @@ std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
   }
 
   // Needs to happen after algebraic simplifier.
-  pipeline->AddPass<TreeReductionRewriter>();
+  // pipeline->AddPass<TreeReductionRewriter>();
 
   // BatchNormExpander can create zero-sized ops, so zero-sized HLO
   // elimination has to come after that pass.
@@ -495,6 +514,9 @@ std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
       options::FoldAllConstants(module->config())
           ? HloConstantFolding::Level::kAggressive
           : HloConstantFolding::Level::kDefault);
+  if (DynamicConstantRewriterEnabled(module)) {
+    pipeline->AddPass<DynamicConstantRewriter>();
+  }
   pipeline->AddPass<ConditionalSimplifier>();
 
   return pipeline;

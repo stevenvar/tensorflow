@@ -1073,6 +1073,25 @@ absl::Status CreateHloProfilingArtifacts(
   return absl::OkStatus();
 }
 
+bool ShouldCreateHloProfilingArtifacts(const HloModule& module) {
+  if (!module.config().hlo_profiling_enabled()) {
+    return false;
+  }
+
+  // The thunk runtime launches host kernels through XLA_CPU_KernelCallFrame,
+  // which currently has no profile-counters field. Emitting profiling loads and
+  // stores in this mode can make generated code dereference a null counter
+  // pointer at run time.
+  if (module.config().debug_options().xla_cpu_use_thunk_runtime()) {
+    LOG(WARNING) << "--xla_hlo_profile is not supported by XLA:CPU thunk "
+                    "runtime; disabling HLO profiling for module "
+                 << module.name();
+    return false;
+  }
+
+  return true;
+}
+
 }  // namespace
 
 absl::StatusOr<std::unique_ptr<HloModule>> CpuCompiler::RunHloPasses(
@@ -1461,7 +1480,7 @@ CpuCompiler::CompileCpuExecutable(std::unique_ptr<HloModule> module) {
       computation_to_profile_idx;
   std::unique_ptr<HloProfileIndexMap> hlo_profile_index_map;
   std::unique_ptr<HloProfilePrinterData> hlo_profile_printer_data;
-  if (module->config().hlo_profiling_enabled()) {
+  if (ShouldCreateHloProfilingArtifacts(*module)) {
     TF_RETURN_IF_ERROR(CreateHloProfilingArtifacts(
         *module, &instruction_to_profile_idx, &computation_to_profile_idx,
         &hlo_profile_index_map, &hlo_profile_printer_data));
@@ -2013,7 +2032,7 @@ CpuCompiler::CompileAheadOfTimeLegacy(
   std::unique_ptr<HloProfileIndexMap> hlo_profile_index_map;
   std::unique_ptr<HloProfilePrinterData> hlo_profile_printer_data;
 
-  if (module->config().hlo_profiling_enabled()) {
+  if (ShouldCreateHloProfilingArtifacts(*module)) {
     TF_RETURN_IF_ERROR(CreateHloProfilingArtifacts(
         *module, &instruction_to_profile_idx, &computation_to_profile_idx,
         &hlo_profile_index_map, &hlo_profile_printer_data));
@@ -2171,7 +2190,7 @@ CpuCompiler::CompileAheadOfTimeThunks(
       computation_to_profile_idx;
   std::unique_ptr<HloProfileIndexMap> hlo_profile_index_map;
   std::unique_ptr<HloProfilePrinterData> hlo_profile_printer_data;
-  if (module->config().hlo_profiling_enabled()) {
+  if (ShouldCreateHloProfilingArtifacts(*module)) {
     TF_RETURN_IF_ERROR(CreateHloProfilingArtifacts(
         *module, &instruction_to_profile_idx, &computation_to_profile_idx,
         &hlo_profile_index_map, &hlo_profile_printer_data));
@@ -2420,7 +2439,7 @@ CpuCompiler::CompileAheadOfTimeThunks(
       cpu_executable->thunks().thunk_sequence();
 
   std::unique_ptr<HloProfilePrinterData> executable_hlo_profile_printer_data =
-      cpu_executable->module().config().hlo_profiling_enabled()
+      cpu_executable->hlo_profiling_enabled()
           ? std::make_unique<HloProfilePrinterData>(
                 cpu_executable->hlo_profile_printer_data())
           : nullptr;

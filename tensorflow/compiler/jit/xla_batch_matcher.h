@@ -29,19 +29,19 @@ constexpr int kMaxBatch = 2147483648ULL >> 1;
 class XlaBatchMatcher {
  public:
   XlaBatchMatcher();
+  explicit XlaBatchMatcher(std::vector<int64_t> batches);
   virtual ~XlaBatchMatcher() = default;
-  int64_t get_xla_compile_batch(int64_t real_batch);
-  std::vector<int64_t> get_all_batches() { return all_batches_; }
+  int64_t get_xla_compile_batch(int64_t real_batch) const;
+  std::vector<int64_t> get_all_batches() const { return all_batches_; }
 
  private:
   void parse_env_config();
   void print_all_batches();
   std::vector<int64_t> parse_single_item(const std::string& item);
-  int64_t find_min_larger_batch(int64_t real_batch);
+  int64_t find_min_larger_batch(int64_t real_batch) const;
 
   std::vector<int64_t> all_batches_;
   std::string env_str_;
-  int64_t last_batch_ = -1;
 };
 
 }  // namespace tensorflow

@@ -468,6 +468,9 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
       }
       Constant* l = AsConstant(lhs.get());
       Constant* r = AsConstant(rhs.get());
+      if (r && r->get_val() == 0) {
+        return std::make_unique<Div>(lhs.release(), rhs.release());
+      }
       if (*lhs == *rhs) {
         return std::make_unique<Constant>(1);
       }

@@ -17,13 +17,6 @@ limitations under the License.
 
 #include "xla/executable_run_options.h"
 
-namespace xla::cpu::runtime {
-
-const char* const kGetBatchSizeSymbolName =
-    "__xla_cpu_runtime_GetBatchSize";
-
-}  // namespace xla::cpu::runtime
-
 extern "C" int64_t __xla_cpu_runtime_GetBatchSize(
     const void* run_options_ptr) {
   if (run_options_ptr == nullptr) return 0;

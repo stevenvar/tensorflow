@@ -281,8 +281,11 @@ IrArray::Index IrArray::Index::SourceIndexOfReshape(
       // linear index by each dimension size.
       for (int64_t i = common_factors[k + 1].first - 1;
            i >= common_factors[k].first; --i) {
+        const auto& input_expr = input_shape.expressions(i);
+        bool is_dynamic = input_expr->is_dynamic();
         llvm::Value* divisor =
-            GetConstantWithIndexType(input_shape.dimensions(i));
+            is_dynamic ? llvm_ir::EmitExpression(builder, input_expr)
+                       : GetConstantWithIndexType(input_shape.dimensions(i));
         if (input_shape.dimensions(i) == 1) {
           source_multidim_index[i] = GetConstantWithIndexType(0);
         } else if (i == common_factors[k].first) {
@@ -307,17 +310,27 @@ IrArray::Index IrArray::Index::SourceIndexOfReshape(
 
 IrArray::Index IrArray::Index::SourceIndexOfSlice(
     const Shape& operand_shape, absl::Span<const int64_t> starts,
-    absl::Span<const int64_t> strides, llvm::IRBuilderBase* builder) const {
+    absl::Span<const DExpr> start_exprs, absl::Span<const int64_t> strides,
+    llvm::IRBuilderBase* builder) const {
+  static const DExpr kMissingSliceExpr =
+      DExpr::Unknown(kMissingExpressionSentinel);
   std::vector<llvm::Value*> source_multi_index(multidim_.size());
   for (int i = 0; i < multidim_.size(); ++i) {
+    llvm::Value* start_value = GetConstantWithIndexType(starts[i]);
+    const DExpr& start_expr =
+        i < start_exprs.size() ? start_exprs[i] : kMissingSliceExpr;
+    if (start_expr && start_expr->is_dynamic()) {
+      start_value = builder->CreateIntCast(
+          llvm_ir::EmitExpression(builder, start_expr), index_type_,
+          /*isSigned=*/true);
+    }
     int64_t stride = strides[i];
     if (stride != 1) {
       source_multi_index[i] = builder->CreateAdd(
           builder->CreateMul(multidim_[i], GetConstantWithIndexType(stride)),
-          GetConstantWithIndexType(starts[i]));
+          start_value);
     } else {
-      source_multi_index[i] =
-          builder->CreateAdd(multidim_[i], GetConstantWithIndexType(starts[i]));
+      source_multi_index[i] = builder->CreateAdd(multidim_[i], start_value);
     }
   }
   return Index(source_multi_index, operand_shape, index_type_);
@@ -559,8 +572,33 @@ llvm::Value* IrArray::EmitArrayElementAddress(const IrArray::Index& index,
     int64_t dimension = LayoutUtil::Major(shape_.layout(), i);
     gep_indices.push_back(actual_index[dimension]);
   }
-  return b->CreateInBoundsGEP(pointee_type_, base_ptr_, gep_indices,
-                              llvm_ir::AsStringRef(name));
+
+  // Do not make a dynamic "GEP" if only the first dimension is dynamic since
+  // it's always indiced with 0 (i.e. the dynamic dimension has no impact on the
+  // address computation).
+  std::vector<int64_t> gep_dims;
+  std::vector<DExpr> gep_expressions;
+  gep_dims.reserve(shape_.dimensions().size());
+  gep_expressions.reserve(shape_.dimensions().size());
+  for (int64_t i = 0; i < shape_.dimensions().size(); ++i) {
+    int64_t dimension = LayoutUtil::Major(shape_.layout(), i);
+    gep_dims.push_back(shape_.dimensions(dimension));
+    gep_expressions.push_back(shape_.expressions(dimension));
+  }
+  bool dynamic_first_dim =
+      gep_expressions[0]->is_dynamic() &&
+      std::all_of(gep_expressions.begin() + 1, gep_expressions.end(),
+                  [](const DExpr& e) { return e->is_constant(); });
+  if (!dynamic_first_dim && shape_.has_dynamic_expr()) {
+    llvm::Type* element_type =
+        PrimitiveTypeToIrType(shape_.element_type(), b->getContext());
+    return llvm_ir::createDynamicGEP(
+        b, base_ptr_, gep_indices, gep_dims, gep_expressions,
+        element_type, llvm_ir::AsStringRef(name));
+  } else {
+    return b->CreateInBoundsGEP(pointee_type_, base_ptr_, gep_indices,
+                                llvm_ir::AsStringRef(name));
+  }
 }
 
 llvm::Value* IrArray::EmitLinearArrayElementAddress(

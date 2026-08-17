@@ -21,6 +21,7 @@ limitations under the License.
 
 #include "absl/log/log.h"
 #include "absl/strings/str_cat.h"
+#include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/jit/shape_inference_helpers.h"
 #include "tensorflow/core/common_runtime/shape_refiner.h"
 #include "tensorflow/core/framework/function.h"
@@ -49,10 +50,29 @@ absl::Status ShapeHandleToTensorShape(
   if (!context->RankKnown(handle)) return absl::OkStatus();
 
   std::vector<int64_t> dims(context->Rank(handle));
+  MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
+  std::vector<xla::DExpr> dyn_exprs;
+  if (flags->tf_xla_enable_dynamic_sizes) {
+    dyn_exprs.resize(context->Rank(handle));
+  }
   for (int32_t i = 0, end = dims.size(); i < end; ++i) {
     dims[i] = context->Value(context->Dim(handle, i));
+    if (flags->tf_xla_enable_dynamic_sizes) {
+      DimExpr* expr = context->GetDimExpr(context->Dim(handle, i));
+      dyn_exprs[i] = expr != nullptr
+                         ? *expr
+                         : context->ValueKnown(context->Dim(handle, i))
+                               ? xla::DExpr::Const(dims[i])
+                               : xla::DExpr::Unknown(
+                                     xla::kMissingExpressionSentinel);
+    }
   }
-  return PartialTensorShape::MakePartialShape(dims.data(), dims.size(), shape);
+  auto status =
+      PartialTensorShape::MakePartialShape(dims.data(), dims.size(), shape);
+  if (flags->tf_xla_enable_dynamic_sizes) {
+    shape->set_expressions(std::move(dyn_exprs));
+  }
+  return status;
 }
 
 absl::Status PropagateShapes(

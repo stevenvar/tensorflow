@@ -27,6 +27,7 @@ limitations under the License.
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/framework/versions.pb.h"
+#include "tensorflow/core/framework/tensor_shape_expr.h"
 #include "tensorflow/core/graph/tensor_id.h"
 #include "tensorflow/core/grappler/costs/utils.h"
 #include "tensorflow/core/grappler/mutable_graph_view.h"
@@ -189,6 +190,9 @@ class DisjointSet {
 
   absl::Status Merge(Handle x, Handle y);
   const typename HandleToObject<Handle>::Object GetMergedValue(Handle value);
+  // Returns a pointer that uniquely identifies the set containing `value`.
+  // This can be used as a stable key for associating metadata with a set.
+  void* RootId(Handle value) { return static_cast<void*>(Find(value)); }
 
  private:
   // All the handles that belong to the same set are part of the same tree, and
@@ -648,11 +652,13 @@ class SymbolicShapeRefiner {
   explicit SymbolicShapeRefiner(
       const GraphView& graph,
       const absl::flat_hash_map<string, absl::flat_hash_set<int>>& fed_ports,
-      const bool aggressive_shape_inference)
+      const bool aggressive_shape_inference,
+      const bool enable_dynamic_value_inference)
       : graph_(graph),
         function_library_(OpRegistry::Global(), graph.graph()->library()),
         fed_ports_(fed_ports),
-        aggressive_shape_inference_(aggressive_shape_inference) {
+        aggressive_shape_inference_(aggressive_shape_inference),
+        enable_dynamic_value_inference_(enable_dynamic_value_inference) {
     graph_def_version_ = graph.graph()->versions().producer();
     node_to_context_.reserve(graph.graph()->node_size());
   }
@@ -941,7 +947,9 @@ class SymbolicShapeRefiner {
     TF_RETURN_IF_ERROR(gp.InferStatically(
         /*assume_valid_feeds=*/true,
         /*aggressive_shape_inference=*/aggressive_shape_inference_,
-        /*include_tensor_values=*/true));
+        /*include_input_tensor_values=*/true,
+        /*include_output_tensor_values=*/true,
+        /*enable_dynamic_value_inference=*/enable_dynamic_value_inference_));
 
     // Add return nodes for output shapes.
     int output = 0;
@@ -1148,32 +1156,32 @@ class SymbolicShapeRefiner {
   }
 
   struct ShapeId {
-    const NodeDef* node;
+    std::string node_name;
     int port_id;
 
     friend bool operator==(const ShapeId& lhs, const ShapeId& rhs) {
-      return lhs.node == rhs.node && lhs.port_id == rhs.port_id;
+      return lhs.node_name == rhs.node_name && lhs.port_id == rhs.port_id;
     }
 
     template <typename H>
     friend H AbslHashValue(H h, const ShapeId& s) {
-      return H::combine(std::move(h), s.node, s.port_id);
+      return H::combine(std::move(h), s.node_name, s.port_id);
     }
   };
 
   struct DimId {
-    const NodeDef* node;
+    std::string node_name;
     int port_id;
     int dim_index;
 
     friend bool operator==(const DimId& lhs, const DimId& rhs) {
-      return lhs.node == rhs.node && lhs.port_id == rhs.port_id &&
+      return lhs.node_name == rhs.node_name && lhs.port_id == rhs.port_id &&
              lhs.dim_index == rhs.dim_index;
     }
 
     template <typename H>
     friend H AbslHashValue(H h, const DimId& d) {
-      return H::combine(std::move(h), d.node, d.port_id, d.dim_index);
+      return H::combine(std::move(h), d.node_name, d.port_id, d.dim_index);
     }
   };
 
@@ -1391,7 +1399,7 @@ class SymbolicShapeRefiner {
   // Return the one ShapeHandle used to denote a fully unknown shape for a node
   // output.
   ShapeHandle GetUnknownOutputShape(const NodeDef* node, int index) {
-    ShapeId id{node, index};
+    ShapeId id{node->name(), index};
     auto it = unknown_shapes_.find(id);
     if (it != unknown_shapes_.end()) {
       return it->second;
@@ -1405,15 +1413,39 @@ class SymbolicShapeRefiner {
   // node output.
   DimensionHandle GetUnknownOutputDim(const NodeDef* node, int index,
                                       int dim_id) {
-    DimId id{node, index, dim_id};
+    DimId id{node->name(), index, dim_id};
     auto it = unknown_dims_.find(id);
     if (it != unknown_dims_.end()) {
       return it->second;
     }
     InferenceContext* c = GetContext(node);
-    DimensionHandle dim = c->UnknownDim();
+    int var_id = GetOrCreateStableVarId(id);
+    DimensionHandle dim;
+    if (node->op() == "_Arg") {
+      var_id *= -1;
+      // var_id would be minus when it's argument.
+      dim = c->UnknownDimWithExpr(
+          std::make_unique<DimExpr>(DimExpr::Var(var_id)));
+    } else {
+      dim = c->UnknownDimWithExpr(
+          std::make_unique<DimExpr>(DimExpr::Var(var_id)));
+    }
+    VLOG(1) << "[EXPR] GetUnknownOutputDim: node=" << node->name()
+            << " out=" << index << " dim=" << dim_id << " -> Var(" << var_id
+            << ")";
+    // Create an unknown dim with Var(var_id) expression.
     unknown_dims_[id] = dim;
     return dim;
+  }
+  // Get or create a stable integer variable ID for a given DimId.
+  int GetOrCreateStableVarId(const DimId& id) {
+    auto it = stable_var_ids_.find(id);
+    if (it != stable_var_ids_.end()) {
+      return it->second;
+    }
+    int var_id = next_var_id_++;
+    stable_var_ids_[id] = var_id;
+    return var_id;
   }
 
   // Returns true if all the output tensors have known values.
@@ -1712,7 +1744,62 @@ class SymbolicShapeRefiner {
     // but instantiate a new UnknownDim to prevent incorrect symbolic shape
     // inference through UnknownDim from Const.
     InferenceContext* ic = c->inference_context.get();
+    const std::string& op = node.op();
+    const bool is_bin =
+        (op == "Sub" || op == "Add" || op == "Mul" || op == "Div");
     if (!is_fed) {
+      // Fall through to regular value inference when symbolic shape-value
+      // propagation does not apply.
+      if (enable_dynamic_value_inference_ && is_bin &&
+          c->input_tensors_as_shapes_to_propagate.size() >= 2) {
+        auto va = c->input_tensors_as_shapes_to_propagate[0];
+        auto vb = c->input_tensors_as_shapes_to_propagate[1];
+
+        if (!va.SameHandle(tensorflow::shape_inference::ShapeHandle()) &&
+            !vb.SameHandle(tensorflow::shape_inference::ShapeHandle()) &&
+            ic->RankKnown(va) && ic->RankKnown(vb) &&
+            ic->Rank(va) == ic->Rank(vb)) {
+          std::vector<tensorflow::shape_inference::DimensionHandle> out_elems;
+          out_elems.reserve(ic->Rank(va));
+          const auto is_unknown_from_const = [&](DimensionHandle dim) {
+            return ic->ValueKnown(dim) &&
+                   ic->Value(dim) == kUnknownDimFromConst;
+          };
+          bool symbolic_propagation_succeeded = true;
+
+          for (int i = 0; i < ic->Rank(va); ++i) {
+            auto da = ic->Dim(va, i);
+            auto db = ic->Dim(vb, i);
+            if (is_unknown_from_const(da) || is_unknown_from_const(db)) {
+              symbolic_propagation_succeeded = false;
+              break;
+            }
+
+            tensorflow::shape_inference::DimensionHandle r;
+            absl::Status status;
+            if (op == "Sub")
+              status = ic->Subtract(da, db, &r);
+            else if (op == "Add")
+              status = ic->Add(da, db, &r);
+            else if (op == "Mul")
+              status = ic->Multiply(da, db, &r);
+            else
+              status =
+                  ic->Divide(da, db, /*evenly_divisible=*/false, &r);
+            if (!status.ok()) {
+              symbolic_propagation_succeeded = false;
+              break;
+            }
+            out_elems.push_back(r);
+          }
+          if (symbolic_propagation_succeeded) {
+            c->output_tensors_as_shapes.resize(1);
+            c->output_tensors_as_shapes[0] = ic->MakeShape(out_elems);
+            return absl::OkStatus();
+          }
+        }
+      }
+
       if (IsConstant(node)) {
         const TensorProto& tensor_proto = node.attr().at("value").tensor();
         c->output_tensor_protos.resize(1);
@@ -1720,6 +1807,18 @@ class SymbolicShapeRefiner {
         c->output_tensors_as_shapes.resize(1);
         MaybeTensorProtoToShape(ic, tensor_proto,
                                 &c->output_tensors_as_shapes[0]);
+      } else if (IsCast(node)) {
+        if (c->input_tensors_as_shapes_to_propagate.empty()) {
+          return absl::OkStatus();
+        }
+        const DataType src_type = node.attr().at("SrcT").type();
+        const DataType dst_type = node.attr().at("DstT").type();
+        if ((src_type == DT_INT32 || src_type == DT_INT64) &&
+            (dst_type == DT_INT32 || dst_type == DT_INT64)) {
+          c->output_tensors_as_shapes.resize(1);
+          c->output_tensors_as_shapes[0] =
+              c->input_tensors_as_shapes_to_propagate[0];
+        }
       } else if (IsRank(node)) {
         if (ic->RankKnown(ic->input(0))) {
           // Propagate rank value.
@@ -1731,6 +1830,19 @@ class SymbolicShapeRefiner {
         }
       } else if (IsSize(node)) {
         DimensionHandle size = ic->NumElements(ic->input(0));
+        if (enable_dynamic_value_inference_ && !ic->ValueKnown(size) &&
+            ic->RankKnown(ic->input(0))) {
+          size = ic->MakeDim(1);
+          for (int i = 0; i < ic->Rank(ic->input(0)); ++i) {
+            TF_RETURN_IF_ERROR(
+                ic->Multiply(size, ic->Dim(ic->input(0), i), &size));
+          }
+        }
+        if (enable_dynamic_value_inference_ &&
+            (ic->ValueKnown(size) || ic->GetDimExpr(size) != nullptr)) {
+          c->output_tensors_as_shapes.resize(1);
+          c->output_tensors_as_shapes[0] = ic->MakeShape({size});
+        }
         if (ic->ValueKnown(size)) {
           // Propagate size value.
           int64_t sz = ic->Value(size);
@@ -1751,6 +1863,48 @@ class SymbolicShapeRefiner {
             c->output_tensor_protos[0] = &const_tensors_to_propagate_.back();
           }
         }
+      } else if (enable_dynamic_value_inference_ && op == "Range") {
+        auto scalar_int_value = [&](int input, int64_t* value) {
+          const Tensor* tensor = ic->input_tensor(input);
+          if (tensor == nullptr || tensor->dims() != 0) {
+            return false;
+          }
+          if (tensor->dtype() == DT_INT32) {
+            *value = tensor->scalar<int32>()();
+            return true;
+          }
+          if (tensor->dtype() == DT_INT64) {
+            *value = tensor->scalar<int64_t>()();
+            return true;
+          }
+          return false;
+        };
+
+        int64_t start;
+        int64_t delta;
+        const bool has_positive_constant_delta =
+            scalar_int_value(0, &start) && scalar_int_value(2, &delta) &&
+            start == 0 && delta > 0;
+        if (has_positive_constant_delta &&
+            c->input_tensors_as_shapes_to_propagate.size() > 1) {
+          const ShapeHandle& limit =
+              c->input_tensors_as_shapes_to_propagate[1];
+          if (ic->RankKnown(limit) && ic->Rank(limit) >= 1) {
+            DimensionHandle length = ic->Dim(limit, 0);
+            if (ic->ValueKnown(length) || ic->GetDimExpr(length) != nullptr) {
+              DimensionHandle range_length = length;
+              if (delta > 1) {
+                DimensionHandle adjusted_length;
+                TF_RETURN_IF_ERROR(
+                    ic->Add(length, delta - 1, &adjusted_length));
+                TF_RETURN_IF_ERROR(ic->Divide(
+                    adjusted_length, delta, /*evenly_divisible=*/false,
+                    &range_length));
+              }
+              ic->set_output(0, ic->Vector(range_length));
+            }
+          }
+        }
       } else if (IsShape(node)) {
         c->output_tensors_as_shapes.resize(1);
         c->output_tensors_as_shapes[0] = c->inference_context->input(0);
@@ -1759,7 +1913,126 @@ class SymbolicShapeRefiner {
         for (int i = 0; i < c->inference_context->num_inputs(); ++i) {
           c->output_tensors_as_shapes[i] = c->inference_context->input(i);
         }
-      } else if (node.op() == "ConcatV2") {
+      } else if (IsGather(node)) {
+        if (c->input_tensors_as_shapes_to_propagate.empty()) {
+          return absl::OkStatus();
+        }
+        const ShapeHandle& params = c->input_tensors_as_shapes_to_propagate[0];
+        // Shape-like tensors are propagated here by storing each tensor value
+        // as one dimension of a ShapeHandle. Gather(axis=0) therefore becomes
+        // "pick those propagated entries by index".
+        const Tensor* indices = ic->input_tensor(1);
+        const bool has_axis_input = ic->num_inputs() >= 3;
+        const Tensor* axis = has_axis_input ? ic->input_tensor(2) : nullptr;
+        bool valid = ic->RankKnown(params) && indices != nullptr;
+        int64_t axis_value = 0;
+        if (valid && has_axis_input) {
+          valid = axis != nullptr && axis->NumElements() == 1;
+        }
+        if (valid && has_axis_input) {
+          axis_value = axis->dtype() == DT_INT32 ? axis->scalar<int32>()()
+                                                 : axis->scalar<int64_t>()();
+          valid = (axis_value == 0);
+        }
+        if (valid) {
+          std::vector<DimensionHandle> dims;
+          auto add_index = [&](int64_t raw_index) -> bool {
+            int64_t index = raw_index;
+            if (index < 0) {
+              // Match Gather's negative-index semantics.
+              index += ic->Rank(params);
+            }
+            if (index < 0 || index >= ic->Rank(params)) {
+              return false;
+            }
+            // In this side channel, shape-tensor contents live in the dims.
+            dims.push_back(ic->Dim(params, index));
+            return true;
+          };
+          auto add_indices = [&](const auto& values) -> bool {
+            for (int i = 0; i < values.size(); ++i) {
+              if (!add_index(values(i))) {
+                return false;
+              }
+            }
+            return true;
+          };
+          if (indices->dims() == 0) {
+            valid =
+                add_index(indices->dtype() == DT_INT32 ? indices->scalar<int32>()()
+                                                       : indices->scalar<int64_t>()());
+          } else if (indices->dims() == 1) {
+            if (indices->dtype() == DT_INT32) {
+              valid = add_indices(indices->vec<int32>());
+            } else if (indices->dtype() == DT_INT64) {
+              valid = add_indices(indices->vec<int64_t>());
+            } else {
+              valid = false;
+            }
+          } else {
+            valid = false;
+          }
+          if (valid) {
+            c->output_tensors_as_shapes.resize(1);
+            c->output_tensors_as_shapes[0] = ic->MakeShape(dims);
+          }
+        }
+      } else if (IsProd(node)) {
+        if (c->input_tensors_as_shapes_to_propagate.empty()) {
+          return absl::OkStatus();
+        }
+        const ShapeHandle& input = c->input_tensors_as_shapes_to_propagate[0];
+        // Here `input` represents a propagated shape-vector value, so its
+        // entries live in the dimensions of the ShapeHandle rather than in a
+        // normal tensor buffer.
+        const Tensor* reduction_indices = ic->input_tensor(1);
+        bool keep_dims = false;
+        TF_RETURN_IF_ERROR(GetNodeAttr(node, "keep_dims", &keep_dims));
+        bool valid =
+            ic->RankKnown(input) && reduction_indices != nullptr && !keep_dims;
+        if (valid) {
+          std::vector<int64_t> axes;
+          auto read_axes = [&](const auto& values) {
+            axes.reserve(values.size());
+            for (int i = 0; i < values.size(); ++i) {
+              axes.push_back(values(i));
+            }
+          };
+          if (reduction_indices->dtype() == DT_INT32) {
+            if (reduction_indices->dims() == 0) {
+              axes.push_back(reduction_indices->scalar<int32>()());
+            } else if (reduction_indices->dims() == 1) {
+              read_axes(reduction_indices->vec<int32>());
+            } else {
+              valid = false;
+            }
+          } else if (reduction_indices->dtype() == DT_INT64) {
+            if (reduction_indices->dims() == 0) {
+              axes.push_back(reduction_indices->scalar<int64_t>()());
+            } else if (reduction_indices->dims() == 1) {
+              read_axes(reduction_indices->vec<int64_t>());
+            } else {
+              valid = false;
+            }
+          } else {
+            valid = false;
+          }
+          if (valid) {
+            // For shape-vector contents, Prod(axis=0) means multiply the
+            // propagated entries together.
+            valid = axes.size() == 1 && axes[0] == 0 && ic->Rank(input) > 0;
+          }
+          if (valid) {
+            DimensionHandle product = ic->Dim(input, 0);
+            for (int i = 1; i < ic->Rank(input); ++i) {
+              TF_RETURN_IF_ERROR(ic->Multiply(product, ic->Dim(input, i),
+                                              &product));
+            }
+            c->output_tensors_as_shapes.resize(1);
+            c->output_tensors_as_shapes[0] = ic->MakeShape({product});
+          }
+        }
+      } else if (IsConcat(node)) {
         bool valid = true;
         ShapeHandle result;
         for (int i = 0; i < ic->num_inputs() - 1; ++i) {
@@ -1798,8 +2071,12 @@ class SymbolicShapeRefiner {
             // possible.
             const ShapeHandle& shape_handle =
                 c->input_tensors_as_shapes_to_propagate[i];
-            if (ic->RankKnown(shape_handle) && ic->Rank(shape_handle) >= 1 &&
-                ic->ValueKnown(ic->Dim(shape_handle, 0))) {
+            const bool has_value =
+                ic->RankKnown(shape_handle) && ic->Rank(shape_handle) >= 1 &&
+                (ic->ValueKnown(ic->Dim(shape_handle, 0)) ||
+                 (enable_dynamic_value_inference_ &&
+                  ic->GetDimExpr(ic->Dim(shape_handle, 0)) != nullptr));
+            if (has_value) {
               dims.push_back(ic->Dim(shape_handle, 0));
             } else {
               // This is not from Const, but as it shouldn'be used as symbolic
@@ -1811,6 +2088,26 @@ class SymbolicShapeRefiner {
         if (valid) {
           c->output_tensors_as_shapes.resize(1);
           c->output_tensors_as_shapes[0] = ic->MakeShape(dims);
+        }
+      } else if (IsUnpack(node)) {
+        if (c->input_tensors_as_shapes_to_propagate.empty()) {
+          return absl::OkStatus();
+        }
+        const ShapeHandle& input = c->input_tensors_as_shapes_to_propagate[0];
+        bool valid = ic->RankKnown(input);
+        int axis = 0;
+        if (valid) {
+          TF_RETURN_IF_ERROR(GetNodeAttr(node, "axis", &axis));
+          if (axis < 0) {
+            axis += ic->Rank(input);
+          }
+          valid = (axis == 0 && ic->num_outputs() == ic->Rank(input));
+        }
+        if (valid) {
+          c->output_tensors_as_shapes.resize(ic->num_outputs());
+          for (int i = 0; i < ic->num_outputs(); ++i) {
+            c->output_tensors_as_shapes[i] = ic->MakeShape({ic->Dim(input, i)});
+          }
         }
       } else if (IsIdentity(node) || IsIdentityNSingleInput(node)) {
         c->output_tensors_as_shapes.resize(1);
@@ -1919,6 +2216,99 @@ class SymbolicShapeRefiner {
     return absl::OkStatus();
   }
 
+  absl::Status CanonicalizeOutputDims(const NodeDef* node) {
+    NodeContext* ctx = GetNodeContext(node);
+    if (!ctx) return absl::OkStatus();
+
+    InferenceContext* ic = ctx->inference_context.get();
+    for (int out = 0; out < ic->num_outputs(); ++out) {
+      ShapeHandle s = ic->output(out);
+
+      if (!ic->RankKnown(s)) {
+        bool recovered_rank = false;
+        auto it = node->attr().find("_output_shapes");
+        if(it == node->attr().end()){
+          it = node->attr().find("shape");
+        }
+        if (it != node->attr().end() && out < it->second.list().shape_size()) {
+          const TensorShapeProto& proto = it->second.list().shape(out);
+          if (!proto.unknown_rank()) {
+            std::vector<DimensionHandle> dims;
+            dims.reserve(proto.dim_size());
+
+            for (int d = 0; d < proto.dim_size(); ++d) {
+              int64_t size = proto.dim(d).size();
+              if (size >= 0) {
+                dims.push_back(ic->MakeDim(size));
+              } else {
+                dims.push_back(GetUnknownOutputDim(node, out, d));
+              }
+            }
+            s = ic->MakeShape(dims);
+            ic->set_output(out, s);
+            recovered_rank = true;
+          }
+        }
+        if (!recovered_rank && node->op() == "_Arg") {
+          DimensionHandle d0 = GetUnknownOutputDim(node, out, /*dim_id=*/0);
+          ShapeHandle vec = ic->MakeShape({d0});
+          ic->set_output(out, vec);
+          s = vec;
+          recovered_rank = true;
+        }
+
+        if (!recovered_rank) {
+          VLOG(1) << "RANK still unknown. " << node->name();
+          continue;
+        }
+      }
+
+      if (!ic->RankKnown(s)) {
+        continue;
+      }
+
+      bool changed = false;
+      std::vector<DimensionHandle> dims;
+      dims.reserve(ic->Rank(s));
+      for (int d = 0; d < ic->Rank(s); ++d) {
+        DimensionHandle dim = ic->Dim(s, d);
+        const int64_t v = ic->Value(dim);
+        // Keep concrete dims.
+        if (v >= 0) {
+          dims.push_back(dim);
+          continue;
+        }
+        // If already tagged with expr, keep it.
+        auto* dim_expr = ic->GetDimExpr(dim);
+        if (dim_expr != nullptr) {
+          dims.push_back(dim);
+          continue;
+        }
+        auto output_shapes_it = node->attr().find("_output_shapes");
+        if (output_shapes_it != node->attr().end() &&
+            out < output_shapes_it->second.list().shape_size() &&
+            d < output_shapes_it->second.list().shape(out).dim_size()) {
+          const int64_t annotated_size =
+              output_shapes_it->second.list().shape(out).dim(d).size();
+          if (annotated_size >= 0) {
+            changed = true;
+            dims.push_back(ic->MakeDim(annotated_size));
+            continue;
+          }
+        }
+        // Canonicalize ALL unknown dims.
+        DimensionHandle canon = GetUnknownOutputDim(node, out, d);
+        changed |= !dim.SameHandle(canon);
+        dims.push_back(canon);
+      }
+      if (changed) {
+        ShapeHandle new_s = ic->MakeShape(dims);
+        ic->set_output(out, new_s);
+      }
+    }
+    return absl::OkStatus();
+  }
+
   absl::Status InferShapes(const NodeDef& node, NodeContext* c) {
     // Infer the shapes of output tensors.
     if (!c->op_data || c->op_data->shape_inference_fn == nullptr ||
@@ -1940,8 +2330,8 @@ class SymbolicShapeRefiner {
         status.Update(SetUnknownShape(&node, output_port));
       }
     }
-
     // Update NodeContext output fields after shape inference function runs.
+    status.Update(CanonicalizeOutputDims(&node));
     status.Update(MaybeUpdateNodeContextOutput(node, is_fed, c));
 
     return status;
@@ -2048,6 +2438,9 @@ class SymbolicShapeRefiner {
   absl::flat_hash_map<const NodeDef*, NodeContext> node_to_context_;
   absl::flat_hash_map<ShapeId, ShapeHandle> unknown_shapes_;
   absl::flat_hash_map<DimId, DimensionHandle> unknown_dims_;
+  // Stable variable IDs for canonical dimension symbols.
+  absl::flat_hash_map<DimId, int> stable_var_ids_;
+  int next_var_id_ = 1;
   // Store function instantiations only for valid function. If function
   // instantiation failed it will have an `absl::nullopt`.
   absl::flat_hash_map<string, absl::optional<GrapplerFunctionItem>>
@@ -2062,6 +2455,7 @@ class SymbolicShapeRefiner {
 
   // For more aggressive shape and value inference.
   bool aggressive_shape_inference_;
+  bool enable_dynamic_value_inference_;
   ResourceMgr resource_mgr_;
 };
 
@@ -2080,8 +2474,9 @@ class SymbolicShapeManager {
     if (InferenceContext::Rank(s1) > 0 && InferenceContext::Rank(s2) > 0) {
       CHECK_EQ(InferenceContext::Rank(s1), InferenceContext::Rank(s2));
       for (int i = 0; i < InferenceContext::Rank(s1); ++i) {
-        TF_RETURN_IF_ERROR(dims_.Merge(InferenceContext::DimKnownRank(s1, i),
-                                       InferenceContext::DimKnownRank(s2, i)));
+        TF_RETURN_IF_ERROR(
+            MergeDimsWithExpr(InferenceContext::DimKnownRank(s1, i),
+                              InferenceContext::DimKnownRank(s2, i)));
       }
     }
     return absl::OkStatus();
@@ -2090,7 +2485,7 @@ class SymbolicShapeManager {
     if (!d1.IsSet() || !d2.IsSet()) {
       return absl::OkStatus();
     }
-    return dims_.Merge(d1, d2);
+    return MergeDimsWithExpr(d1, d2);
   }
 
   void AsTensorProperties(const ShapeHandle& shape, const DataType& type,
@@ -2104,7 +2499,26 @@ class SymbolicShapeManager {
         shape_inference::DimensionHandle dim =
             InferenceContext::DimKnownRank(actual_shape, j);
         int64_t d = dims_.GetMergedValue(dim);
-        properties->mutable_shape()->add_dim()->set_size(d);
+        TensorShapeProto* output_shape = properties->mutable_shape();
+        auto* out_dim = output_shape->add_dim();
+        out_dim->set_size(d < 0 ? -1 : d);
+        void* root = dims_.RootId(dim);
+        DimExpr* expr = nullptr;
+        if (auto it = dim_root_expr_.find(root); it != dim_root_expr_.end()) {
+          expr = it->second;
+        } else {
+          expr = ExprForDim(dim);
+        }
+        ExpressionProto* output_expr = output_shape->add_expressions();
+        if (expr != nullptr) {
+          DimExprToProto(*expr, output_expr);
+          // TODO: Apply simplification?
+        } else if (d >= 0) {
+          output_expr->set_constant_value(d);
+        } else {
+          DimExprToProto(DimExpr::Unknown(xla::kMissingExpressionSentinel),
+                         output_expr);
+        }
       }
     }
   }
@@ -2132,7 +2546,142 @@ class SymbolicShapeManager {
   }
 
  private:
+  // Get the variable ID from an expression, or -1 if not a variable.
+  static int32_t GetVarId(const DimExpr* e) {
+    if (!e || e->kind() != DimExpr::Kind::kVariable) return -1;
+    return static_cast<const xla::Variable*>(e->get())->get_id();
+  }
+
+  static bool IsConst(const DimExpr* e) {
+    return e && e->kind() == DimExpr::Kind::kConstant;
+  }
+
+  static bool IsVar(const DimExpr* e) {
+    return e && e->kind() == DimExpr::Kind::kVariable;
+  }
+
+  static bool IsPlaceHolder(const DimExpr* e) {
+    if (!e) return false;
+    if (e->kind() != DimExpr::Kind::kVariable) return false;
+    return static_cast<const xla::Variable*>(e->get())->get_id() < 0;
+  }
+
+  static bool IsCompound(const DimExpr* e) {
+    if (!e) return false;
+    switch (e->kind()) {
+      case DimExpr::Kind::kAdd:
+      case DimExpr::Kind::kSub:
+      case DimExpr::Kind::kMul:
+      case DimExpr::Kind::kDiv:
+      case DimExpr::Kind::kMax:
+      case DimExpr::Kind::kGt:
+      case DimExpr::Kind::kSelect:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // Ranking: Const > Arg_ > Compound > Var > null
+  static int InfoScore(const DimExpr* e) {
+    if (!e) return 0;
+    if (IsConst(e)) return 4;
+    if (IsPlaceHolder(e)) return 3;
+    if (IsCompound(e)) return 2;
+    if (IsVar(e)) return 1;
+    return 1;  // fallback (shouldn't happen)
+  }
+
+  // Prefer "more informative" but keep deterministic tie-break.
+  static DimExpr* PreferMoreInformative(DimExpr* a, DimExpr* b) {
+    if (a == b) return a;
+    const int sa = InfoScore(a);
+    const int sb = InfoScore(b);
+    if (sa > sb) return a;
+    if (sb > sa) return b;
+    // Same score: keep stable choice.
+    return a;
+  }
+
+  // Get the expr pointer from a dimension handle (accesses private member).
+  static DimExpr* GetExprFromDimHandle(const DimensionHandle& d) {
+    if (!d.IsSet()) return nullptr;
+    return d->expr_;
+  }
+
+  DimExpr* ExprForDim(const DimensionHandle& d) {
+    if (!d.IsSet()) return nullptr;
+    if (DimExpr* expr = GetExprFromDimHandle(d)) {
+      return expr;
+    }
+    if (!InferenceContext::ValueKnown(d)) {
+      return nullptr;
+    }
+    const int64_t value = InferenceContext::Value(d);
+    auto it = const_exprs_.find(value);
+    if (it != const_exprs_.end()) {
+      return it->second.get();
+    }
+    auto expr = std::make_unique<DimExpr>(DimExpr::Const(value));
+    DimExpr* expr_ptr = expr.get();
+    const_exprs_.emplace(value, std::move(expr));
+    return expr_ptr;
+  }
+
+  absl::Status MergeDimsWithExpr(DimensionHandle d1, DimensionHandle d2) {
+    if (!d1.IsSet() || !d2.IsSet()) return absl::OkStatus();
+
+    void* r1 = dims_.RootId(d1);
+    void* r2 = dims_.RootId(d2);
+
+    // Fetch best-known expr for each set.
+    auto get_best = [&](void* r, DimensionHandle d) -> DimExpr* {
+      auto it = dim_root_expr_.find(r);
+      if (it != dim_root_expr_.end()) return it->second;
+      return ExprForDim(d);  // may be null
+    };
+
+    DimExpr* e1 = get_best(r1, d1);
+    DimExpr* e2 = get_best(r2, d2);
+
+    // If already in same UF set, just keep the most informative expr.
+    if (r1 == r2) {
+      DimExpr* existing = nullptr;
+      if (auto it = dim_root_expr_.find(r1); it != dim_root_expr_.end()) {
+        existing = it->second;
+      }
+      DimExpr* chosen = PreferMoreInformative(existing,
+                                            PreferMoreInformative(e1, e2));
+      if (chosen) dim_root_expr_[r1] = chosen;  // keep or upgrade
+      return absl::OkStatus();
+    }
+
+    // Perform UF merge (rank + path compression inside DisjointSet).
+    TF_RETURN_IF_ERROR(dims_.Merge(d1, d2));
+
+    // New root after merge.
+    void* new_root = dims_.RootId(d1);
+
+    // Choose best expr across both sets.
+    DimExpr* chosen = PreferMoreInformative(e1, e2);
+
+    // Remove stale root keys (only the old roots).
+    dim_root_expr_.erase(r1);
+    dim_root_expr_.erase(r2);
+
+    // Preserve any expr already stored at new_root (rare but safe).
+    if (auto it = dim_root_expr_.find(new_root); it != dim_root_expr_.end()) {
+      chosen = PreferMoreInformative(it->second, chosen);
+    }
+
+    if (chosen) dim_root_expr_[new_root] = chosen;
+
+    return absl::OkStatus();
+  }
   DisjointSet<shape_inference::ShapeHandle> shapes_;
+  absl::flat_hash_map<int64_t, std::unique_ptr<DimExpr>> const_exprs_;
+  // Map from union-find root pointer to the best expression for that set.
+  absl::flat_hash_map<void*, DimExpr*> dim_root_expr_;
   DisjointSet<shape_inference::DimensionHandle> dims_;
 };
 
@@ -2518,7 +3067,8 @@ absl::Status GraphProperties::UpdateEnqueue(
 
 absl::Status GraphProperties::InferStatically(
     bool assume_valid_feeds, bool aggressive_shape_inference,
-    bool include_input_tensor_values, bool include_output_tensor_values) {
+    bool include_input_tensor_values, bool include_output_tensor_values,
+    bool enable_dynamic_value_inference) {
   FunctionLibraryDefinition function_library(OpRegistry::Global(),
                                              item_.graph.library());
   absl::flat_hash_map<string, absl::flat_hash_set<int>> fed_ports;
@@ -2607,7 +3157,8 @@ absl::Status GraphProperties::InferStatically(
   // Heap-allocate SymbolicShapeRefiner in order to not consume a large amount
   // of stack space.
   auto refiner = std::make_unique<SymbolicShapeRefiner>(
-      graph_view, fed_ports, aggressive_shape_inference);
+      graph_view, fed_ports, aggressive_shape_inference,
+      enable_dynamic_value_inference);
 
   TopoQueue new_shapes(topo_order);
   // Also seed the propagation of shapes in the fanout of primary inputs.

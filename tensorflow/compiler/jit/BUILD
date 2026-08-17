@@ -1006,6 +1006,7 @@ cc_library(
     hdrs = ["shape_inference.h"],
     visibility = [":friends"],
     deps = [
+        ":flags",
         ":shape_inference_helpers",
         "//tensorflow/core:core_cpu_internal",
         "//tensorflow/core:framework",

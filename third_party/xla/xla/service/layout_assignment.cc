@@ -1401,6 +1401,7 @@ std::unique_ptr<Layout> LayoutAssignment::ChooseOperandLayoutFromOutputLayout(
     const Shape& output_shape = instruction->shape();
     Shape output_shape_with_layout = ShapeUtil::MakeShapeWithDenseLayout(
         output_shape.element_type(), output_shape.dimensions(),
+        output_shape.expressions(),
         LayoutUtil::MinorToMajor(output_layout));
     Shape operand_shape = operand->shape();
     *operand_shape.mutable_layout() =
@@ -1539,6 +1540,7 @@ std::unique_ptr<Layout> LayoutAssignment::ChooseOutputLayoutFromOperandLayout(
     }
     Shape operand_shape_with_layout = ShapeUtil::MakeShapeWithDenseLayout(
         operand->shape().element_type(), operand->shape().dimensions(),
+        operand->shape().expressions(),
         LayoutUtil::MinorToMajor(operand_layout));
     Shape output_shape = user->shape();
     *output_shape.mutable_layout() =
@@ -2571,7 +2573,7 @@ absl::Status LayoutAssignment::PropagateComputationLayouts(
     *result_layout = computed_computation_layout.result_layout();
   } else {
     TF_RET_CHECK(
-        Shape::Equal().IgnoreDynamicDimension().MinorToMajorOnlyInLayout()(
+        Shape::Equal().IgnoreDynamicDimension().MinorToMajorOnlyInLayout().IgnoreBatch()(
             computed_computation_layout.result_layout().shape(),
             result_layout->shape()));
   }

@@ -108,6 +108,64 @@ absl::Status EraseElementFromVector(PtrVec<T>* container, T value) {
   container->erase(it);
   return absl::OkStatus();
 }
+
+DynExpr* DynExprFromProtoForPrint(const ExpressionProto& proto) {
+  switch (proto.node_type_case()) {
+    case ExpressionProto::kConstantValue:
+      return DynExpr::_(proto.constant_value());
+    case ExpressionProto::kVariableId:
+      return DynExpr::V(proto.variable_id());
+    case ExpressionProto::kAddNode: {
+      const auto& add = proto.add_node();
+      return new Add(DynExprFromProtoForPrint(add.lhs()),
+                     DynExprFromProtoForPrint(add.rhs()));
+    }
+    case ExpressionProto::kSubNode: {
+      const auto& sub = proto.sub_node();
+      return new Sub(DynExprFromProtoForPrint(sub.lhs()),
+                     DynExprFromProtoForPrint(sub.rhs()));
+    }
+    case ExpressionProto::kMulNode: {
+      const auto& mul = proto.mul_node();
+      return new Mul(DynExprFromProtoForPrint(mul.lhs()),
+                     DynExprFromProtoForPrint(mul.rhs()));
+    }
+    case ExpressionProto::kDivNode: {
+      const auto& div = proto.div_node();
+      return new Div(DynExprFromProtoForPrint(div.lhs()),
+                     DynExprFromProtoForPrint(div.rhs()));
+    }
+    case ExpressionProto::kMaxNode: {
+      const auto& max = proto.max_node();
+      return new MaxExpr(DynExprFromProtoForPrint(max.lhs()),
+                         DynExprFromProtoForPrint(max.rhs()));
+    }
+    case ExpressionProto::kGtNode: {
+      const auto& gt = proto.gt_node();
+      return new GtExpr(DynExprFromProtoForPrint(gt.lhs()),
+                        DynExprFromProtoForPrint(gt.rhs()));
+    }
+    case ExpressionProto::kSelectNode: {
+      const auto& select = proto.select_node();
+      return new SelectExpr(DynExprFromProtoForPrint(select.pred()),
+                            DynExprFromProtoForPrint(select.on_true()),
+                            DynExprFromProtoForPrint(select.on_false()));
+    }
+    case ExpressionProto::NODE_TYPE_NOT_SET:
+    default:
+      return nullptr;
+  }
+}
+
+std::string ContentsExprToString(const ExpressionProto& proto) {
+  std::unique_ptr<DynExpr> expr(DynExprFromProtoForPrint(proto));
+  if (expr == nullptr) {
+    return "_";
+  }
+  StringPrinter printer;
+  expr->print(&printer);
+  return std::move(printer).ToString();
+}
 }  // namespace
 
 HloInstruction::Users::~Users() = default;
@@ -636,14 +694,32 @@ absl::StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
       break;
     case HloOpcode::kSlice: {
       std::vector<int64_t> slice_starts, slice_limits, slice_strides;
+      std::vector<DExpr> slice_start_exprs, slice_limit_exprs;
+      bool has_symbolic_slice_bounds = false;
       for (const HloInstructionProto::SliceDimensions& slice_dimensions :
            proto.slice_dimensions()) {
         slice_starts.push_back(slice_dimensions.start());
         slice_limits.push_back(slice_dimensions.limit());
         slice_strides.push_back(slice_dimensions.stride());
+        if (slice_dimensions.has_start_expr() ||
+            slice_dimensions.has_limit_expr()) {
+          has_symbolic_slice_bounds = true;
+        }
+        slice_start_exprs.push_back(
+            slice_dimensions.has_start_expr()
+                ? DExprFromProto(slice_dimensions.start_expr())
+                : DExpr::Unknown(kMissingExpressionSentinel));
+        slice_limit_exprs.push_back(
+            slice_dimensions.has_limit_expr()
+                ? DExprFromProto(slice_dimensions.limit_expr())
+                : DExpr::Unknown(kMissingExpressionSentinel));
       }
-      instruction = CreateSlice(shape, operands(0), slice_starts, slice_limits,
-                                slice_strides);
+      instruction = has_symbolic_slice_bounds
+                        ? CreateSlice(shape, operands(0), slice_starts,
+                                      slice_limits, slice_strides,
+                                      slice_start_exprs, slice_limit_exprs)
+                        : CreateSlice(shape, operands(0), slice_starts,
+                                      slice_limits, slice_strides);
       break;
     }
     case HloOpcode::kConstant: {
@@ -1373,6 +1449,14 @@ absl::StatusOr<std::unique_ptr<HloInstruction>> HloInstruction::CreateFromProto(
   if (proto.has_frontend_attributes()) {
     instruction->set_frontend_attributes(proto.frontend_attributes());
   }
+  if (proto.contents_size() > 0) {
+    std::vector<ExpressionProto> contents;
+    contents.reserve(proto.contents_size());
+    for (const auto& content : proto.contents()) {
+      contents.push_back(content);
+    }
+    instruction->set_contents(std::move(contents));
+  }
 
   if (proto.has_statistics_viz()) {
     instruction->set_statistics_viz(proto.statistics_viz());
@@ -2044,6 +2128,18 @@ HloInstruction::CreateAddDependency(HloInstruction* data_operand,
     absl::Span<const int64_t> strides) {
   return std::make_unique<HloSliceInstruction>(shape, operand, start_indices,
                                                limit_indices, strides);
+}
+
+/* static */ std::unique_ptr<HloInstruction> HloInstruction::CreateSlice(
+    const Shape& shape, HloInstruction* operand,
+    absl::Span<const int64_t> start_indices,
+    absl::Span<const int64_t> limit_indices,
+    absl::Span<const int64_t> strides,
+    absl::Span<const DExpr> start_exprs,
+    absl::Span<const DExpr> limit_exprs) {
+  return std::make_unique<HloSliceInstruction>(shape, operand, start_indices,
+                                               limit_indices, strides,
+                                               start_exprs, limit_exprs);
 }
 
 /* static */ std::unique_ptr<HloInstruction> HloInstruction::CreateDynamicSlice(
@@ -2812,6 +2908,7 @@ std::unique_ptr<HloInstruction> HloInstruction::CloneWithNewOperands(
   SetupDerivedInstruction(clone.get());
   clone->backend_config_ = BackendConfigWrapper(backend_config_);
   clone->set_frontend_attributes(frontend_attributes());
+  clone->set_contents(contents());
   // The new instruction's name will be uniquified when it's added to a
   // computation.
   clone->SetAndSanitizeName(name());
@@ -4235,6 +4332,18 @@ void HloInstruction::PrintExtraAttributes(
                 FrontendAttributesToString(frontend_attributes()));
     });
   }
+  if (has_contents()) {
+    printer.Next([this](Printer* printer) {
+      printer->Append("contents=[");
+      for (int64_t i = 0; i < contents().size(); ++i) {
+        if (i > 0) {
+          printer->Append(", ");
+        }
+        printer->Append(ContentsExprToString(contents()[i]));
+      }
+      printer->Append("]");
+    });
+  }
 
   if (opcode() != HloOpcode::kCall) {
     CHECK(!is_composite())
@@ -4356,6 +4465,9 @@ HloInstructionProto HloInstruction::ToProto() const {
   }
 
   *proto.mutable_frontend_attributes() = frontend_attributes();
+  for (const auto& content : contents()) {
+    *proto.add_contents() = content;
+  }
   proto.set_is_composite(is_composite());
 
   *proto.mutable_statistics_viz() = statistics_viz();

@@ -17,8 +17,9 @@ limitations under the License.
 
 #include <cstdint>
 #include <type_traits>
-
+#include "absl/algorithm/container.h"
 #include "absl/status/statusor.h"
+#include "tensorflow/compiler/tf2xla/symbolic_content_util.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "xla/hlo/builder/lib/constants.h"
@@ -26,6 +27,7 @@ limitations under the License.
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/literal.h"
 #include "xla/primitive_util.h"
+#include "xla/shape_util.h"
 #include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/op_requires.h"
@@ -33,17 +35,90 @@ limitations under the License.
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace {
+
+template <typename T>
+xla::DExpr GetScalarExpr(const XlaExpression& expression,
+                         const xla::LiteralSlice& literal) {
+  const auto& contents = expression.contents();
+  if (!contents.empty() && contents[0]) {
+    return contents[0];
+  }
+  return xla::DExpr::Const(literal.Get<T>({}));
+}
+
+bool HasDynamicContent(const XlaExpression& expression) {
+  return absl::c_any_of(expression.contents(), [](const xla::DExpr& expr) {
+    return expr && expr->is_dynamic();
+  });
+}
+
+template <typename T>
+std::vector<xla::DExpr> BuildRangeContents(const XlaExpression& start_expr,
+                                           const XlaExpression& delta_expr,
+                                           const xla::LiteralSlice& start,
+                                           const xla::LiteralSlice& delta,
+                                           int64_t size) {
+  std::vector<xla::DExpr> contents;
+  contents.reserve(size);
+  xla::DExpr start_symbol = GetScalarExpr<T>(start_expr, start);
+  xla::DExpr delta_symbol = GetScalarExpr<T>(delta_expr, delta);
+  for (int64_t i = 0; i < size; ++i) {
+    xla::DExpr offset = xla::DExpr::Const(static_cast<T>(i));
+    contents.push_back((start_symbol + (delta_symbol * offset).simplify()).simplify());
+  }
+  return contents;
+}
+
+template <typename T>
+xla::DExpr BuildRangeSizeExpr(const XlaExpression& start_expr,
+                              const XlaExpression& limit_expr,
+                              const XlaExpression& delta_expr,
+                              const xla::LiteralSlice& start,
+                              const xla::LiteralSlice& limit,
+                              const xla::LiteralSlice& delta,
+                              int64_t fallback_size) {
+  xla::DExpr start_symbol = GetScalarExpr<T>(start_expr, start);
+  xla::DExpr limit_symbol = GetScalarExpr<T>(limit_expr, limit);
+  xla::DExpr delta_symbol = GetScalarExpr<T>(delta_expr, delta);
+
+  const auto& start_contents = start_expr.contents();
+  xla::DExpr effective_start =
+      (!start_contents.empty() && start_contents[0]) ? start_contents[0]
+                                                     : start_symbol;
+  const auto& limit_contents = limit_expr.contents();
+  xla::DExpr effective_limit =
+      (!limit_contents.empty() && limit_contents[0]) ? limit_contents[0]
+                                                     : limit_symbol;
+  const auto& delta_contents = delta_expr.contents();
+  xla::DExpr effective_delta =
+      (!delta_contents.empty() && delta_contents[0]) ? delta_contents[0]
+                                                     : delta_symbol;
+
+  xla::DExpr positive_diff = (effective_limit - effective_start).simplify();
+  xla::DExpr positive_size =
+      (((positive_diff - 1) / effective_delta) + 1).simplify();
+  xla::DExpr negative_step =
+      (xla::DExpr::Const(0) - effective_delta).simplify();
+  xla::DExpr negative_diff = (effective_start - effective_limit).simplify();
+  xla::DExpr negative_size =
+      (((negative_diff - 1) / negative_step) + 1).simplify();
+  return xla::DExpr::Select(xla::DExpr::Gt(delta_symbol, xla::DExpr::Const(0)),
+                            positive_size, negative_size)
+      .simplify();
+}
 
 // The type-specific part of the implementation of Range.
 template <typename T>
 absl::StatusOr<xla::XlaOp> CreateRangeTensor(
     const xla::LiteralSlice& start_literal,
     const xla::LiteralSlice& limit_literal,
-    const xla::LiteralSlice& delta_literal, xla::XlaBuilder* builder) {
+    const xla::LiteralSlice& delta_literal, xla::XlaBuilder* builder,
+    xla::DExpr size_expr = xla::DExpr()) {
   T start = start_literal.Get<T>({});
   T limit = limit_literal.Get<T>({});
   T delta = delta_literal.Get<T>({});
@@ -70,10 +145,17 @@ absl::StatusOr<xla::XlaOp> CreateRangeTensor(
                      : (std::abs(limit - start) - 1) / std::abs(delta) + 1)
            : std::ceil(std::abs((limit - start) / delta)));
 
-  return xla::ConstantR0(builder, start) +
-         xla::ConstantR0(builder, delta) *
-             xla::Iota(builder, xla::primitive_util::NativeToPrimitiveType<T>(),
-                       size);
+  xla::XlaOp iota =
+      (std::is_integral<T>::value && size_expr)
+          ? xla::Iota(builder,
+                      xla::ShapeUtil::MakeShape(
+                          xla::primitive_util::NativeToPrimitiveType<T>(),
+                          {size}, std::vector<xla::DExpr>{size_expr}),
+                      /*iota_dimension=*/0)
+          : xla::Iota(builder, xla::primitive_util::NativeToPrimitiveType<T>(),
+                      size);
+
+  return xla::ConstantR0(builder, start) + xla::ConstantR0(builder, delta) * iota;
 }
 
 class RangeOp : public XlaOpKernel {
@@ -103,13 +185,50 @@ class RangeOp : public XlaOpKernel {
     DataType type = input_type(0);
     absl::StatusOr<xla::XlaOp> output;
     switch (type) {
-      case DT_INT32:
-        output = CreateRangeTensor<int32>(start, limit, delta, ctx->builder());
+      case DT_INT32: {
+        int32 start_value = start.Get<int32>({});
+        int32 limit_value = limit.Get<int32>({});
+        int32 delta_value = delta.Get<int32>({});
+        int64_t size = static_cast<int32>(
+            limit_value == start_value
+                ? 0
+                : (std::abs(limit_value - start_value) - 1) /
+                          std::abs(delta_value) +
+                      1);
+        xla::DExpr size_expr = xla::DExpr::Const(size);
+        if (HasDynamicContent(ctx->InputExpression(0)) ||
+            HasDynamicContent(ctx->InputExpression(1)) ||
+            HasDynamicContent(ctx->InputExpression(2))) {
+          size_expr = BuildRangeSizeExpr<int32>(
+              ctx->InputExpression(0), ctx->InputExpression(1),
+              ctx->InputExpression(2), start, limit, delta, size);
+        }
+        output = CreateRangeTensor<int32>(start, limit, delta, ctx->builder(),
+                                          size_expr);
         break;
-      case DT_INT64:
-        output =
-            CreateRangeTensor<int64_t>(start, limit, delta, ctx->builder());
+      }
+      case DT_INT64: {
+        int64_t start_value = start.Get<int64_t>({});
+        int64_t limit_value = limit.Get<int64_t>({});
+        int64_t delta_value = delta.Get<int64_t>({});
+        int64_t size =
+            limit_value == start_value
+                ? 0
+                : (std::abs(limit_value - start_value) - 1) /
+                          std::abs(delta_value) +
+                      1;
+        xla::DExpr size_expr = xla::DExpr::Const(size);
+        if (HasDynamicContent(ctx->InputExpression(0)) ||
+            HasDynamicContent(ctx->InputExpression(1)) ||
+            HasDynamicContent(ctx->InputExpression(2))) {
+          size_expr = BuildRangeSizeExpr<int64_t>(
+              ctx->InputExpression(0), ctx->InputExpression(1),
+              ctx->InputExpression(2), start, limit, delta, size);
+        }
+        output = CreateRangeTensor<int64_t>(start, limit, delta, ctx->builder(),
+                                            size_expr);
         break;
+      }
       case DT_FLOAT:
         output = CreateRangeTensor<float>(start, limit, delta, ctx->builder());
         break;
@@ -145,7 +264,55 @@ class RangeOp : public XlaOpKernel {
       }
     }
 
-    ctx->SetOutput(0, output.value());
+    const XlaExpression& start_expr = ctx->InputExpression(0);
+    const XlaExpression& limit_expr = ctx->InputExpression(1);
+    const XlaExpression& delta_expr = ctx->InputExpression(2);
+    const bool symbolic_enabled = SymbolicContentEnabled();
+    const bool has_dynamic_content =
+        HasDynamicContent(start_expr) || HasDynamicContent(limit_expr) ||
+        HasDynamicContent(delta_expr);
+
+    if (type == DT_INT32) {
+      int32 start_value = start.Get<int32>({});
+      int32 limit_value = limit.Get<int32>({});
+      int32 delta_value = delta.Get<int32>({});
+      if (symbolic_enabled && has_dynamic_content) {
+        int64_t size = static_cast<int32>(
+            limit_value == start_value
+                ? 0
+                : (std::abs(limit_value - start_value) - 1) /
+                          std::abs(delta_value) +
+                      1);
+        auto output_expr =
+            XlaExpression::XlaOp(output.value(), ctx->expected_output_dtype(0));
+        output_expr.set_contents(BuildRangeContents<int32>(
+            start_expr, delta_expr, start, delta, size));
+        ctx->SetOutputExpression(0, output_expr);
+      } else {
+        ctx->SetOutput(0, output.value());
+      }
+    } else if (type == DT_INT64) {
+      int64_t start_value = start.Get<int64_t>({});
+      int64_t limit_value = limit.Get<int64_t>({});
+      int64_t delta_value = delta.Get<int64_t>({});
+      if (symbolic_enabled && has_dynamic_content) {
+        int64_t size = static_cast<int64_t>(
+            limit_value == start_value
+                ? 0
+                : (std::abs(limit_value - start_value) - 1) /
+                          std::abs(delta_value) +
+                      1);
+        auto output_expr =
+            XlaExpression::XlaOp(output.value(), ctx->expected_output_dtype(0));
+        output_expr.set_contents(BuildRangeContents<int64_t>(
+            start_expr, delta_expr, start, delta, size));
+        ctx->SetOutputExpression(0, output_expr);
+      } else {
+        ctx->SetOutput(0, output.value());
+      }
+    } else {
+      ctx->SetOutput(0, output.value());
+    }
   }
 };
 

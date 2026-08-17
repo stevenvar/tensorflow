@@ -26,6 +26,7 @@ limitations under the License.
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/optional.h"
+#include "tensorflow/compiler/jit/encapsulate_util.h"
 #include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/jit/mark_for_compilation_pass.h"
 #include "tensorflow/compiler/jit/shape_inference_helpers.h"
@@ -54,8 +55,13 @@ limitations under the License.
 #include "tensorflow/core/public/version.h"
 #include "tensorflow/core/util/device_name_utils.h"
 #include "tensorflow/core/util/dump_graph.h"
-
+#include "tensorflow/core/framework/tensor_shape.pb.h"
 namespace tensorflow {
+
+static const absl::flat_hash_set<absl::string_view> kFailingOps = {
+    "Where",
+    // add more here
+};
 
 const char* const kXlaCompiledKernelAttr = "_XlaCompiledKernel";
 const char* const kXlaNumConstantArgsAttr = "_XlaNumConstantArgs";
@@ -111,6 +117,41 @@ void MarkGuaranteedConstants(
       VLOG(1) << "Guaranteed const found: " << src_arg.first->DebugString();
       src_arg.second->AddAttr("_is_guaranteed_constant", true);
     }
+  }
+}
+
+// Helper to convert ExpressionProto to a readable string.
+std::string ExprProtoToString(const ExpressionProto& e) {
+  switch (e.node_type_case()) {
+    case ExpressionProto::kConstantValue:
+      return std::to_string(e.constant_value());
+    case ExpressionProto::kVariableId:
+      return absl::StrCat("Var(", e.variable_id(), ")");
+    case ExpressionProto::kAddNode:
+      return absl::StrCat("(", ExprProtoToString(e.add_node().lhs()), " + ",
+                         ExprProtoToString(e.add_node().rhs()), ")");
+    case ExpressionProto::kSubNode:
+      return absl::StrCat("(", ExprProtoToString(e.sub_node().lhs()), " - ",
+                         ExprProtoToString(e.sub_node().rhs()), ")");
+    case ExpressionProto::kMulNode:
+      return absl::StrCat("(", ExprProtoToString(e.mul_node().lhs()), " * ",
+                         ExprProtoToString(e.mul_node().rhs()), ")");
+    case ExpressionProto::kDivNode:
+      return absl::StrCat("(", ExprProtoToString(e.div_node().lhs()), " / ",
+                         ExprProtoToString(e.div_node().rhs()), ")");
+    case ExpressionProto::kMaxNode:
+      return absl::StrCat("max(", ExprProtoToString(e.max_node().lhs()), ", ",
+                          ExprProtoToString(e.max_node().rhs()), ")");
+    case ExpressionProto::kGtNode:
+      return absl::StrCat("(", ExprProtoToString(e.gt_node().lhs()), " > ",
+                          ExprProtoToString(e.gt_node().rhs()), ")");
+    case ExpressionProto::kSelectNode:
+      return absl::StrCat("select(", ExprProtoToString(e.select_node().pred()),
+                          ", ", ExprProtoToString(e.select_node().on_true()),
+                          ", ", ExprProtoToString(e.select_node().on_false()),
+                          ")");
+    default:
+      return "<none>";
   }
 }
 
@@ -369,6 +410,19 @@ class Encapsulator {
 
 namespace {
 
+bool BuildOutputShapeProto(const Node& node, int output_slot,
+                           TensorShapeProto* proto) {
+  AttrSlice attrs = node.attrs();
+  auto shape_attr =
+      attrs.FindByString(kXlaInferredOutputTensorShapesAttrName);
+  if (shape_attr == nullptr || !shape_attr->has_list() ||
+      shape_attr->list().shape_size() <= output_slot) {
+    return false;
+  }
+  *proto = shape_attr->list().shape(output_slot);
+  return true;
+}
+
 // Return in 'sorted' a topological sort of clusters according to the
 // dependencies encoded in ancestors. clusters is the list of all clusters
 // including clusters that are not present in the ancestors map. has_successors
@@ -470,6 +524,26 @@ absl::Status Encapsulator::Subgraph::RecordArg(
     DataType dtype = edge->dst()->input_type(edge->dst_input());
     builder.Attr("T", dtype);
     builder.Attr("index", arg_index);
+    AttrSlice attrs = src_node->attrs();
+    TensorShapeProto output_shape_proto;
+    if (BuildOutputShapeProto(*src_node, src_slot, &output_shape_proto)) {
+      VLOG(1) << "Adding following output shapes for node " << src_node->name()
+              << " : " << output_shape_proto.DebugString();
+      builder.Attr("_output_shapes", {output_shape_proto});
+      builder.Attr(kXlaInferredOutputShapesAttrName, {output_shape_proto});
+    } else {
+      // if cluster argument is the real argument.
+      auto build_attr = attrs.FindByString("_dynamic_dim");
+      if (build_attr) {
+        VLOG(1) << "Found Dynamic dimension in " << src_node->name() << ":"
+                << src_slot;
+        builder.Attr("_dynamic_dim", *build_attr);
+      }
+    }
+    auto shape_derived_attr = attrs.FindByString(kXlaShapeDerivedAttrName);
+    if (shape_derived_attr) {
+      builder.Attr(kXlaShapeDerivedAttrName, *shape_derived_attr);
+    }
     absl::Status s = builder.Finalize(&arg_def);
     if (!s.ok()) return s;
 
@@ -1143,6 +1217,14 @@ static absl::Status RenumberArguments(Graph* graph,
   return absl::OkStatus();
 }
 
+static bool SubgraphHasFailingOps(const Graph& g) {
+  for (Node* n : g.op_nodes()) {
+    if (n->IsRetval()) continue;
+    if (kFailingOps.contains(n->def().op())) return true;
+  }
+  return false;
+}
+
 absl::Status EncapsulateSubgraphsPass::Run(
     const GraphOptimizationPassOptions& options) {
   VLOG(1) << "EncapsulateSubgraphsPass::Run";
@@ -1289,8 +1371,8 @@ absl::Status EncapsulateSubgraphsPass::Run(
 
         // TODO(phawkins): add a forward is-constant analysis, similarly split
         // outputs into host-memory constants and device-memory non-constants.
-
-        AddNodeAttr(kXlaCompiledKernelAttr, true, node);
+        bool compile_enabled = !SubgraphHasFailingOps(**subgraph);
+        AddNodeAttr(kXlaCompiledKernelAttr, compile_enabled, node);
         AddNodeAttr(kXlaNumConstantArgsAttr, num_consts, node);
         AddNodeAttr(kXlaNumResourceArgsAttr, num_resources, node);
         return absl::OkStatus();

@@ -28,6 +28,19 @@ namespace tensorflow {
 // a list of PartialTensorShape objects.
 extern const char kXlaInferredShapesAttrName[];
 
+// Attribute marking Grappler-inferred output TensorShapeProtos. Attribute
+// value is a list of TensorShapeProto objects and may include ExpressionProto
+// annotations when available.
+extern const char kXlaInferredOutputTensorShapesAttrName[];
+
+// Attribute carrying inferred output TensorShapeProtos on encapsulated _Arg
+// nodes for XlaCompileOp argument reconstruction.
+extern const char kXlaInferredOutputShapesAttrName[];
+
+// Attribute indicating that a node is shape-derived and worth tracking across
+// JIT boundaries, e.g. Shape and shape-fed Cast.
+extern const char kXlaShapeDerivedAttrName[];
+
 // Infers output shapes for all nodes in graph `g`. The output shapes will be
 // stored in node attribute `kXlaInferredShapesAttrName`.
 //

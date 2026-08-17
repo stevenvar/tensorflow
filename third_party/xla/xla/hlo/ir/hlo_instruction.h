@@ -865,6 +865,13 @@ class HloInstruction {
       absl::Span<const int64_t> start_indices,
       absl::Span<const int64_t> limit_indices,
       absl::Span<const int64_t> strides);
+  static std::unique_ptr<HloInstruction> CreateSlice(
+      const Shape& shape, HloInstruction* operand,
+      absl::Span<const int64_t> start_indices,
+      absl::Span<const int64_t> limit_indices,
+      absl::Span<const int64_t> strides,
+      absl::Span<const DExpr> start_exprs,
+      absl::Span<const DExpr> limit_exprs);
 
   // Creates a slice instruction, where the first operand is sliced by
   // start indices specified in the second operand, and by size specified in
@@ -1883,6 +1890,19 @@ class HloInstruction {
     return rare()->frontend_attributes;
   }
 
+  void set_contents(std::vector<ExpressionProto> contents) {
+    if (!has_rare() && contents.empty()) {
+      return;
+    }
+    mutable_rare()->contents = std::move(contents);
+  }
+
+  const std::vector<ExpressionProto>& contents() const {
+    return rare()->contents;
+  }
+
+  bool has_contents() const { return has_rare() && !rare()->contents.empty(); }
+
   std::optional<std::string> get_frontend_attribute(
       absl::string_view key) const {
     auto it = rare()->frontend_attributes.map().find(key);
@@ -2505,6 +2525,9 @@ class HloInstruction {
     // Could be simplified to:
     //    z' = const(20), frontend_attributes={?}
     FrontendAttributes frontend_attributes;
+
+    // Structured symbolic contents attached to this instruction.
+    std::vector<ExpressionProto> contents;
 
     // Used by kCall to determine if the Call instruction is a composite.
     bool is_composite;

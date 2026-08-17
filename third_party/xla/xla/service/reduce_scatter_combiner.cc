@@ -131,9 +131,9 @@ absl::Status CombineReduceScatters(
       std::swap((*perm)[most_frequent_dim], (*perm)[rs->scatter_dimension()]);
 
       // Bitcast operand and update output shape.
-      operands.back() =
-          computation.AddInstruction(HloInstruction::CreateBitcast(
-              ShapeUtil::PermuteDimensions(*perm, operand_shape), operand));
+      auto sh = ShapeUtil::PermuteDimensions(*perm, operand_shape);
+      operands.back() = computation.AddInstruction(
+          HloInstruction::CreateBitcast(sh, operand));
       output_shapes.back() = ShapeUtil::PermuteDimensions(*perm, hlo->shape());
     }
   }

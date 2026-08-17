@@ -38,6 +38,7 @@ limitations under the License.
 #include "absl/container/inlined_vector.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
+#include "xla/shape_expr.h"
 #include "absl/meta/type_traits.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -76,6 +77,7 @@ limitations under the License.
 #include "xla/literal.h"
 #include "xla/literal_util.h"
 #include "xla/map_util.h"
+#include "xla/printer.h"
 #include "xla/primitive_util.h"
 #include "xla/service/buffer_assignment.h"
 #include "xla/service/collective_ops_utils.h"
@@ -2055,9 +2057,11 @@ absl::Status IrEmitter::HandleSlice(HloInstruction* slice) {
   }
 
   llvm_ir::IrArray source_array = GetIrArrayFor(operand);
+  const auto* slice_hlo = Cast<HloSliceInstruction>(slice);
   const llvm_ir::IrArray::Index source_index = target_index.SourceIndexOfSlice(
-      /*operand_shape=*/operand->shape(), /*starts=*/slice->slice_starts(),
-      /*strides=*/slice->slice_strides(), /*builder=*/b());
+      /*operand_shape=*/operand->shape(), /*starts=*/slice_hlo->slice_starts(),
+      /*start_exprs=*/slice_hlo->slice_start_exprs(),
+      /*strides=*/slice_hlo->slice_strides(), /*builder=*/b());
 
   llvm::Value* memcpy_dest =
       target_array.EmitArrayElementAddress(target_index, b(), "slice.dest");
@@ -2067,7 +2071,7 @@ absl::Status IrEmitter::HandleSlice(HloInstruction* slice) {
   const int64_t memcpy_elements =
       primitive_elements_per_logical_element * memcpy_logical_elements;
 
-  EmitTransferElements(memcpy_dest, memcpy_source, memcpy_elements,
+  EmitTransferElements(memcpy_dest, memcpy_source, DExpr::Const(memcpy_elements),
                        slice->shape().element_type(), target_array,
                        source_array);
 
@@ -2356,6 +2360,26 @@ absl::Status IrEmitter::HandleSliceToDynamic(HloInstruction* hlo) {
   }
 
   return EmitSliceToDynamic(hlo, source_arrays, target_array);
+}
+
+absl::Status IrEmitter::HandleShapeExprValue(HloInstruction* hlo) {
+  TF_RETURN_IF_ERROR(EmitTargetAddressForOp(hlo));
+
+  llvm_ir::IrArray out_array = GetIrArrayFor(hlo);
+  TF_RET_CHECK(hlo->has_contents());
+  TF_RET_CHECK(!hlo->contents().empty());
+  xla::DExpr expr = xla::DExprFromProto(hlo->contents()[0]);
+  TF_RET_CHECK(expr);
+  llvm::Value* expr_value = llvm_ir::EmitExpression(b(), expr);
+
+  auto it = emitted_value_.find(hlo);
+  if (it == emitted_value_.end()) {
+    LOG(ERROR) << "No buffer assigned for instruction " << hlo->name();
+  }
+  llvm::Value* dest_ptr = it->second;
+  b()->CreateStore(expr_value, dest_ptr);
+
+  return absl::OkStatus();
 }
 
 absl::Status IrEmitter::HandlePadToStatic(HloInstruction* hlo) {
@@ -2806,6 +2830,10 @@ absl::Status IrEmitter::HandleOneDnnSoftmax(HloInstruction* custom_call) {
 #endif  // INTEL_MKL
 
 absl::Status IrEmitter::HandleCustomCall(HloInstruction* custom_call) {
+  if (custom_call->custom_call_target() == "GetExpressionValue") {
+    return HandleShapeExprValue(custom_call);
+  }
+
   if (custom_call->custom_call_target() == "PadToStatic") {
     return HandlePadToStatic(custom_call);
   }
@@ -3125,11 +3153,11 @@ absl::Status EmitFastConcatenate(
   // contiguous subregion in the target buffer starting at target_region_begin.
   llvm::Value* target_region_begin =
       target_array.EmitArrayElementAddress(target_index, &b, "target_region");
-  int64_t byte_offset_into_target_region = 0;
+  llvm::Value* byte_offset_into_target_region = b.getInt64(0);
 
-  int64_t inner_dims_product = absl::c_accumulate(
-      inner_dims, int64_t{1}, [&](int64_t product, int64_t inner_dim) {
-        return product * output_shape.dimensions(inner_dim);
+  DExpr inner_exprs_product = absl::c_accumulate(
+      inner_dims, DExpr::Const(1), [&](DExpr product, int64_t inner_dim) {
+        return product * output_shape.expressions(inner_dim);
       });
 
   // For each operand, emit a memcpy from the operand to the target of size
@@ -3142,18 +3170,24 @@ absl::Status EmitFastConcatenate(
     llvm::Value* copy_source_address =
         source_array.EmitArrayElementAddress(source_index, &b, "src_addr");
 
-    llvm::Value* copy_target_address =
-        b.CreateGEP(b.getInt8Ty(), target_region_begin,
-                    b.getInt64(byte_offset_into_target_region));
+    llvm::Value* copy_target_address = b.CreateGEP(
+        b.getInt8Ty(), target_region_begin, byte_offset_into_target_region);
+
+    auto cexpr = input_shape.expressions(concat_dim);
 
     ::xla::cpu::EmitTransferElements(
         copy_target_address, copy_source_address,
-        inner_dims_product * input_shape.dimensions(concat_dim), primitive_type,
-        target_array, source_array, module, b);
+        inner_exprs_product * cexpr, primitive_type, target_array,
+        source_array, module, b);
 
-    byte_offset_into_target_region += inner_dims_product *
-                                      input_shape.dimensions(concat_dim) *
-                                      primitive_type_size;
+    llvm::Value* concat_dim_count = xla::llvm_ir::EmitExpression(
+        &b, inner_exprs_product * input_shape.expressions(concat_dim));
+
+    llvm::Value* concat_dim_size =
+        b.CreateMul(concat_dim_count, b.getInt64(primitive_type_size));
+    byte_offset_into_target_region =
+        b.CreateAdd(byte_offset_into_target_region, concat_dim_size,
+                    "byte_offset_into_target_region");
   }
 
   if (!outer_dims.empty()) {
@@ -3364,7 +3398,7 @@ llvm::Value* IrEmitter::EmitCallToFfi(HloCustomCallInstruction* custom_call,
 }
 
 void IrEmitter::EmitTransferElements(llvm::Value* target, llvm::Value* source,
-                                     int64_t element_count,
+                                     const xla::DExpr& element_count,
                                      PrimitiveType primitive_type,
                                      const llvm_ir::IrArray& target_array,
                                      const llvm_ir::IrArray& source_array) {
@@ -3374,7 +3408,8 @@ void IrEmitter::EmitTransferElements(llvm::Value* target, llvm::Value* source,
 }
 
 void EmitTransferElements(llvm::Value* target, llvm::Value* source,
-                          int64_t element_count, PrimitiveType primitive_type,
+                          const xla::DExpr& element_count,
+                          PrimitiveType primitive_type,
                           const llvm_ir::IrArray& target_array,
                           const llvm_ir::IrArray& source_array,
                           llvm::Module* module, llvm::IRBuilderBase& b) {
@@ -3386,7 +3421,7 @@ void EmitTransferElements(llvm::Value* target, llvm::Value* source,
   llvm::Type* primitive_llvm_type =
       llvm_ir::PrimitiveTypeToIrType(primitive_type, module->getContext());
 
-  if (element_count == 1) {
+  if (element_count->is_constant() && element_count->get_val() == 1) {
     auto* load_instruction =
         b.CreateAlignedLoad(primitive_llvm_type, source, element_alignment);
     source_array.AnnotateLoadStoreInstructionWithMetadata(load_instruction);
@@ -3394,11 +3429,12 @@ void EmitTransferElements(llvm::Value* target, llvm::Value* source,
         b.CreateAlignedStore(load_instruction, target, element_alignment);
     target_array.AnnotateLoadStoreInstructionWithMetadata(store_instruction);
   } else {
+    auto element_count_value = xla::llvm_ir::EmitExpression(&b, element_count);
+    llvm::Value* elements_size =
+        b.CreateMul(element_count_value, b.getInt64(primitive_type_size));
     auto* memcpy_instruction = b.CreateMemCpy(
         target, /*DstAlign=*/llvm::Align(element_alignment), source,
-        /*SrcAlign=*/llvm::Align(element_alignment),
-        element_count * primitive_type_size);
-
+        /*SrcAlign=*/llvm::Align(element_alignment), elements_size);
     // The memcpy does the load and the store internally.  The aliasing related
     // metadata has to reflect that.
     std::map<int, llvm::MDNode*> merged_metadata =
@@ -3911,8 +3947,10 @@ llvm::Value* IrEmitter::EmitThreadLocalBufferPointer(
 
       if (!target_shape.IsOpaque()) {
         AttachAlignmentMetadataForLoad(param_address_untyped, target_shape);
-        AttachDereferenceableMetadataForLoad(param_address_untyped,
-                                             target_shape);
+        if (!target_shape.has_dynamic_expr()) {
+          AttachDereferenceableMetadataForLoad(param_address_untyped,
+                                               target_shape);
+        }
       }
       return param_address_untyped;
     }
@@ -3958,7 +3996,10 @@ llvm::Value* IrEmitter::EmitGlobalBufferPointer(
 
   AttachInvariantLoadMetadataForLoad(tempbuf_address_base);
   AttachAlignmentMetadataForLoad(tempbuf_address_base, allocation.size());
-  AttachDereferenceableMetadataForLoad(tempbuf_address_base, allocation.size());
+
+  if (!target_shape.has_dynamic_expr())
+    AttachDereferenceableMetadataForLoad(tempbuf_address_base,
+                                         allocation.size());
 
   llvm::Value* tempbuf_address_untyped = tempbuf_address_base;
   // Any explicit buffer pointer should point to the start of the slice.
@@ -4059,9 +4100,38 @@ absl::Status IrEmitter::EmitMemcpy(const HloInstruction& source,
   llvm::Value* source_value = GetEmittedValueFor(&source);
   llvm::Value* destination_value = GetEmittedValueFor(&destination);
   int64_t source_size = ByteSizeOf(source.shape());
-  // TODO(b/63762267): Be more aggressive about specifying alignment.
-  MemCpy(destination_value, /*DstAlign=*/llvm::Align(1), source_value,
-         /*SrcAlign=*/llvm::Align(1), source_size);
+  auto shape = source.shape();
+  auto expressions = shape.expressions();
+  bool is_dynamic =
+      std::any_of(expressions.begin(), expressions.end(),
+                  [](const DExpr& e) { return e && e->is_dynamic(); });
+  if (is_dynamic) {
+    llvm::LLVMContext& ctx = b()->getContext();
+    llvm::IntegerType* i64Type = llvm::IntegerType::getInt64Ty(ctx);
+    int64_t dimensions_accu = 1;
+    DExpr expression_accu = DExpr::Const(1);
+    for (int i = 0; i < shape.dimensions_size(); i++) {
+      const auto& expression = shape.expressions(i);
+      if (expression && expression->is_dynamic()) {
+        dimensions_accu *= shape.dimensions(i);
+        expression_accu = expression_accu * expression;
+      }
+    }
+    llvm::Value* expr_value =
+        xla::llvm_ir::EmitExpression(b(), expression_accu);
+    // Divide the size in bytes by the size of the dynamic dimension(s).
+    // TODO: make that less hacky
+    llvm::ConstantInt* size =
+        llvm::ConstantInt::get(i64Type, source_size / dimensions_accu, true);
+    llvm::Value* memcopy_size =
+        b()->CreateMul(expr_value, size, "memcopy_size");
+    MemCpy(destination_value, /*DstAlign=*/llvm::Align(1), source_value,
+           /*SrcAlign=*/llvm::Align(1), memcopy_size);
+  } else {
+    // TODO(b/63762267): Be more aggressive about specifying alignment.
+    MemCpy(destination_value, /*DstAlign=*/llvm::Align(1), source_value,
+           /*SrcAlign=*/llvm::Align(1), source_size);
+  }
   return absl::OkStatus();
 }
 

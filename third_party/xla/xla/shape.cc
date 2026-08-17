@@ -17,6 +17,9 @@ limitations under the License.
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <map>
+#include <numeric>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -40,7 +43,6 @@ limitations under the License.
 #include "xla/xla_data.pb.h"
 
 namespace xla {
-
 // Defined in .cc file to avoid inlining these large routines
 Shape::Shape() = default;
 Shape::~Shape() = default;
@@ -97,18 +99,30 @@ Shape::Shape(const ShapeProto& shape_proto) {
 }
 
 absl::StatusOr<Shape> Shape::FromProto(const ShapeProto& shape_proto) {
+
+  // LOG(INFO) << "FROM PROTO:\n" << shape_proto.DebugString() << std::endl;
+
   Shape shape;
   shape.set_element_type(shape_proto.element_type());
   if (auto* const state = shape.if_array_state()) {
     const int num_dims = shape_proto.dimensions_size();
     const int num_is_dynamic_dims = shape_proto.is_dynamic_dimension_size();
+    const int num_expressions = shape_proto.expressions_size();
     state->dimensions.reserve(num_dims);
     state->dynamic_dimensions.reserve(num_dims);
+    state->expressions.reserve(num_dims);
     if (num_is_dynamic_dims != 0) {
       TF_RET_CHECK(num_dims == num_is_dynamic_dims)
           << "Malformed shape proto: number of is_dynamic_dimension "
              "fields ("
           << num_is_dynamic_dims << ") does not match number of dimension "
+          << "fields (" << num_dims << ").";
+    }
+    if (num_expressions != 0) {
+      TF_RET_CHECK(num_dims == num_expressions)
+          << "Malformed shape proto: number of expressions "
+             "fields ("
+          << num_expressions << ") does not match number of dimension "
           << "fields (" << num_dims << ").";
     }
     for (int i = 0; i < num_dims; ++i) {
@@ -118,7 +132,11 @@ absl::StatusOr<Shape> Shape::FromProto(const ShapeProto& shape_proto) {
       // UnsafeAddDimension. We expect that the caller will eventually call a
       // validation routine that will detect the error in case the dimension
       // value is invalid.
-      shape.UnsafeAddDimension(shape_proto.dimensions(i), is_dynamic);
+      DExpr expression =
+          (i < num_expressions) ? DExprFromProto(shape_proto.expressions(i))
+                                : DExpr::Const(shape_proto.dimensions(i));
+      shape.UnsafeAddDimension(shape_proto.dimensions(i), is_dynamic,
+                               expression);
     }
   } else if (auto* const state = shape.if_tuple_state()) {
     state->tuple_shapes.reserve(shape_proto.tuple_shapes_size());
@@ -136,12 +154,15 @@ absl::StatusOr<Shape> Shape::FromProto(const ShapeProto& shape_proto) {
     TF_ASSIGN_OR_RETURN(*shape.mutable_layout(),
                         Layout::FromProto(shape_proto.layout()));
   }
+  // LOG(INFO) << "FROM PROTO " << shape << "\n";
   return shape;
 }
 
 ShapeProto Shape::ToProto() const {
   ShapeProto proto;
   proto.set_element_type(element_type_);
+
+  // LOG(INFO) << "TO PROTO " << ToString() << "\n";
 
   if (const auto* const state = if_array_state()) {
     proto.mutable_dimensions()->Reserve(state->dimensions.size());
@@ -150,6 +171,11 @@ ShapeProto Shape::ToProto() const {
     }
     for (const bool dynamic : state->dynamic_dimensions) {
       proto.add_is_dynamic_dimension(dynamic);
+    }
+    for (const DExpr& e : state->expressions) {
+      ExpressionProto* eproto = proto.add_expressions();
+      CHECK(e.get() != nullptr) << "Missing expression in expression list.";
+      e->to_proto(eproto);
     }
     if (state->layout.has_value()) {
       *proto.mutable_layout() = state->layout->ToProto();
@@ -163,6 +189,7 @@ ShapeProto Shape::ToProto() const {
     proto.mutable_tuple_shapes()->Reserve(1);
     *proto.add_tuple_shapes() = state->buffer_shape[0].ToProto();
   }
+  // LOG(INFO) << "DEBUG VIEW:\n" << proto.DebugString() << std::endl;
   return proto;
 }
 
@@ -245,14 +272,16 @@ bool Shape::AreAllLeavesIntegers() const {
   return primitive_util::IsIntegralType(element_type());
 }
 
-void Shape::add_dimensions(int64_t value, bool is_dynamic) {
+void Shape::add_dimensions(int64_t value, bool is_dynamic, DExpr expr) {
   if (value < 0) {
     CHECK(is_dynamic) << "static dimension must have size >= 0 instead of "
                       << value << ".";
     CHECK_EQ(value, kUnboundedSize)
         << "dynamic dimension must have size == kUnboundedSize or >= 0.";
   }
-  UnsafeAddDimension(value, is_dynamic);
+  UnsafeAddDimension(
+      value, is_dynamic,
+      expr.has_value() ? std::move(expr) : DExpr::Const(value));
 }
 
 void Shape::set_dynamic_dimension(int dimension, bool is_dynamic) {
@@ -260,6 +289,26 @@ void Shape::set_dynamic_dimension(int dimension, bool is_dynamic) {
   // Ensure that the dimension size is valid for the new dynamic-ness.
   CheckDimensionSize(dimension, state.dimensions[dimension], is_dynamic);
   state.dynamic_dimensions[dimension] = is_dynamic;
+}
+
+void Shape::set_expression(int dimension, DExpr e) {
+  auto& state = array_state();
+  state.expressions[dimension] =
+      e.has_value() ? std::move(e) : DExpr::Const(state.dimensions[dimension]);
+}
+
+void Shape::set_expressions(std::vector<DExpr> exps) {
+  auto& state = array_state();
+  CHECK_LE(exps.size(), state.dimensions.size());
+  state.expressions.resize(state.dimensions.size());
+  for (size_t i = 0; i < state.dimensions.size(); ++i) {
+    state.expressions[i] = i < exps.size()
+                               ? std::move(exps[i])
+                               : DExpr::Const(state.dimensions[i]);
+    if (!state.expressions[i].has_value()) {
+      state.expressions[i] = DExpr::Const(state.dimensions[i]);
+    }
+  }
 }
 
 void Shape::set_dimensions(int index, int64_t size,
@@ -270,6 +319,7 @@ void Shape::set_dimensions(int index, int64_t size,
   CheckDimensionSize(index, size, dynamic);
   state.dimensions[index] = size;
   state.dynamic_dimensions[index] = dynamic;
+  state.expressions[index] = DExpr::Const(size);
 }
 
 void Shape::set_dimensions_minor(int index, int64_t size,
@@ -291,12 +341,16 @@ void Shape::CheckDimensionSize(int dim_index, int64_t size, bool is_dynamic) {
   }
 }
 
-void Shape::UnsafeAddDimension(int64_t value, bool is_dynamic) {
+void Shape::UnsafeAddDimension(int64_t value, bool is_dynamic, DExpr exp) {
   auto& state = array_state();
   CHECK_EQ(state.dimensions.size(), state.dynamic_dimensions.size())
       << "where the shape is " << ToString();
+  CHECK_EQ(state.dimensions.size(), state.expressions.size())
+      << "where the shape is " << ToString();
   state.dimensions.push_back(value);
   state.dynamic_dimensions.push_back(is_dynamic);
+  state.expressions.push_back(exp.has_value() ? std::move(exp)
+                                              : DExpr::Const(value));
 }
 
 bool Shape::is_static() const {
@@ -345,6 +399,8 @@ void Shape::DeleteDimension(int64_t dim_to_delete) {
   state.dimensions.erase(state.dimensions.begin() + dim_to_delete);
   state.dynamic_dimensions.erase(state.dynamic_dimensions.begin() +
                                  dim_to_delete);
+  state.expressions.erase(state.expressions.begin() +
+                                 dim_to_delete);
   if (LayoutUtil::HasLayout(*this)) {
     state.layout->DeleteDimension(dim_to_delete);  // NOLINT: optional-access
   }
@@ -358,6 +414,8 @@ void Shape::DeleteDimensions(absl::Span<const int64_t> dims_to_delete) {
   state.dimensions = RemoveElements(sorted_dims_to_delete, state.dimensions);
   state.dynamic_dimensions =
       RemoveElements(sorted_dims_to_delete, state.dynamic_dimensions);
+  state.expressions =
+      RemoveElements(sorted_dims_to_delete, state.expressions);
   if (LayoutUtil::HasLayout(*this)) {
     for (auto it = sorted_dims_to_delete.rbegin();
          it != sorted_dims_to_delete.rend(); ++it) {
@@ -370,6 +428,7 @@ void Shape::CheckStateIsEmpty() const {
   if (const auto* const state = if_array_state()) {
     CHECK(state->dimensions.empty()) << ToString();
     CHECK(state->dynamic_dimensions.empty()) << ToString();
+    CHECK(state->expressions.empty()) << ToString();
     CHECK(!state->layout.has_value()) << ToString();
   } else if (const auto* const state = if_tuple_state()) {
     CHECK(state->tuple_shapes.empty()) << ToString();
@@ -507,6 +566,11 @@ bool Shape::Equal::operator()(const Shape& lhs, const Shape& rhs) {
       if (ignore_dynamic_dimension_ &&
           (lhs.is_unbounded_dynamic_dimension(i) ||
            rhs.is_unbounded_dynamic_dimension(i))) {
+        continue;
+      }
+      if (i == 0 && ignore_batch_ &&
+          (lhs.outer_multiplier() > 0 || rhs.outer_multiplier() > 0)) {
+        VLOG(3) << "CompareShapes: batch dimension found. Forcely compatible";
         continue;
       }
       if (lhs.dimensions(i) != rhs.dimensions(i)) {

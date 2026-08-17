@@ -17,14 +17,23 @@ limitations under the License.
 
 #include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
+#include "tensorflow/core/framework/tensor_shape_expr.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/util/overflow.h"
+#include "xla/printer.h"
 
 namespace tensorflow {
+
+std::string ExprToString(const xla::DExpr& e) {
+  if (!e && !e.is_unknown()) return "";
+  xla::StringPrinter printer;
+  e->print(&printer);
+  return std::move(printer).ToString();
+}
 
 // TensorShape and PartialTensorShape should have no fields beyond
 // TensorShapeRep.  In particular, their sizes should be the same.
@@ -152,6 +161,11 @@ TensorShapeBase<Shape>::TensorShapeBase(const TensorShapeProto& proto) {
     for (const auto& d : proto.dim()) {
       AddDim(d.size());
     }
+    if (TensorShapeExpressionsEnabled()) {
+      for (const auto& e : proto.expressions()) {
+        AddExpression(DimExprFromProto(e));
+      }
+    }
   }
 }
 
@@ -189,6 +203,11 @@ absl::Status TensorShapeBase<Shape>::BuildTensorShapeBase(
           return errors::InvalidArgument(
               "Encountered overflow when multiplying shape dimensions");
         }
+      }
+    }
+    if (TensorShapeExpressionsEnabled()) {
+      for (const auto& e : proto.expressions()) {
+        out->AddExpression(DimExprFromProto(e));
       }
     }
   }
@@ -375,10 +394,46 @@ void TensorShapeRep::Clear() {
   set_data_type(DT_INVALID);
 }
 
+void TensorShapeRep::set_expression(int d, xla::DExpr expr) {
+  if (!TensorShapeExpressionsEnabled()) {
+    expressions_.clear();
+    return;
+  }
+  if (expressions_.size() <= static_cast<size_t>(d)) {
+    expressions_.resize(d + 1,
+                        xla::DExpr::Unknown(xla::kMissingExpressionSentinel));
+  }
+  expressions_[d] = expr ? std::move(expr)
+                         : xla::DExpr::Unknown(xla::kMissingExpressionSentinel);
+}
+
+void TensorShapeRep::AddExpression(xla::DExpr expr) {
+  if (!TensorShapeExpressionsEnabled()) {
+    return;
+  }
+  CHECK_LT(expressions_.size(), ndims_byte());
+  expressions_.push_back(expr ? std::move(expr)
+                              : xla::DExpr::Unknown(
+                                    xla::kMissingExpressionSentinel));
+}
+
+void TensorShapeRep::set_expressions(std::vector<xla::DExpr> exprs) {
+  if (!TensorShapeExpressionsEnabled()) {
+    expressions_.clear();
+    return;
+  }
+  CHECK_LE(exprs.size(), ndims_byte());
+  for (auto& expr : exprs) {
+    if (!expr) expr = xla::DExpr::Unknown(xla::kMissingExpressionSentinel);
+  }
+  expressions_ = std::move(exprs);
+}
+
 void TensorShapeRep::ClearAllButDataType() {
   if (tag() == REP_OUT_OF_LINE) {
     delete as64()->dims_;
   }
+  expressions_.clear();
   set_tag(REP16);
   set_ndims_byte(0);
   // Leaves data_type alone
@@ -505,6 +560,9 @@ void TensorShapeBase<Shape>::UnsafeAddDim(int64_t size,
 template <class Shape>
 void TensorShapeBase<Shape>::AppendShape(const TensorShapeBase& shape) {
   for (auto d : shape) AddDim(d.size);
+  for (auto e : shape.get_expressions()){
+     AddExpression(e);
+  }
 }
 
 template <class Shape>
@@ -585,6 +643,13 @@ template <class Shape>
 void TensorShapeBase<Shape>::set_dim(int d, int64_t size) {
   CHECK_GE(d, 0);
   CHECK_LT(d, dims());
+  // After DExpr migration, missing slots may be normalized to Unknown().
+  // Preserve those placeholders here instead of materializing them into a
+  // concrete constant just because the dimension size changed.
+  if (get_expressions().size() > d &&
+      get_expression(d).kind() != xla::DExpr::Kind::kUnknown) {
+    set_expression(d, xla::DExpr::Const(size));
+  }
   if (!kIsPartial) {
     CHECK_GE(size, 0);
   }
@@ -646,6 +711,13 @@ absl::Status TensorShapeBase<Shape>::SetDimWithStatus(int d, int64_t size) {
     }
   }
 
+  // After DExpr migration, missing slots may be normalized to Unknown().
+  // Preserve those placeholders here instead of materializing them into a
+  // concrete constant just because the dimension size changed.
+  if (get_expressions().size() > d &&
+      get_expression(d).kind() != xla::DExpr::Kind::kUnknown) {
+    set_expression(d, xla::DExpr::Const(size));
+  }
   return RecomputeNumElements();
 }
 
@@ -661,11 +733,31 @@ void TensorShapeBase<Shape>::RemoveDimRange(int begin, int end) {
   if (begin >= end) return;
   absl::InlinedVector<int64_t, 8UL> vals;
   AppendTo(*this, &vals);
+  std::vector<xla::DExpr> new_exprs(get_expressions().begin(),
+                                    get_expressions().end());
+  if (begin < static_cast<int64_t>(new_exprs.size())) {
+    int64_t expr_end = end;
+    if (expr_end > static_cast<int64_t>(new_exprs.size())) {
+      expr_end = new_exprs.size();
+    }
+    if (expr_end > begin) {
+      new_exprs.erase(new_exprs.begin() + begin, new_exprs.begin() + expr_end);
+    }
+  }
+
   vals.erase(vals.begin() + begin, vals.begin() + end);
+
+  // Truncate if the removed dims reduce rank below expression vector size.
+  const int64_t new_rank = vals.size();
+  if (new_exprs.size() > static_cast<size_t>(new_rank)) {
+    new_exprs.resize(new_rank);
+  }
+
   ClearAllButDataType();
   for (auto dval : vals) {
     AddDim(dval);
   }
+  set_expressions(new_exprs);
   TF_CHECK_OK(RecomputeNumElements());
 }
 
@@ -700,7 +792,26 @@ absl::Status TensorShapeBase<Shape>::RemoveDimRangeWithStatus(int begin,
 
   absl::InlinedVector<int64_t, 8UL> vals;
   AppendTo(*this, &vals);
+
+  std::vector<xla::DExpr> new_exprs(get_expressions().begin(),
+                                    get_expressions().end());
+  if (begin < static_cast<int64_t>(new_exprs.size())) {
+    int64_t expr_end = end;
+    if (expr_end > static_cast<int64_t>(new_exprs.size())) {
+      expr_end = new_exprs.size();
+    }
+    if (expr_end > begin) {
+      new_exprs.erase(new_exprs.begin() + begin, new_exprs.begin() + expr_end);
+    }
+  }
+
   vals.erase(vals.begin() + begin, vals.begin() + end);
+
+  const int64_t new_rank = vals.size();
+  if (new_exprs.size() > static_cast<size_t>(new_rank)) {
+    new_exprs.resize(new_rank);
+  }
+
   ClearAllButDataType();
 
   absl::Status s = absl::OkStatus();
@@ -710,7 +821,7 @@ absl::Status TensorShapeBase<Shape>::RemoveDimRangeWithStatus(int begin,
       return s;
     }
   }
-
+  set_expressions(new_exprs);
   return RecomputeNumElements();
 }
 
@@ -730,6 +841,12 @@ void TensorShapeBase<Shape>::AsProto(TensorShapeProto* proto) const {
   } else {
     for (int i = 0; i < dims(); i++) {
       proto->add_dim()->set_size(dim_size(i));
+    }
+    if (TensorShapeExpressionsEnabled()) {
+      for (int i = 0; i < get_expressions().size(); i++) {
+        ExpressionProto* eproto = proto->add_expressions();
+        DimExprToProto(get_expression(i), eproto);
+      }
     }
   }
 }
@@ -764,6 +881,11 @@ string TensorShapeRep::DebugString() const {
     } else {
       strings::StrAppend(&s, dim);
     }
+    if (shape.get_expression(i)) {
+      strings::StrAppend(&s, "<");
+      strings::StrAppend(&s, ExprToString(shape.get_expression(i)));
+      strings::StrAppend(&s, ">");
+    }
   }
   strings::StrAppend(&s, "]");
   return s;
@@ -787,6 +909,16 @@ string TensorShapeRep::DebugString(const TensorShapeProto& proto) {
     first = false;
   }
   strings::StrAppend(&s, "]");
+  if (TensorShapeExpressionsEnabled()) {
+    strings::StrAppend(&s, "<");
+    first = true;
+    for (const auto& e : proto.expressions()) {
+      if (!first) strings::StrAppend(&s, ",");
+      strings::StrAppend(&s, ExprToString(DimExprFromProto(e)));
+      first = false;
+    }
+    strings::StrAppend(&s, ">");
+  }
   return s;
 }
 
@@ -950,6 +1082,8 @@ absl::Status PartialTensorShape::MergeWith(const PartialTensorShape& shape,
       return s;
     }
   }
+  result->set_expressions(std::vector<xla::DExpr>(shape.get_expressions().begin(),
+                                                  shape.get_expressions().end()));
   return absl::OkStatus();
 }
 

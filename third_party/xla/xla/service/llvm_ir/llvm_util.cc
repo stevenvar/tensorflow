@@ -68,7 +68,9 @@ limitations under the License.
 #include "xla/layout_util.h"
 #include "xla/literal.h"
 #include "xla/primitive_util.h"
+#include "xla/printer.h"
 #include "xla/service/cpu/cpu_options.h"
+#include "xla/service/cpu/runtime_batch_size.h"
 #include "xla/service/dump.h"
 #include "xla/service/hlo_module_config.h"
 #include "xla/service/llvm_ir/llvm_type_conversion_util.h"
@@ -84,6 +86,8 @@ namespace xla {
 namespace llvm_ir {
 
 namespace {
+
+constexpr llvm::StringLiteral kBdimValueName("bdim_value");
 
 // This works for most llvm / mlir types. This also accepts a const pointer to
 // objects which have a const print() method.
@@ -288,9 +292,11 @@ llvm::Type* ShapeToIrType(const Shape& shape, llvm::LLVMContext& context) {
     result_type =
         llvm::ArrayType::get(result_type, shape.tuple_shapes().size());
   } else if (shape.IsArray()) {
-    for (int64_t dimension : LayoutUtil::MinorToMajor(shape)) {
-      result_type =
-          llvm::ArrayType::get(result_type, shape.dimensions(dimension));
+    auto dimensions = LayoutUtil::MinorToMajor(shape);
+    for (int i = 0; i < dimensions.size(); i++) {
+      bool is_dynamic = shape.expressions(dimensions[i])->is_dynamic();
+      int64_t dim_val = is_dynamic ? 0 : shape.dimensions(dimensions[i]);
+      result_type = llvm::ArrayType::get(result_type, dim_val);
     }
   }
   return result_type;
@@ -809,6 +815,167 @@ void EmitEarlyReturn(llvm::Value* condition, llvm::IRBuilderBase* b,
 
   b->CreateCondBr(condition, continued, return_block);
   b->SetInsertPoint(continued, continued->getFirstInsertionPt());
+}
+
+llvm::Value* GetBatchDimByName(llvm::IRBuilderBase* b, int64_t multiplier,
+                               int64_t offset) {
+  llvm::Function* function = b->GetInsertBlock()->getParent();
+  llvm::LLVMContext& ctx = b->getContext();
+  llvm::IntegerType* i64Type = llvm::IntegerType::getInt64Ty(ctx);
+  llvm::Value* loadedValue = nullptr;
+  llvm::Value* bdim_scaled = nullptr;
+  for (auto& inst : function->getEntryBlock()) {
+    if (inst.getName() == kBdimValueName) {
+      loadedValue = &inst;
+    }
+  }
+  if (!loadedValue) {
+    // If missing, materialize it through the stable CPU runtime interface.
+    llvm::Value* run_options = nullptr;
+    for (auto& arg : function->args()) {
+      if (arg.getName() == "run_options") {
+        run_options = &arg;
+        break;
+      }
+    }
+
+    if (!run_options) {
+      return nullptr;
+    }
+    llvm::IRBuilder<> entry_builder(
+        &function->getEntryBlock(),
+        function->getEntryBlock().getFirstInsertionPt());
+    llvm::FunctionType* getter_type = llvm::FunctionType::get(
+        i64Type, {run_options->getType()}, /*isVarArg=*/false);
+    llvm::FunctionCallee getter = function->getParent()->getOrInsertFunction(
+        xla::cpu::runtime::kGetBatchSizeSymbolName, getter_type);
+    loadedValue = entry_builder.CreateCall(getter, {run_options},
+                                           kBdimValueName);
+  }
+  if (multiplier < 1) {
+    llvm::errs() << "Multiplier is less than 1, this should not happen.\n";
+  } else if (multiplier == 1) {
+    bdim_scaled = loadedValue;
+  } else {
+    llvm::ConstantInt* m = llvm::ConstantInt::get(i64Type, multiplier, true);
+    bdim_scaled = b->CreateMul(loadedValue, m, "bdim_scaled");
+  }
+  if (offset != 0){
+    llvm::ConstantInt* offset_value =
+        llvm::ConstantInt::get(i64Type, offset, true);
+    bdim_scaled = b->CreateAdd(bdim_scaled, offset_value, "bdim_offset");
+  }
+  return bdim_scaled;
+}
+
+static llvm::Value* EmitExpressionImpl(llvm::IRBuilderBase* b,
+                                       const DynExpr& expr) {
+  llvm::LLVMContext& ctx = b->getContext();
+  llvm::IntegerType* i64Type = llvm::IntegerType::getInt64Ty(ctx);
+  if (expr.is_constant()) return llvm::ConstantInt::get(i64Type, expr.get_val(), true);
+  if (expr.kind() == DExpr::Kind::kUnknown) {
+    return nullptr;
+  }
+  if (expr.kind() == DExpr::Kind::kVariable) {
+    // For now we can just use %bdim...
+    return GetBatchDimByName(b);
+  }
+  if (expr.kind() == DExpr::Kind::kMul) {
+    auto* mul_node = static_cast<const Mul*>(&expr);
+    llvm::Value* v_lhs = EmitExpressionImpl(b, *mul_node->get_lhs());
+    llvm::Value* v_rhs = EmitExpressionImpl(b, *mul_node->get_rhs());
+    return b->CreateMul(v_lhs, v_rhs, "mul_dims");
+  }
+  // TODO: Check if this should ever happen
+  if (expr.kind() == DExpr::Kind::kDiv) {
+    auto* div_node = static_cast<const Div*>(&expr);
+    llvm::Value* v_lhs = EmitExpressionImpl(b, *div_node->get_lhs());
+    llvm::Value* v_rhs = EmitExpressionImpl(b, *div_node->get_rhs());
+    return b->CreateSDiv(v_lhs, v_rhs, "div_dims");
+  }
+  if (expr.kind() == DExpr::Kind::kAdd) {
+    auto* add_node = static_cast<const Add*>(&expr);
+    llvm::Value* v_lhs = EmitExpressionImpl(b, *add_node->get_lhs());
+    llvm::Value* v_rhs = EmitExpressionImpl(b, *add_node->get_rhs());
+    return b->CreateAdd(v_lhs, v_rhs, "add_dims");
+  }
+  if (expr.kind() == DExpr::Kind::kSub) {
+    auto* sub_node = static_cast<const Sub*>(&expr);
+    llvm::Value* v_lhs = EmitExpressionImpl(b, *sub_node->get_lhs());
+    llvm::Value* v_rhs = EmitExpressionImpl(b, *sub_node->get_rhs());
+    return b->CreateSub(v_lhs, v_rhs, "sub_dims");
+  }
+  if (expr.kind() == DExpr::Kind::kMax) {
+    auto* max_node = static_cast<const MaxExpr*>(&expr);
+    llvm::Value* v_lhs = EmitExpressionImpl(b, *max_node->get_lhs());
+    llvm::Value* v_rhs = EmitExpressionImpl(b, *max_node->get_rhs());
+    llvm::Value* lhs_is_greater =
+        b->CreateICmpSGT(v_lhs, v_rhs, "max_dims_pred");
+    return b->CreateSelect(lhs_is_greater, v_lhs, v_rhs, "max_dims");
+  }
+  if (expr.kind() == DExpr::Kind::kGt) {
+    auto* gt_node = static_cast<const GtExpr*>(&expr);
+    llvm::Value* v_lhs = EmitExpressionImpl(b, *gt_node->get_lhs());
+    llvm::Value* v_rhs = EmitExpressionImpl(b, *gt_node->get_rhs());
+    llvm::Value* pred = b->CreateICmpSGT(v_lhs, v_rhs, "gt_dims_pred");
+    return b->CreateZExt(pred, i64Type, "gt_dims");
+  }
+  if (expr.kind() == DExpr::Kind::kSelect) {
+    auto* select_node = static_cast<const SelectExpr*>(&expr);
+    llvm::Value* pred = EmitExpressionImpl(b, *select_node->get_pred());
+    llvm::Value* v_true =
+        EmitExpressionImpl(b, *select_node->get_on_true());
+    llvm::Value* v_false =
+        EmitExpressionImpl(b, *select_node->get_on_false());
+    llvm::Value* nonzero = b->CreateICmpNE(
+        pred, llvm::ConstantInt::get(i64Type, 0, true), "select_dims_pred");
+    return b->CreateSelect(nonzero, v_true, v_false, "select_dims");
+  }
+  return nullptr;
+}
+
+llvm::Value* EmitExpression(llvm::IRBuilderBase* b, const DExpr& expr) {
+  if (!expr) return nullptr;
+  DExpr simplified = expr.simplify();
+  StringPrinter printer;
+  simplified->print(&printer);
+  VLOG(2) << "EmitExpression expr=" << std::move(printer).ToString()
+          << " kind=" << static_cast<int>(simplified.kind());
+  llvm::Value* value = EmitExpressionImpl(b, *simplified.get());
+  return value;
+}
+
+llvm::Value* createDynamicGEP(llvm::IRBuilderBase* builder,
+                              llvm::Value* base_ptr,
+                              const std::vector<llvm::Value*>& indices,
+                              absl::Span<const int64_t> dims,
+                              absl::Span<const DExpr> expressions,
+                              llvm::Type* elem_type,
+                              const llvm::Twine& name) {
+  llvm::Value* total_index = builder->getInt64(0);
+  llvm::Type* int64_ty = builder->getInt64Ty();
+
+  for (size_t i = 0; i < indices.size(); ++i) {
+    // The stride is the product of all dimensions to the right of this index.
+    llvm::Value* stride = builder->getInt64(1);
+    for (size_t j = i; j < dims.size(); ++j) {
+      if (expressions[j] && expressions[j]->is_dynamic()) {
+        llvm::Value* expr_value =
+            EmitExpression(builder, expressions[j]);
+        stride = builder->CreateMul(stride, expr_value, "stride.dyn");
+      } else {
+        stride = builder->CreateMul(
+            stride, llvm::ConstantInt::get(int64_ty, dims[j]), "stride.static");
+      }
+    }
+    llvm::Value* scaled_index =
+        builder->CreateMul(indices[i], stride, "idx.scaled");
+    total_index = builder->CreateAdd(total_index, scaled_index, "idx.total");
+  }
+
+  // Final GEP: result = base + total_index * sizeof(elem_type)
+  llvm::Value* gep = builder->CreateGEP(elem_type, base_ptr, total_index, name);
+  return gep;
 }
 
 }  // namespace llvm_ir

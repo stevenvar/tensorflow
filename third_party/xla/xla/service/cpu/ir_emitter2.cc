@@ -29,6 +29,7 @@ limitations under the License.
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/statusor.h"
+#include "xla/shape_expr.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
@@ -74,6 +75,7 @@ limitations under the License.
 #include "xla/service/llvm_ir/ir_array.h"
 #include "xla/service/llvm_ir/llvm_util.h"
 #include "xla/service/llvm_ir/loop_emitter.h"
+#include "xla/printer.h"
 #include "xla/shape.h"
 #include "xla/shape_partition.h"
 #include "xla/stream_executor/launch_dim.h"
@@ -191,6 +193,30 @@ absl::StatusOr<IrEmitter2::KernelInfo> IrEmitter2::EmitPadHostKernel(
 
   nested_ir_emitter_->PopComputeFunction();
 
+  return kernels_.emplace_back(
+      KernelInfo(std::move(kernel_prototype), se::BlockDim(), se::ThreadDim()));
+}
+
+absl::StatusOr<IrEmitter2::KernelInfo>
+IrEmitter2::EmitGetExpressionValueHostKernel(const HloInstruction* getBatch) {
+  VLOG(2) << "Emit GetExpressionValue host kernel: " << getBatch->name();
+
+  TF_ASSIGN_OR_RETURN(KernelPrototype kernel_prototype,
+                      EmitKernelPrototype(getBatch));
+  llvm_ir::IrArray operand_array = kernel_prototype.arguments[0];
+  llvm_ir::IrArray output_array = kernel_prototype.results[0];
+  TF_RET_CHECK(getBatch->has_contents());
+  TF_RET_CHECK(!getBatch->contents().empty());
+  xla::DExpr expr = xla::DExprFromProto(getBatch->contents()[0]);
+  TF_RET_CHECK(expr);
+  llvm::IRBuilder<> b(module_->getContext());
+  b.SetInsertPoint(kernel_prototype.function->getEntryBlock().getTerminator());
+  llvm::Value* bdim_value = llvm_ir::EmitExpression(&b, expr);
+  llvm_ir::IrArray::Index output_index(/*multidimensional_index=*/{},
+                                       getBatch->shape(), b.getInt32Ty());
+  llvm::Value* output_ptr =
+      output_array.EmitArrayElementAddress(output_index, &b);
+  b.CreateStore(bdim_value, output_ptr);
   return kernels_.emplace_back(
       KernelInfo(std::move(kernel_prototype), se::BlockDim(), se::ThreadDim()));
 }

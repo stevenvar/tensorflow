@@ -20,7 +20,8 @@ limitations under the License.
 
 namespace xla::cpu::runtime {
 
-extern const char* const kGetBatchSizeSymbolName;
+inline constexpr char kGetBatchSizeSymbolName[] =
+    "__xla_cpu_runtime_GetBatchSize";
 
 }  // namespace xla::cpu::runtime
 

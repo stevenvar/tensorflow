@@ -597,6 +597,7 @@ cc_library(
         ":onednn_layer_norm",
         ":onednn_matmul",
         ":onednn_softmax",
+        ":runtime_batch_size_api",
         ":runtime_conv2d",
         ":runtime_conv2d_acl",
         ":runtime_conv2d_mkl",
@@ -1094,6 +1095,7 @@ cc_library(
     name = "cpu_runtime",
     srcs = [
         "cpu_runtime.cc",
+        "runtime_batch_size.cc",
         "xfeed_manager.cc",
     ],
     hdrs = [
@@ -1103,6 +1105,7 @@ cc_library(
     copts = runtime_copts(),
     deps = [
         ":cpu_executable_run_options",
+        ":runtime_batch_size_api",
         "//xla:executable_run_options",
         "//xla:shape_util",
         "//xla:types",
@@ -1154,6 +1157,11 @@ cc_library(
         "@com_google_absl//absl/synchronization",  # build_cleaner: keep
         "@eigen_archive//:eigen3",
     ],
+)
+
+cc_library(
+    name = "runtime_batch_size_api",
+    hdrs = ["runtime_batch_size.h"],
 )
 
 cc_library(
@@ -1461,6 +1469,7 @@ xla_cc_test(
     tags = ["optonly"],
     deps = [
         ":cpu_runtime",
+        ":runtime_batch_size_api",
         ":runtime_custom_call_status",
         ":runtime_matmul",
         ":runtime_matmul_acl",

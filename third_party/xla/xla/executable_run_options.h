@@ -195,14 +195,14 @@ class ExecutableRunOptions {
     return *this;
   }
 
+  int32_t launch_id() const { return launch_id_; }
+
   ExecutableRunOptions& set_batch_size(int64_t batch_size) {
     batch_size_ = batch_size;
     return *this;
   }
 
   int64_t batch_size() const { return batch_size_; }
-
-  int32_t launch_id() const { return launch_id_; }
 
   ExecutableRunOptions& set_run_id(RunId id);
   RunId run_id() const;

@@ -886,9 +886,11 @@ static llvm::Value* EmitExpressionImpl(llvm::IRBuilderBase* b,
                                        const DynExpr& expr) {
   llvm::LLVMContext& ctx = b->getContext();
   llvm::IntegerType* i64Type = llvm::IntegerType::getInt64Ty(ctx);
-  if (expr.is_constant()) return llvm::ConstantInt::get(i64Type, expr.get_val(), true);
   if (expr.kind() == DExpr::Kind::kUnknown) {
     return nullptr;
+  }
+  if (expr.is_constant()) {
+    return llvm::ConstantInt::get(i64Type, expr.get_val(), true);
   }
   if (expr.kind() == DExpr::Kind::kVariable) {
     // For now we can just use %bdim...

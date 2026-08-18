@@ -133,6 +133,21 @@ TEST_F(ShapeTest, DExprSolveRejectsZeroDivisor) {
   EXPECT_FALSE(expr->solve(7).has_value());
 }
 
+TEST_F(ShapeTest, DExprSimplifyPreservesZeroDivisor) {
+  DExpr expr = DExpr::Const(0) / DExpr::Const(0);
+  DExpr simplified = expr.simplify();
+
+  EXPECT_EQ(DExpr::Kind::kDiv, simplified.kind());
+  EXPECT_FALSE(simplified->is_constant());
+}
+
+TEST_F(ShapeTest, UnknownExpressionIsNeitherConstantNorDynamic) {
+  DExpr expr = DExpr::Unknown(kMissingExpressionSentinel);
+
+  EXPECT_FALSE(expr->is_constant());
+  EXPECT_FALSE(expr->is_dynamic());
+}
+
 TEST_F(ShapeTest, DExprMaxSimplifiesAndRoundTrips) {
   DExpr expr = DExpr::Max(DExpr::Var(1), DExpr::Const(4));
   EXPECT_EQ("max(A, 4)", DExprToString(expr.simplify()));

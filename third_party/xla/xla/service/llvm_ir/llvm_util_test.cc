@@ -78,6 +78,14 @@ TEST(LlvmUtilTest, DynamicBatchSizeUsesRuntimeAccessor) {
             xla::cpu::runtime::kGetBatchSizeSymbolName);
 }
 
+TEST(LlvmUtilTest, UnknownExpressionDoesNotEmitAConstant) {
+  llvm::LLVMContext context;
+  llvm::IRBuilder<> builder(context);
+
+  DExpr expression = DExpr::Unknown(kMissingExpressionSentinel);
+  EXPECT_EQ(EmitExpression(&builder, expression), nullptr);
+}
+
 }  // namespace
 }  // namespace llvm_ir
 }  // namespace xla

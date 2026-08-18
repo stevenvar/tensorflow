@@ -19,6 +19,7 @@ limitations under the License.
 #include <cctype>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
 
 #include "xla/debug_options_flags.h"
 #include "tensorflow/core/platform/logging.h"
@@ -40,6 +41,14 @@ std::string Trim(const std::string& value) {
 XlaBatchMatcher::XlaBatchMatcher() {
   env_str_ = xla::GetDebugOptionsFromFlags().xla_compile_batch_sizes();
   parse_env_config();
+}
+
+XlaBatchMatcher::XlaBatchMatcher(std::vector<int64_t> batches)
+    : all_batches_(std::move(batches)) {
+  std::sort(all_batches_.begin(), all_batches_.end());
+  all_batches_.erase(
+      std::unique(all_batches_.begin(), all_batches_.end()),
+       all_batches_.end());
 }
 
 std::vector<int64_t> XlaBatchMatcher::parse_single_item(const std::string& item) {
@@ -161,7 +170,7 @@ static int64_t GetNextPowerOfTwo(int64_t real_batch) {
   return power;
 }
 
-int64_t XlaBatchMatcher::find_min_larger_batch(int64_t real_batch) {
+int64_t XlaBatchMatcher::find_min_larger_batch(int64_t real_batch) const {
   if (real_batch <= 0 || real_batch > kMaxBatch) {
     LOG(INFO) << "[XLA_BATCH_WARN] Out of valid range: " << real_batch;
     return real_batch;
@@ -178,10 +187,7 @@ int64_t XlaBatchMatcher::find_min_larger_batch(int64_t real_batch) {
   }
   // Edge case 2: Real value ≥ the largest batch, use the nearest power of two
   if (real_batch > all_batches_.back()) {
-    int64_t val = GetNextPowerOfTwo(real_batch);
-    all_batches_.emplace_back(val);
-    print_all_batches();
-    return val;
+    return GetNextPowerOfTwo(real_batch);
   }
 
   // Find first batch larger than real value (binary search via lower_bound)
@@ -189,14 +195,11 @@ int64_t XlaBatchMatcher::find_min_larger_batch(int64_t real_batch) {
   return (it != all_batches_.end()) ? *it : all_batches_.back();
 }
 
-int64_t XlaBatchMatcher::get_xla_compile_batch(int64_t real_batch) {
+int64_t XlaBatchMatcher::get_xla_compile_batch(int64_t real_batch) const {
   // Match target batch size
   int64_t selected = find_min_larger_batch(real_batch);
-  if (real_batch != last_batch_ || all_batches_.empty()) {
-    last_batch_ = real_batch;
-    VLOG(2) << "[XLA_BATCH_INFO] Real batch: " << real_batch
-      << " -> Selected compile batch: " << selected;
-  }
+  VLOG(2) << "[XLA_BATCH_INFO] Real batch: " << real_batch
+          << " -> Selected compile batch: " << selected;
   return selected;
 }
 

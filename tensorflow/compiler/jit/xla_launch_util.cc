@@ -19,6 +19,7 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <set>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -26,6 +27,7 @@ limitations under the License.
 #include "absl/cleanup/cleanup.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/jit/pjrt_tensor_buffer.h"
 #include "tensorflow/compiler/jit/pjrt_tensor_buffer_util.h"
@@ -38,6 +40,7 @@ limitations under the License.
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_common.h"
 #include "xla/pjrt/pjrt_future.h"
+#include "xla/printer.h"
 #include "xla/shape_util.h"
 #include "xla/status_macros.h"
 #include "xla/stream_executor/platform_manager.h"
@@ -47,6 +50,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/gpu/gpu_serving_device_selector.h"
 #include "tensorflow/core/common_runtime/gpu_device_context.h"
 #include "tensorflow/core/framework/allocator.h"
+#include "tensorflow/core/framework/batch_size_resource.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/resource_mgr.h"
@@ -63,6 +67,17 @@ limitations under the License.
 #include "tsl/platform/statusor.h"
 
 namespace tensorflow {
+
+std::string DExprToString(const xla::DExpr& expr) {
+  xla::DExpr simplified = expr.simplify();
+  if (!simplified && !simplified.is_unknown()) {
+    return "";
+  }
+  xla::StringPrinter printer;
+  simplified->print(&printer);
+  return std::move(printer).ToString();
+}
+
 namespace {
 using xla::ScopedShapedBuffer;
 using xla::ShapedBuffer;
@@ -361,7 +376,8 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
     ScopedShapedBuffer output, int missing_ctx_input_prefix,
     absl::Span<VariableInfo> variable_infos,
     const xla::HloInputOutputAliasConfig& input_output_alias,
-    const std::map<int, const Tensor*>& resource_vars) {
+    const std::map<int, const Tensor*>& resource_vars,
+    const xla::ExecutableRunOptions* run_options) {
   se::Stream* stream =
       ctx->op_device_context() ? ctx->op_device_context()->stream() : nullptr;
   Allocator* allocator = ctx->device()->GetAllocator({});
@@ -430,8 +446,121 @@ absl::Status XlaComputationLaunchContext::PopulateOutputs(
     }
   } else {
     for (int i = 0; i < ctx->num_outputs(); ++i) {
-      output_tensor_shapes.push_back(compilation_result->outputs[i].shape);
+      xla::Shape output_host_shape = output.on_host_shape();
+      const xla::Shape& subshape =
+          xla::ShapeUtil::GetSubshape(output_host_shape, {i});
+      VLOG(2) << "PopulateOutputs: subshape[" << i << "]: "<< subshape;
+      TensorShape shape;
+      TF_RETURN_IF_ERROR(XLAShapeToTensorShape(subshape, &shape));
+      bool has_dynamic = false;
+
+      for (int dim = 0; dim < subshape.expressions().size(); ++dim) {
+        const auto& expr = subshape.expressions(dim);
+        if (expr && expr->is_dynamic()) {
+          has_dynamic = true;
+          VLOG(1) << "Current expression is " << expr;
+          if (run_options) {
+            const int64_t run_options_batch_size = run_options->batch_size();
+            if (run_options_batch_size <= 0) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Cannot substitute dynamic output shape for output ", i,
+                  ", dimension ", dim,
+                  ": the XLA runtime batch size was not initialized"));
+            }
+            VLOG(1) << "PopulateOutputs read run_options->batch_size()="
+                      << run_options_batch_size << " for output " << i
+                      << " dimension " << dim;
+            xla::DExpr batch_size = xla::DExpr::Const(run_options_batch_size);
+            const std::set<int> ids = expr->get_all_ids();
+            if (ids.size() != 1) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Runtime shape substitution expected exactly one dynamic "
+                  "variable for output ",
+                  i, ", dimension ", dim, ", but found ", ids.size(),
+                  " variables in expression ", DExprToString(expr)));
+            }
+            const int substitute_var_id = *ids.begin();
+            VLOG(1) << "Calling output shape substitute with run_options for "
+                      << "output " << i << " dimension " << dim
+                      << " expr=" << DExprToString(expr)
+                      << " substitute Var(" << substitute_var_id << ")="
+                      << DExprToString(batch_size);
+            xla::DExpr subst_expr =
+                expr.substitute(substitute_var_id, batch_size).simplify();
+            VLOG(1) << "Output shape substitute with run_options for output "
+                      << i << " dimension " << dim << " returned "
+                      << DExprToString(subst_expr);
+            if (!subst_expr->is_constant()) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Runtime shape substitution did not produce an integer "
+                  "constant for output ",
+                  i, ", dimension ", dim, ": ", DExprToString(subst_expr)));
+            }
+            shape.set_dim(dim, subst_expr->get_val());
+          } else {
+            // TODO: Fallback to BatchSizeResource for now. Remove it later.
+            LOG(WARNING) << "PopulateOutputs did not receive run_options for "
+                         << "output " << i << " dimension " << dim
+                         << "; falling back to BatchSizeResource";
+            BatchSizeResource* bsr = nullptr;
+            ScopedStepContainer* step_container = ctx->step_container();
+            TF_RETURN_IF_ERROR(step_container->Lookup<BatchSizeResource>(
+                          ctx->resource_manager(), BatchSizeResourceName, &bsr));
+            if (bsr == nullptr) {
+              return errors::Internal(
+                  "BatchSizeResource lookup succeeded but returned null");
+            }
+            core::ScopedUnref bsr_ref(bsr);
+            const int64_t runtime_batch_size = bsr->GetBatchSize();
+            if (runtime_batch_size <= 0) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Cannot substitute dynamic output shape for output ", i,
+                  ", dimension ", dim,
+                  ": the XLA runtime batch size was not initialized"));
+            }
+            xla::DExpr batch_size = xla::DExpr::Const(runtime_batch_size);
+            const std::set<int> ids = expr->get_all_ids();
+            if (ids.size() != 1) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Runtime shape substitution expected exactly one dynamic "
+                  "variable for output ",
+                  i, ", dimension ", dim, ", but found ", ids.size(),
+                  " variables in expression ", DExprToString(expr)));
+            }
+            const int substitute_var_id = *ids.begin();
+            VLOG(1) << "Calling output shape substitute with "
+                      << "BatchSizeResource for output " << i
+                      << " dimension " << dim
+                      << " expr=" << DExprToString(expr)
+                      << " substitute Var(" << substitute_var_id
+                      << ")=" << DExprToString(batch_size);
+            xla::DExpr subst_expr =
+                expr.substitute(substitute_var_id, batch_size).simplify();
+            VLOG(1) << "Output shape substitute with BatchSizeResource for "
+                      << "output " << i << " dimension " << dim
+                      << " returned " << DExprToString(subst_expr);
+            if (!subst_expr->is_constant()) {
+              return absl::InvalidArgumentError(absl::StrCat(
+                  "Runtime shape substitution did not produce an integer "
+                  "constant for output ",
+                  i, ", dimension ", dim, ": ", DExprToString(subst_expr)));
+            }
+            shape.set_dim(dim, subst_expr->get_val());
+          }
+        }
+      }
+      if (has_dynamic) {
+        output_tensor_shapes.push_back(shape);
+      }
+      else {
+        output_tensor_shapes.push_back(compilation_result->outputs[i].shape);
+      }
     }
+  }
+
+  VLOG(2) << "output_tensor_shapes:";
+  for (auto s:output_tensor_shapes) {
+    VLOG(2) << s;
   }
 
   // Copy XLA results to the OpOutputList.

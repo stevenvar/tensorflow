@@ -24,6 +24,7 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_join.h"
+#include "tensorflow/compiler/jit/flags.h"
 #include "xla/service/shape_inference.h"
 #include "xla/shape.h"
 #include "xla/xla_data.pb.h"
@@ -1143,16 +1144,32 @@ xla::Shape GetShape(shape_inference::ShapeHandle shape_handle,
   }
   std::vector<int64_t> dims;
   std::vector<bool> dynamic_dims;
+  std::vector<xla::DExpr> expressions;
+  MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
   for (int i = 0, rank = c->Rank(shape_handle); i < rank; ++i) {
-    bool is_dynamic = !c->ValueKnown(c->Dim(shape_handle, i));
+    const auto dim = c->Dim(shape_handle, i);
+    const bool is_dynamic = !c->ValueKnown(dim);
     dynamic_dims.push_back(is_dynamic);
-    dims.push_back(is_dynamic ? xla::Shape::kUnboundedSize
-                              : c->Value(c->Dim(shape_handle, i)));
+    if (flags->tf_xla_enable_dynamic_sizes) {
+      DimExpr* expr = c->GetDimExpr(dim);
+      expressions.push_back(
+          expr != nullptr
+              ? *expr
+              : c->ValueKnown(dim)
+                    ? xla::DExpr::Const(c->Value(dim))
+                    : xla::DExpr::Unknown(xla::kMissingExpressionSentinel));
+    }
+    dims.push_back(is_dynamic ? xla::Shape::kUnboundedSize : c->Value(dim));
   }
-  return xla::Shape(
+  xla::Shape sh(
       // Type matters only for indices. S64 is the widest possible type.
       xla::PrimitiveType::S64, dims,
       absl::InlinedVector<bool, 4>(dynamic_dims.begin(), dynamic_dims.end()));
+
+  if (flags->tf_xla_enable_dynamic_sizes) {
+    sh.set_expressions(expressions);
+  }
+  return sh;
 }
 
 REGISTER_OP("XlaGather")

@@ -15,18 +15,28 @@ limitations under the License.
 
 #include <cstdint>
 #include <type_traits>
+#include <vector>
 
+#include "xla/printer.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "xla/hlo/builder/xla_builder.h"
+#include "xla/shape_expr.h"
+#include "tsl/platform/protobuf.h"
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/tensor.pb.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/tensor_shape_expr.h"
 #include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/logging.h"
 
 namespace tensorflow {
 namespace {
+
+constexpr char kUserInferredValueContentsAttrName[] =
+    "_user_inferred_value_contents";
 
 template <typename DstT, typename SrcT>
 DstT CastTo(SrcT src) {
@@ -100,6 +110,40 @@ xla::XlaOp GetScalarConst(const TensorProto& proto, xla::XlaBuilder* b) {
   return xla::XlaOp();
 }
 
+std::vector<xla::DExpr> BuildShapeContentsFromTensorShapeProto(
+    const TensorShapeProto& shape) {
+  std::vector<xla::DExpr> contents;
+  contents.reserve(shape.dim_size());
+  for (int i = 0; i < shape.dim_size(); ++i) {
+    xla::DExpr expr;
+    if (i < shape.expressions_size()) {
+      expr = DimExprFromProto(shape.expressions(i));
+    }
+    if (expr) {
+      xla::StringPrinter printer;
+      expr->print(&printer);
+      VLOG(1) << "BuildShapeContentsFromTensorShape dim=" << i
+              << " expr=" << std::move(printer).ToString()
+              << " dynamic=" << (expr->is_dynamic() ? "true" : "false");
+    } else {
+      VLOG(1) << "BuildShapeContentsFromTensorShape dim=" << i
+              << " expr=_ dynamic=false";
+    }
+    contents.push_back(expr && expr->is_dynamic()
+                           ? std::move(expr)
+                           : xla::DExpr::Unknown(
+                                 xla::kUnknownContentSentinel));
+  }
+  return contents;
+}
+
+bool CanAttachContentsFromTensorShapeProto(const TensorShape& tensor_shape,
+                                           const TensorShapeProto& contents) {
+  return (tensor_shape.dims() == 0 && contents.dim_size() == 1) ||
+         (tensor_shape.dims() == 1 &&
+          tensor_shape.dim_size(0) == contents.dim_size());
+}
+
 class ConstOp : public XlaOpKernel {
  public:
   explicit ConstOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {
@@ -117,13 +161,49 @@ class ConstOp : public XlaOpKernel {
   void Compile(XlaOpKernelContext* ctx) override {
     xla::XlaBuilder* b = ctx->builder();
 
+    bool has_dynamic = false;
+    TensorShapeProto inferred_shape_proto;
+    TensorShapeProto inferred_value_contents_proto;
+    string inferred_value_contents_serialized;
+    if (GetNodeAttr(ctx->op_kernel().def(), "has_dynamic", &has_dynamic).ok() &&
+        has_dynamic) {
+      GetNodeAttr(ctx->op_kernel().def(), "user_inferred_shape",
+                  &inferred_shape_proto)
+          .IgnoreError();
+    }
+    if (GetNodeAttr(ctx->op_kernel().def(), kUserInferredValueContentsAttrName,
+                    &inferred_value_contents_serialized)
+            .ok()) {
+      if (!inferred_value_contents_proto.ParseFromString(
+              inferred_value_contents_serialized)) {
+        inferred_value_contents_proto.Clear();
+      }
+    }
+    const bool has_contents_proto = inferred_value_contents_proto.dim_size() > 0;
+    const TensorShapeProto& contents_proto =
+        has_contents_proto ? inferred_value_contents_proto : inferred_shape_proto;
+
     // To avoid blowups for large constants filled with the same value,
     // recognize that case and emit a scalar broadcast instead.
     TensorShape shape(proto_.tensor_shape());
     if (shape.num_elements() > 1) {
       xla::XlaOp value = GetScalarConst(proto_, b);
       if (value.valid()) {
-        ctx->SetOutput(0, xla::Broadcast(value, shape.dim_sizes()));
+        if (has_dynamic) {
+          VLOG(1) << "ConstOp broadcast fast path shape="
+                    << shape.DebugString() << " inferred_rank="
+                    << inferred_shape_proto.dim_size();
+        }
+        xla::XlaOp broadcast =
+            xla::Broadcast(value, shape.dim_sizes(), shape.get_expressions());
+        XlaExpression output =
+            XlaExpression::XlaOp(broadcast, ctx->expected_output_dtype(0));
+        if ((has_contents_proto || has_dynamic) &&
+            CanAttachContentsFromTensorShapeProto(shape, contents_proto)) {
+          output.set_contents(
+              BuildShapeContentsFromTensorShapeProto(contents_proto));
+        }
+        ctx->SetOutputExpression(0, output);
         return;
       }
     }
@@ -132,7 +212,13 @@ class ConstOp : public XlaOpKernel {
     OP_REQUIRES(ctx, tensor.FromProto(cpu_allocator(), proto_),
                 errors::InvalidArgument("Cannot parse tensor from proto: ",
                                         proto_.DebugString()));
-    ctx->SetConstantOutput(0, tensor);
+    XlaExpression output = XlaExpression::Constant(tensor);
+    if ((has_contents_proto || has_dynamic) &&
+        CanAttachContentsFromTensorShapeProto(tensor.shape(), contents_proto)) {
+      output.set_contents(
+          BuildShapeContentsFromTensorShapeProto(contents_proto));
+    }
+    ctx->SetOutputExpression(0, output);
   }
 
  private:

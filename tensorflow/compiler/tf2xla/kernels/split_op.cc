@@ -18,6 +18,7 @@ limitations under the License.
 #include <cstdint>
 #include <vector>
 
+#include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
 #include "xla/hlo/builder/xla_builder.h"
@@ -35,6 +36,8 @@ class SplitOp : public XlaOpKernel {
   explicit SplitOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {}
 
   void Compile(XlaOpKernelContext* ctx) override {
+    const bool enable_dynamic_sizes =
+        GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes;
     const int32_t num_split = num_outputs();
     const TensorShape split_dim_shape = ctx->InputShape("split_dim");
     const TensorShape input_shape = ctx->InputShape(1);
@@ -81,17 +84,25 @@ class SplitOp : public XlaOpKernel {
     // All the slices are the same size: this is the size along the
     // split dimension.
     const int32_t slice_size = input_shape.dim_size(split_dim) / num_split;
+    xla::DExpr slice_expr =
+        input_shape.get_filled_expression(split_dim) / num_split;
 
     // The vectors we will use to define the slice. The entry for the
     // split dimensions varies for each output.
     std::vector<int64_t> begin(input_shape.dims(), 0);
     std::vector<int64_t> limits(input_shape.dims());
+    std::vector<xla::DExpr> begin_expr;
+    std::vector<xla::DExpr> limits_expr;
+    begin_expr.reserve(input_shape.dims());
+    limits_expr.reserve(input_shape.dims());
     std::vector<int64_t> strides(input_shape.dims(), 1);
     for (int i = 0; i < input_shape.dims(); ++i) {
       // Initially set up the limits to be the full size of the input:
       // the split dimension is filled in below.
       int64_t dim = input_shape.dim_size(i);
       limits[i] = dim;
+      begin_expr.push_back(xla::DExpr::Const(0));
+      limits_expr.push_back(input_shape.get_filled_expression(i));
     }
 
     // Create each of the outputs.
@@ -99,7 +110,15 @@ class SplitOp : public XlaOpKernel {
       // Slice out the ith split from the split dimension.
       begin[split_dim] = i * slice_size;
       limits[split_dim] = (i + 1) * slice_size;
-      ctx->SetOutput(i, xla::Slice(input, begin, limits, strides));
+
+      if (enable_dynamic_sizes) {
+        begin_expr[split_dim] = (i * slice_expr).simplify();
+        limits_expr[split_dim] = ((i + 1) * slice_expr).simplify();
+        ctx->SetOutput(i, xla::Slice(input, begin, limits, begin_expr,
+                                     limits_expr, strides));
+      } else {
+        ctx->SetOutput(i, xla::Slice(input, begin, limits, strides));
+      }
     }
   }
 };
@@ -111,6 +130,8 @@ class SplitVOp : public XlaOpKernel {
   explicit SplitVOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {}
 
   void Compile(XlaOpKernelContext* ctx) override {
+    const bool enable_dynamic_sizes =
+        GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes;
     const int32_t num_split = num_outputs();
     const TensorShape input_shape = ctx->InputShape(0);
     const TensorShape index_shape = ctx->InputShape(2);
@@ -202,21 +223,38 @@ class SplitVOp : public XlaOpKernel {
           input_shape.dim_size(split_dim) - total_split_size;
     }
 
-    // The vectors we will use to define the slice. The entry for the
-    // split dimensions varies for each output.
+    // The vectors we will use to define the slice. The entry for the split
+    // dimension varies for each output.
     std::vector<int64_t> begin(input_shape.dims(), 0);
     auto dim_sizes = input_shape.dim_sizes();
     std::vector<int64_t> limits(dim_sizes.begin(), dim_sizes.end());
     std::vector<int64_t> strides(input_shape.dims(), 1);
+    std::vector<xla::DExpr> begin_expr(input_shape.dims(), xla::DExpr::Const(0));
+    auto input_exprs = input_shape.get_filled_expressions();
+    std::vector<xla::DExpr> limits_expr;
+    limits_expr.reserve(input_exprs.size());
+    for (auto expr : input_exprs) {
+      limits_expr.push_back(expr);
+    }
     for (int i = 0; i < num_split; ++i) {
-      TensorShape output_shape(input_shape);
       int slice_size = split_sizes[i];
-      output_shape.set_dim(split_dim, slice_size);
+      xla::DExpr slice_expr = xla::DExpr::Const(slice_size);
 
       // Slice out the ith split from the split dimension.
       limits[split_dim] = begin[split_dim] + slice_size;
-      ctx->SetOutput(i, xla::Slice(input, begin, limits, strides));
+      if (enable_dynamic_sizes) {
+        limits_expr[split_dim] =
+            (begin_expr[split_dim] + slice_expr).simplify();
+        ctx->SetOutput(i,
+                       xla::Slice(input, begin, limits, begin_expr,
+                                  limits_expr, strides));
+      } else {
+        ctx->SetOutput(i, xla::Slice(input, begin, limits, strides));
+      }
       begin[split_dim] = limits[split_dim];
+      if (enable_dynamic_sizes) {
+        begin_expr[split_dim] = limits_expr[split_dim];
+      }
     }
   }
 };

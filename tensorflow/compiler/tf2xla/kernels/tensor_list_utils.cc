@@ -241,9 +241,12 @@ absl::Status GetTensorListShapeFromElementTensorListShape(
     const xla::Shape& shape =
         xla::ShapeUtil::GetTupleElementShape(element_tensor_list_shape, i);
     std::vector<int64_t> dimensions = xla::SpanToVector(shape.dimensions());
+    std::vector<xla::DExpr> expressions = xla::SpanToVector(shape.expressions());
     dimensions.insert(dimensions.begin(), leading_dim);
+    expressions.insert(expressions.begin(), xla::DExpr::Const(leading_dim));
     shapes.push_back(
-        xla::ShapeUtil::MakeShape(shape.element_type(), dimensions));
+        xla::ShapeUtil::MakeShape(shape.element_type(), dimensions,
+                                  expressions));
     if (leading_dim_is_dynamic) {
       shapes.back().set_dynamic_dimension(0, true);
     }
@@ -267,9 +270,13 @@ absl::Status GetTensorListShapeFromElementShape(const xla::Shape& element_shape,
   std::vector<xla::Shape> shapes;
   std::vector<int64_t> dimensions =
       xla::SpanToVector(element_shape.dimensions());
+  std::vector<xla::DExpr> expressions =
+      xla::SpanToVector(element_shape.expressions());
   dimensions.insert(dimensions.begin(), leading_dim);
+  expressions.insert(expressions.begin(), xla::DExpr::Const(leading_dim));
   shapes.push_back(
-      xla::ShapeUtil::MakeShape(element_shape.element_type(), dimensions));
+      xla::ShapeUtil::MakeShape(element_shape.element_type(), dimensions,
+                                expressions));
   shapes.back().set_dynamic_dimension(0, leading_dim_is_dynamic);
   shapes.push_back(xla::ShapeUtil::MakeShape(xla::PrimitiveType::S32,
                                              std::vector<int64_t>{}));
@@ -289,7 +296,8 @@ absl::Status CreateZerosTensorListWithShape(
         xla::ShapeUtil::GetTupleElementShape(list_shape, i);
     xla::XlaOp zero =
         xla::ConstantLiteral(b, xla::LiteralUtil::Zero(shape.element_type()));
-    xla::XlaOp zeros = xla::Broadcast(zero, shape.dimensions());
+    xla::XlaOp zeros =
+        xla::Broadcast(zero, shape.dimensions(), shape.expressions());
     TF_RET_CHECK(dynamic_dims[i].size() == shape.dimensions().size());
     for (int64_t dim = 0; dim < shape.dimensions().size(); ++dim) {
       if (shape.is_dynamic_dimension(dim)) {
@@ -389,7 +397,14 @@ absl::Status ExecuteTensorListPushBack(xla::XlaOp list, xla::XlaOp element,
       std::vector<int64_t> element_part_dims =
           xla::SpanToVector(element_part_shape.dimensions());
       element_part_dims.insert(element_part_dims.begin(), 1);
-      element_part = xla::Reshape(element_part, element_part_dims);
+      std::vector<xla::DExpr> element_part_exprs;
+      element_part_exprs.reserve(element_part_shape.expressions().size() + 1);
+      element_part_exprs.push_back(xla::DExpr::Const(1));
+      for (auto expr : element_part_shape.expressions()) {
+        element_part_exprs.push_back(expr);
+      }
+      element_part =
+          xla::Reshape(element_part, element_part_dims, element_part_exprs);
 
       std::vector<xla::XlaOp> start_indices(
           element_part_shape.dimensions().size() + 1,
@@ -406,7 +421,13 @@ absl::Status ExecuteTensorListPushBack(xla::XlaOp list, xla::XlaOp element,
     std::vector<int64_t> element_dims =
         xla::SpanToVector(element_shape.dimensions());
     element_dims.insert(element_dims.begin(), 1);
-    xla::XlaOp update = xla::Reshape(element, element_dims);
+    std::vector<xla::DExpr> element_exprs;
+    element_exprs.reserve(element_shape.expressions().size() + 1);
+    element_exprs.push_back(xla::DExpr::Const(1));
+    for (auto expr : element_shape.expressions()) {
+      element_exprs.push_back(expr);
+    }
+    xla::XlaOp update = xla::Reshape(element, element_dims, element_exprs);
 
     std::vector<xla::XlaOp> start_indices(element_shape.dimensions().size() + 1,
                                           xla::ConstantR0<int32>(b, 0));
@@ -455,11 +476,19 @@ absl::Status ExecuteTensorListPopBack(xla::XlaOp list, xla::XlaOp* list_result,
         xla::SpanToVector(list_part_shape.dimensions());
     slice_shape[0] = 1LL;
 
+    std::vector<xla::DExpr> slice_exprs;
+    slice_exprs.reserve(list_part_shape.expressions().size());
+    for (auto expr : list_part_shape.expressions()) {
+      slice_exprs.push_back(expr);
+    }
+    slice_exprs[0] = xla::DExpr::Const(1LL);
+
     xla::XlaOp list_part = xla::GetTupleElement(list, i);
     xla::XlaOp read = xla::DynamicSlice(list_part, start_indices, slice_shape);
 
     slice_shape.erase(slice_shape.begin());
-    element_result_parts.push_back(xla::Reshape(read, slice_shape));
+    slice_exprs.erase(slice_exprs.begin());
+    element_result_parts.push_back(xla::Reshape(read, slice_shape, slice_exprs));
     list_result_parts.push_back(list_part);
   }
   list_result_parts.push_back(push_index);
@@ -493,7 +522,13 @@ absl::Status ExecuteTensorListSetItem(xla::XlaOp list, xla::XlaOp index,
   std::vector<int64_t> element_dims =
       xla::SpanToVector(element_shape.dimensions());
   element_dims.insert(element_dims.begin(), 1);
-  xla::XlaOp update = xla::Reshape(element, element_dims);
+  std::vector<xla::DExpr> element_exprs;
+  element_exprs.reserve(element_shape.expressions().size() + 1);
+  element_exprs.push_back(xla::DExpr::Const(1));
+  for (auto expr : element_shape.expressions()) {
+    element_exprs.push_back(expr);
+  }
+  xla::XlaOp update = xla::Reshape(element, element_dims, element_exprs);
 
   std::vector<xla::XlaOp> start_indices(element_shape.dimensions().size() + 1,
                                         xla::ConstantR0<int32>(b, 0));
@@ -557,6 +592,13 @@ absl::Status ExecuteTensorListGetItem(xla::XlaOp list, xla::XlaOp index,
       xla::SpanToVector(buffer_shape.dimensions());
   slice_shape[0] = 1LL;
 
+  std::vector<xla::DExpr> slice_exprs;
+  slice_exprs.reserve(buffer_shape.expressions().size());
+  for (auto expr : buffer_shape.expressions()) {
+    slice_exprs.push_back(expr);
+  }
+  slice_exprs[0] = xla::DExpr::Const(1LL);
+
   xla::XlaOp list_part = xla::GetTupleElement(list, 0);
   xla::XlaOp read = xla::DynamicSlice(list_part, start_indices, slice_shape);
   // Propagate dynamic dimensions from buffer to the sliced buffer, except for
@@ -569,7 +611,8 @@ absl::Status ExecuteTensorListGetItem(xla::XlaOp list, xla::XlaOp index,
     }
   }
   slice_shape.erase(slice_shape.begin());
-  *result = xla::Reshape(read, slice_shape);
+  slice_exprs.erase(slice_exprs.begin());
+  *result = xla::Reshape(read, slice_shape, slice_exprs);
   return absl::OkStatus();
 }
 

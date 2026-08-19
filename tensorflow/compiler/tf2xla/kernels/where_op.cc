@@ -162,10 +162,16 @@ absl::StatusOr<XlaOp> CompileWhereWithSort(XlaOpKernelContext* ctx) {
   TF_ASSIGN_OR_RETURN(xla::Shape input_shape,
                       ctx->builder()->GetShape(condition));
   auto iota_shape =
-      xla::ShapeUtil::MakeShape(xla::S32, input_shape.dimensions());
+      xla::ShapeUtil::MakeShape(xla::S32, input_shape.dimensions(),
+                                input_shape.expressions());
 
   int64_t flattened_size = xla::Product(iota_shape.dimensions());
-  XlaOp reshaped_condition = xla::Reshape(condition, {flattened_size});
+  xla::DExpr flattened_expr = xla::DExpr::Const(1);
+  for (auto e : iota_shape.expressions()){
+    flattened_expr = flattened_expr * e;
+  }
+  XlaOp reshaped_condition =
+      xla::Reshape(condition, {flattened_size}, {flattened_expr});
   XlaOp zeros = xla::ZerosLike(reshaped_condition);
   XlaOp compared = xla::Ne(reshaped_condition, zeros);
 
@@ -175,7 +181,7 @@ absl::StatusOr<XlaOp> CompileWhereWithSort(XlaOpKernelContext* ctx) {
   // indices of each element.
   for (int64_t axis = 0; axis < iota_shape.dimensions_size(); ++axis) {
     XlaOp iota = xla::Iota(ctx->builder(), iota_shape, axis);
-    XlaOp reshaped = xla::Reshape(iota, {flattened_size});
+    XlaOp reshaped = xla::Reshape(iota, {flattened_size}, {flattened_expr});
     to_sort.push_back(reshaped);
     types_to_sort.push_back(xla::S32);
   }
@@ -186,7 +192,9 @@ absl::StatusOr<XlaOp> CompileWhereWithSort(XlaOpKernelContext* ctx) {
   std::vector<XlaOp> to_concat;
   for (int64_t i = 0; i < iota_shape.dimensions_size(); ++i) {
     XlaOp index_single_dim = xla::GetTupleElement(sorted, i + 1);
-    to_concat.push_back(xla::Reshape(index_single_dim, {flattened_size, 1}));
+    to_concat.push_back(xla::Reshape(index_single_dim, {flattened_size, 1},
+                                     {xla::DExpr::Unknown(),
+                                      xla::DExpr::Const(1)}));
   }
 
   XlaOp result = xla::ConcatInDim(ctx->builder(), to_concat, 1);
@@ -214,7 +222,12 @@ absl::StatusOr<XlaOp> CompileWhereWithPrefixSum(XlaOpKernelContext* ctx) {
   TF_ASSIGN_OR_RETURN(xla::Shape input_shape, b->GetShape(condition));
 
   int64_t flattened_size = xla::Product(input_shape.dimensions());
-  XlaOp reshaped_condition = xla::Reshape(condition, {flattened_size});
+  xla::DExpr flattened_expr = xla::DExpr::Const(1);
+  for (auto e : input_shape.expressions()) {
+    flattened_expr = flattened_expr * e;
+  }
+  XlaOp reshaped_condition =
+      xla::Reshape(condition, {flattened_size}, {flattened_expr});
   XlaOp zeros = xla::ZerosLike(reshaped_condition);
   XlaOp preds =
       xla::ConvertElementType(xla::Ne(reshaped_condition, zeros), S32);
@@ -276,11 +289,16 @@ absl::StatusOr<XlaOp> CompileWhereWithPrefixSum(XlaOpKernelContext* ctx) {
   //
   // and then scatter iotas[out_idxs] into the output.
   std::vector<XlaOp> iotas_to_concat;
-  auto iota_shape = xla::ShapeUtil::MakeShape(S32, input_shape.dimensions());
+  auto iota_shape = xla::ShapeUtil::MakeShape(
+      S32, input_shape.dimensions(), input_shape.expressions());
   iotas_to_concat.reserve(iota_shape.dimensions_size());
   for (int64_t axis = 0; axis < iota_shape.dimensions_size(); ++axis) {
-    iotas_to_concat.push_back(
-        xla::Reshape(xla::Iota(b, iota_shape, axis), {flattened_size, 1}));
+    XlaOp flattened_iota =
+        xla::Reshape(xla::Iota(b, iota_shape, axis), {flattened_size},
+                     {flattened_expr});
+    iotas_to_concat.push_back(xla::Reshape(
+        flattened_iota, {flattened_size, 1},
+        {flattened_expr, xla::DExpr::Const(1)}));
   }
   XlaOp iotas = xla::ConcatInDim(b, iotas_to_concat, /*dimension=*/1);
 
@@ -305,7 +323,12 @@ absl::StatusOr<XlaOp> CompileWhereWithPrefixSum(XlaOpKernelContext* ctx) {
   XlaOp scattered = xla::Scatter(
       /*input=*/xla::Zeros(
           b, /*shape=*/xla::ShapeUtil::MakeShape(
-              S32, {flattened_size, iota_shape.dimensions_size()})),
+              S32,
+              std::vector<int64_t>{flattened_size,
+                                   iota_shape.dimensions_size()},
+              std::vector<xla::DExpr>{
+                  xla::DExpr::Unknown(),
+                  xla::DExpr::Const(iota_shape.dimensions_size())})),
       /*scatter_indices=*/out_idxs, /*updates=*/iotas,
       /*update_computation=*/assn_computation, scatter_dnums,
       /*indices_are_sorted=*/true, /*unique_indices=*/true);

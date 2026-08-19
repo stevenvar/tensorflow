@@ -32,12 +32,14 @@ limitations under the License.
 #include "absl/container/flat_hash_map.h"
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/types/variant.h"
 #include "tensorflow/compiler/jit/defs.h"
 #include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/jit/shape_inference.h"
+#include "tensorflow/compiler/tf2xla/symbolic_content_util.h"
 #include "tensorflow/compiler/jit/xla_compile_util.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/attribute_utils.h"
 #include "tensorflow/compiler/mlir/tf2xla/api/v1/compile_mlir_util.h"
@@ -93,7 +95,6 @@ namespace {
 constexpr char kSingleOpComponent[] = "TF2XLA_XLA_COMPILER_COMPILE_SINGLE_OP";
 constexpr char kCompileFunctionComponent[] =
     "TF2XLA_XLA_COMPILER_COMPILE_FUNCTION";
-
 // Checks that arguments `args` match types `types`.
 absl::Status CheckSignature(const DataTypeVector& types,
                             absl::Span<const XlaCompiler::Argument> args) {
@@ -511,6 +512,19 @@ std::vector<int64_t> XlaCompiler::Argument::DimensionSizes() const {
   }
 }
 
+std::vector<xla::DExpr> XlaCompiler::Argument::DimensionExpressions() const {
+  if (absl::holds_alternative<TensorShape>(shape)) {
+    return std::get<TensorShape>(shape).get_filled_expressions();
+  } else {
+    std::vector<xla::DExpr> expressions;
+    expressions.reserve(std::get<xla::Shape>(shape).expressions().size());
+    for (const auto& expr : std::get<xla::Shape>(shape).expressions()) {
+      expressions.push_back(expr);
+    }
+    return expressions;
+  }
+}
+
 absl::InlinedVector<int64_t, 4>
 XlaCompiler::Argument::DimensionSizesAsInlinedVector() const {
   if (absl::holds_alternative<TensorShape>(shape)) {
@@ -839,7 +853,9 @@ absl::Status XlaCompiler::CompileFunction(
                                      std::vector<TensorShape>{tensor_shape});
       }
     } else {
+      auto* val_ptr = std::get_if<TensorShape>(&args[i].shape);
       TensorShape tensor_shape = std::get<TensorShape>(args[i].shape);
+      AttrSlice n_attrs = fbody->arg_nodes[i]->attrs();
       fbody->arg_nodes[i]->ClearAttr("_output_shapes");
       fbody->arg_nodes[i]->AddAttr("_output_shapes",
                                    std::vector<TensorShape>{tensor_shape});
@@ -930,14 +946,17 @@ absl::Status XlaCompiler::XLAShapeForArgument(
         TF_RETURN_IF_ERROR(RewriteLayoutWithShardedShape(
             arg_sharding, /*use_fast_memory=*/false,
             options_.shape_determination_fns, xla_shape));
-        // If the arg is dynamic then we update the shape to reflect that. The
-        // layout etc above lose it by forcing a swap to TensorShape.
-        if (std::holds_alternative<xla::Shape>(arg.shape) &&
-            std::get<xla::Shape>(arg.shape).is_dynamic()) {
-          xla::Shape dynamic_shape = std::get<xla::Shape>(arg.shape);
-          for (int i = 0; i < xla_shape->dimensions().size(); ++i) {
-            xla_shape->set_dynamic_dimension(
-                i, dynamic_shape.is_dynamic_dimension(i));
+        // If the arg carries dynamic metadata or symbolic expressions then we
+        // update the shape to reflect that. The layout logic above routes
+        // through TensorShape and can otherwise discard this information.
+        if (std::holds_alternative<xla::Shape>(arg.shape)) {
+          const xla::Shape& original_shape = std::get<xla::Shape>(arg.shape);
+          if (original_shape.is_dynamic() || original_shape.has_dynamic_expr()) {
+            for (int i = 0; i < xla_shape->dimensions().size(); ++i) {
+              xla_shape->set_dynamic_dimension(
+                  i, original_shape.is_dynamic_dimension(i));
+              xla_shape->set_expression(i, original_shape.expressions(i));
+            }
           }
         }
       } else {
@@ -1083,6 +1102,7 @@ absl::Status XlaCompiler::BuildArguments(
         TF_RET_CHECK(absl::holds_alternative<TensorShape>(arg.shape));
         // TODO(phawkins): this code assumes that resource arguments do not
         // alias.
+      auto* val_ptr = std::get_if<TensorShape>(&arg.shape);
         XlaResource* resource =
             context->AddResource(std::make_unique<XlaResource>(
                 arg.resource_kind, i, arg.name, arg.type,
@@ -1108,6 +1128,25 @@ absl::Status XlaCompiler::BuildArguments(
       }
       case XlaCompiler::Argument::kConstant:
         arg_expression = XlaExpression::Constant(arg.constant_value);
+        if (!arg.constant_value_expressions.empty()) {
+          VLOG(1) << "BuildArguments attaching "
+                    << arg.constant_value_expressions.size()
+                    << " constant_value_expressions to constant arg " << i
+                    << " (" << arg.name << ")";
+          // Preserve symbolic per-element metadata for shape-like constants so
+          // later tf2xla consumers can recover dynamic contents from them.
+          std::vector<xla::DExpr> contents;
+          contents.reserve(arg.constant_value_expressions.size());
+          for (const xla::ExpressionProto& expr :
+               arg.constant_value_expressions) {
+            xla::DExpr parsed = xla::DExprFromProto(expr);
+            contents.push_back(parsed && parsed->is_dynamic()
+                                   ? std::move(parsed)
+                                   : xla::DExpr::Unknown(
+                                         xla::kUnknownContentSentinel));
+          }
+          arg_expression.set_contents(std::move(contents));
+        }
         break;
       case XlaCompiler::Argument::kInvalid:
         return errors::Internal(
@@ -1203,6 +1242,10 @@ absl::Status XlaCompiler::BuildArguments(
       xla::XlaScopedShardingAssignment assign_sharding(
           builder, it == arg_shardings.end() ? std::optional<xla::OpSharding>()
                                              : it->second);
+      auto& arg = args[input_to_args->at(i)];
+      xla::OpMetadata arg_metadata;
+      arg_metadata.set_op_name(arg.node_name);
+      builder->SetOneShotOpMetadata(arg_metadata);
       if (is_entry_computation) {
         // Add an entry to is_same_across_replicas for every leaf buffer.
         std::vector<bool> is_same_across_replicas(
@@ -1222,10 +1265,9 @@ absl::Status XlaCompiler::BuildArguments(
 
   // Fill in the handles in non-constant arguments, and reshape parameters
   // back to their correct shapes.
-  VLOG(2) << "XLA computation inputs:";
   for (std::vector<int>::size_type i = 0; i < input_to_args->size(); ++i) {
     const XlaCompiler::Argument& arg = args[input_to_args->at(i)];
-    VLOG(2) << "  XLA arg " << i
+    VLOG(2) << " XLA arg " << i
             << " shape: " << xla::ShapeUtil::HumanString(arg_shapes[i])
             << " name: " << arg.name << " TF arg " << input_to_args->at(i)
             << " node name: " << arg.node_name
@@ -1251,7 +1293,9 @@ absl::Status XlaCompiler::BuildArguments(
         // return values of functions, and then reshape unconditionally.
         if (is_entry_computation) {
           arg_expression = XlaExpression::XlaOp(
-              xla::Reshape(arg_handles[i], arg.DimensionSizes()), arg.type);
+              xla::Reshape(arg_handles[i], arg.DimensionSizes(),
+                           arg.DimensionExpressions()),
+              arg.type);
         } else {
           arg_expression = XlaExpression::XlaOp(arg_handles[i], arg.type);
           if (arg.value_bound) {

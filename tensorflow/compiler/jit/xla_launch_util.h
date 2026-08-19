@@ -18,6 +18,7 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_JIT_XLA_LAUNCH_UTIL_H_
 #define TENSORFLOW_COMPILER_JIT_XLA_LAUNCH_UTIL_H_
 
+#include <string>
 #include <map>
 #include <memory>
 #include <set>
@@ -29,13 +30,20 @@ limitations under the License.
 #include "xla/client/local_client.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/service/shaped_buffer.h"
+#include "xla/executable_run_options.h"
 #include "xla/stream_executor/device_memory_allocator.h"
 #include "tensorflow/core/framework/allocation_description.pb.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/thread_annotations.h"
 
+namespace xla {
+class DExpr;
+}
+
 namespace tensorflow {
+
+std::string DExprToString(const xla::DExpr& expr);
 
 // Creates a list of updated resource variables.
 absl::StatusOr<std::vector<VariableInfo>> GatherVariableInfo(
@@ -208,7 +216,8 @@ class XlaComputationLaunchContext {
       xla::ScopedShapedBuffer output, int missing_ctx_input_prefix,
       absl::Span<VariableInfo> variable_infos,
       const xla::HloInputOutputAliasConfig& input_output_alias,
-      const std::map<int, const Tensor*>& resource_vars);
+      const std::map<int, const Tensor*>& resource_vars,
+      const xla::ExecutableRunOptions* run_options = nullptr);
 
  private:
   xla::LocalClient* client_;

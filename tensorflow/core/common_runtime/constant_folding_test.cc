@@ -835,7 +835,7 @@ TEST_F(ConstantFoldingTest, FoldReshapeOfDynamicShapePreservesContents) {
   EXPECT_EQ(contents_proto.dim(0).size(), 977);
 }
 
-TEST_F(ConstantFoldingTest, FoldPackOfDynamicShapePreservesContents) {
+TEST_F(ConstantFoldingTest, FoldPackWithRepeatedDynamicInputPreservesContents) {
   Graph g(OpRegistry::Global());
   Scope s = Scope::NewRootScope();
   auto arg = ops::_Arg(s.WithOpName("arg"), DT_FLOAT, 0);
@@ -843,8 +843,9 @@ TEST_F(ConstantFoldingTest, FoldPackOfDynamicShapePreservesContents) {
   auto first = ops::GatherV2(s.WithOpName("first"), shape,
                              ops::Const(s.WithOpName("index"), 0),
                              ops::Const(s.WithOpName("axis"), 0));
-  auto second = ops::Const(s.WithOpName("second"), 16);
-  OutputList pack_inputs = {first, second};
+  // Reusing the same producer is a DAG, not a recursion cycle. Both visits must
+  // preserve its symbolic content.
+  OutputList pack_inputs = {first, first};
   auto pack = ops::Stack(s.WithOpName("pack"), pack_inputs,
                          ops::Stack::Axis(0));
   auto send = ops::_Send(s.WithOpName("send"), pack, "send", "sender", 0,
@@ -872,7 +873,7 @@ TEST_F(ConstantFoldingTest, FoldPackOfDynamicShapePreservesContents) {
   TF_ASSERT_OK(send_node->input_edge(0, &send_input));
   Node* folded = send_input->src();
   ASSERT_TRUE(folded->IsConstant());
-  ExpectNodeEqual<int32>(folded, {977, 16}, {2});
+  ExpectNodeEqual<int32>(folded, {977, 977}, {2});
 
   string serialized_contents_proto;
   TF_ASSERT_OK(GetNodeAttr(folded->attrs(),
@@ -882,9 +883,9 @@ TEST_F(ConstantFoldingTest, FoldPackOfDynamicShapePreservesContents) {
   ASSERT_TRUE(contents_proto.ParseFromString(serialized_contents_proto));
   ASSERT_EQ(contents_proto.expressions_size(), 2);
   EXPECT_TRUE(IsDynamicDimExpr(contents_proto.expressions(0)));
-  EXPECT_FALSE(IsDynamicDimExpr(contents_proto.expressions(1)));
+  EXPECT_TRUE(IsDynamicDimExpr(contents_proto.expressions(1)));
   EXPECT_EQ(contents_proto.dim(0).size(), 977);
-  EXPECT_EQ(contents_proto.dim(1).size(), 16);
+  EXPECT_EQ(contents_proto.dim(1).size(), 977);
 }
 
 TEST_F(ConstantFoldingTest, FoldPackKeepsSymbolicContentsAligned) {

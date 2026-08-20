@@ -254,6 +254,8 @@ bool TryGetFoldedValueContents(const Node* node, int output_index,
   if (!visiting->insert(node).second) {
     return false;
   }
+  auto remove_from_visiting =
+      gtl::MakeCleanup([&] { visiting->erase(node); });
 
   if (TryGetContentsProtoAttr(node->attrs(), out_contents)) {
     return true;

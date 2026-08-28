@@ -299,6 +299,25 @@ TEST_F(ShapeTest, DExprReplacesEveryMatchingSubexpression) {
             expr.replace_subexpression(shared_core, replacement));
 }
 
+TEST_F(ShapeTest, UnknownExpressionIsNeitherConstantNorDynamic) {
+  DExpr expr = DExpr::Unknown(kMissingExpressionSentinel);
+
+  EXPECT_FALSE(expr->is_constant());
+  EXPECT_FALSE(expr->is_dynamic());
+}
+
+TEST_F(ShapeTest, DExprSubstitutionSimplifiesConstantDivision) {
+  DExpr expr = (DExpr::Var(1) + 1) / 2;
+  DExpr evaluated = expr.substitute(1, DExpr::Const(100)).simplify();
+  EXPECT_EQ(DExpr::Kind::kConstant, evaluated.kind());
+  EXPECT_EQ(50, evaluated->get_val());
+}
+
+TEST_F(ShapeTest, DExprSimplifyRejectsDivisionByZero) {
+  EXPECT_DEATH((DExpr::Const(0) / DExpr::Const(0)).simplify(),
+               "Cannot simplify division by zero");
+}
+
 TEST_F(ShapeTest, DeleteDimensions) {
   Shape shape = ShapeUtil::MakeShapeWithDenseLayout(F32, {5, 3, 2, 7, 9},
                                                     {2, 0, 1, 4, 3});

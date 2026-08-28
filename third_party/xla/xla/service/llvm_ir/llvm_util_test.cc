@@ -78,6 +78,17 @@ TEST(LlvmUtilTest, DynamicBatchSizeUsesRuntimeAccessor) {
             xla::cpu::runtime::kGetBatchSizeSymbolName);
 }
 
+TEST(LlvmUtilTest, UnknownExpressionIsRejectedBeforeEmission) {
+  llvm::LLVMContext context;
+  llvm::IRBuilder<> builder(context);
+
+  DExpr expression =
+      DExpr::Var(1) + DExpr::Unknown(kMissingExpressionSentinel);
+  EXPECT_DEATH_IF_SUPPORTED(
+      (void)EmitExpression(&builder, expression),
+      "Cannot emit a dynamic expression containing an unknown value");
+}
+
 }  // namespace
 }  // namespace llvm_ir
 }  // namespace xla

@@ -64,17 +64,21 @@ bool ShapeDimExprEqual(const TensorShapeProto& lhs, int lhs_dim,
 void ExpectVariableId(const TensorShapeProto& shape, int dim,
                       int expected_var_id) {
   ASSERT_GT(shape.dim_size(), dim);
-  const auto& expr = shape.dim(dim).expr();
-  EXPECT_EQ(expr.node_type_case(), ExpressionProto::kVariableId);
-  EXPECT_EQ(expr.variable_id(), expected_var_id);
+  DimExpr expr = ShapeDimExpr(shape, dim);
+  ASSERT_TRUE(expr);
+  ASSERT_EQ(expr.kind(), xla::DExprKind::kVariable);
+  EXPECT_EQ(static_cast<const xla::Variable*>(expr.get())->get_id(),
+            expected_var_id);
 }
 
 void ExpectNotVariableId(const TensorShapeProto& shape, int dim,
                          int unexpected_var_id) {
   ASSERT_GT(shape.dim_size(), dim);
-  const auto& expr = shape.dim(dim).expr();
-  ASSERT_EQ(expr.node_type_case(), ExpressionProto::kVariableId);
-  EXPECT_NE(expr.variable_id(), unexpected_var_id);
+  DimExpr expr = ShapeDimExpr(shape, dim);
+  ASSERT_TRUE(expr);
+  ASSERT_EQ(expr.kind(), xla::DExprKind::kVariable);
+  EXPECT_NE(static_cast<const xla::Variable*>(expr.get())->get_id(),
+            unexpected_var_id);
 }
 
 using shape_inference::InferenceContext;

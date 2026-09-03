@@ -466,15 +466,25 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
           rhs->kind() == DExpr::Kind::kUnknown) {
         return std::make_unique<UnknownExpr>();
       }
-      Constant* l = AsConstant(lhs.get());
-      Constant* r = AsConstant(rhs.get());
-      if (*lhs == *rhs) {
-        return std::make_unique<Constant>(1);
+      Constant* lhs_constant = AsConstant(lhs.get());
+      Constant* rhs_constant = AsConstant(rhs.get());
+      if (rhs_constant != nullptr) {
+        int64_t denominator = rhs_constant->get_val();
+        CHECK_NE(denominator, 0) << "Cannot simplify division by zero";
+        if (lhs_constant != nullptr) {
+          int64_t numerator = lhs_constant->get_val();
+          NormalizeFraction(&numerator, &denominator);
+          if (denominator == 1) {
+            return std::make_unique<Constant>(numerator);
+          }
+          return std::make_unique<Div>(DynExpr::_(numerator),
+                                       DynExpr::_(denominator));
+        }
+        if (denominator == 1) {
+          return lhs;
+        }
       }
-      if (l && l->get_val() == 0 && r && r->get_val() != 0) {
-        return std::make_unique<Constant>(0);
-      }
-      if (r && r->get_val() == 1) return lhs;
+      if (*lhs == *rhs) return std::make_unique<Constant>(1);
       if (lhs->kind() == DExpr::Kind::kMul) {
         auto* mul = static_cast<Mul*>(lhs.get());
         auto lhs_l = std::unique_ptr<DynExpr>(mul->get_lhs()->s());
@@ -485,14 +495,6 @@ std::unique_ptr<DynExpr> SimplifyFallback(const DynExpr* expr) {
         if (*lhs_r == *rhs) {
           return lhs_l;
         }
-      }
-      if (l && r && r->get_val() != 0) {
-        int64_t numerator = l->get_val();
-        int64_t denominator = r->get_val();
-        NormalizeFraction(&numerator, &denominator);
-        if (denominator == 1) return std::make_unique<Constant>(numerator);
-        return std::make_unique<Div>(DynExpr::_(numerator),
-                                     DynExpr::_(denominator));
       }
       return std::make_unique<Div>(lhs.release(), rhs.release());
     }

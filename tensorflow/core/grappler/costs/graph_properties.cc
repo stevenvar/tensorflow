@@ -1778,18 +1778,32 @@ class SymbolicShapeRefiner {
     const bool is_bin =
         (op == "Sub" || op == "Add" || op == "Mul" || op == "Div");
     if (!is_fed) {
-      if (is_bin) {
-        const bool has_binary_inputs =
-            c->input_tensors_as_shapes_to_propagate.size() >= 2;
-        auto va = has_binary_inputs
-                      ? c->input_tensors_as_shapes_to_propagate[0]
-                      : tensorflow::shape_inference::ShapeHandle();
-        auto vb = has_binary_inputs
-                      ? c->input_tensors_as_shapes_to_propagate[1]
-                      : tensorflow::shape_inference::ShapeHandle();
+      const auto has_symbolic_dim = [&](ShapeHandle shape) {
+        if (!ic->RankKnown(shape)) return false;
+        for (int i = 0; i < ic->Rank(shape); ++i) {
+          DimensionHandle dim = ic->Dim(shape, i);
+          if (!ic->ValueKnown(dim) || ic->GetDimExpr(dim) != nullptr) {
+            return true;
+          }
+        }
+        return false;
+      };
+      const bool has_binary_inputs =
+          c->input_tensors_as_shapes_to_propagate.size() >= 2;
+      auto va = has_binary_inputs
+                    ? c->input_tensors_as_shapes_to_propagate[0]
+                    : ShapeHandle();
+      auto vb = has_binary_inputs
+                    ? c->input_tensors_as_shapes_to_propagate[1]
+                    : ShapeHandle();
+      const bool use_symbolic_arithmetic =
+          enable_dynamic_value_inference_ ||
+          (has_binary_inputs && (has_symbolic_dim(va) || has_symbolic_dim(vb)));
 
-        if (has_binary_inputs &&
-            !va.SameHandle(tensorflow::shape_inference::ShapeHandle()) &&
+      // Concrete operands use regular value inference. Symbolic arithmetic
+      // falls through to the same path if it cannot represent the operation.
+      if (is_bin && use_symbolic_arithmetic && has_binary_inputs) {
+        if (!va.SameHandle(tensorflow::shape_inference::ShapeHandle()) &&
             !vb.SameHandle(tensorflow::shape_inference::ShapeHandle()) &&
             ic->RankKnown(va) && ic->RankKnown(vb) &&
             ic->Rank(va) == ic->Rank(vb)) {
@@ -1804,8 +1818,7 @@ class SymbolicShapeRefiner {
           for (int i = 0; i < ic->Rank(va); ++i) {
             auto da = ic->Dim(va, i);
             auto db = ic->Dim(vb, i);
-            if (enable_dynamic_value_inference_ &&
-                (is_unknown_from_const(da) || is_unknown_from_const(db))) {
+            if (is_unknown_from_const(da) || is_unknown_from_const(db)) {
               symbolic_propagation_succeeded = false;
               break;
             }
@@ -1822,9 +1835,6 @@ class SymbolicShapeRefiner {
               status =
                   ic->Divide(da, db, /*evenly_divisible=*/false, &r);
             if (!status.ok()) {
-              if (!enable_dynamic_value_inference_) {
-                return status;
-              }
               symbolic_propagation_succeeded = false;
               break;
             }
@@ -1837,9 +1847,6 @@ class SymbolicShapeRefiner {
           }
         }
 
-        // Preserve the original shape-value propagation behavior when dynamic
-        // inference is disabled. Dynamic inference instead falls through to
-        // regular tensor-value inference when symbolic arithmetic cannot apply.
         if (!enable_dynamic_value_inference_) {
           return absl::OkStatus();
         }
@@ -3006,6 +3013,7 @@ absl::Status GraphProperties::PropagateShapes(
             new_shapes->push(it->second);
           }
         }
+
       }
     }
   } while (!new_shapes->empty() &&

@@ -53,7 +53,13 @@ absl::StatusOr<xla::XlaOp> Contract(xla::XlaOp input, int64_t dim) {
                                         input_shape.dimensions().end() - 1);
   contracted_shape[dim] *= 4;
 
-  return xla::Reshape(xla::Transpose(input, permutation), contracted_shape);
+  std::vector<xla::DExpr> contracted_exprs(
+      input_shape.expressions().begin(), input_shape.expressions().end() - 1);
+  contracted_exprs[dim] =
+      contracted_exprs[dim] * xla::DExpr::Const(4);
+
+  return xla::Reshape(xla::Transpose(input, permutation), contracted_shape,
+                      contracted_exprs);
 }
 
 absl::StatusOr<xla::XlaOp> Expand(xla::XlaOp input, int64_t dim) {
@@ -85,7 +91,7 @@ absl::StatusOr<xla::XlaOp> Expand(xla::XlaOp input, int64_t dim) {
   }
   permutation.push_back(dim + 1);
 
-  return xla::Transpose(xla::Reshape(input, expanded_shape), permutation);
+  return xla::Transpose(xla::Reshape(input, expanded_shape, {}), permutation);
 }
 
 }  // namespace

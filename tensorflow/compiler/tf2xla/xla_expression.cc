@@ -17,9 +17,12 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/literal_util.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
+#include "tensorflow/core/framework/tensor_shape.pb.h"
+#include "tensorflow/compiler/tf2xla/symbolic_content_util.h"
 #include "xla/hlo/builder/value_inference.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/platform/logging.h"
 
 namespace tensorflow {
 
@@ -73,6 +76,50 @@ XlaExpression XlaExpression::Resource(XlaResource* resource) {
   return e;
 }
 
+void XlaExpression::set_contents(std::vector<xla::DExpr> contents) {
+  switch (kind_) {
+    case Kind::kXlaOp:
+    case Kind::kTensorList:
+      if (handle_.valid() && !handle_.IsUninitialized()) {
+        if (SymbolicContentEnabled()) {
+          auto status = handle_.builder()->SetInstructionContents(
+              handle_, std::move(contents));
+          if (!status.ok()) {
+            VLOG(1) << "Failed to set XlaOp contents: " << status;
+          }
+          return;
+        }
+        break;
+      }
+      break;
+    case Kind::kInvalid:
+    case Kind::kConstant:
+    case Kind::kResource:
+      break;
+  }
+  local_contents_ = std::move(contents);
+}
+
+absl::Span<const xla::DExpr> XlaExpression::contents() const {
+  switch (kind_) {
+    case Kind::kXlaOp:
+    case Kind::kTensorList:
+      if (SymbolicContentEnabled() && handle_.valid() &&
+          !handle_.IsUninitialized()) {
+        auto contents_or = handle_.builder()->GetInstructionContents(handle_);
+        if (contents_or.ok()) {
+          return **contents_or;
+        }
+      }
+      break;
+    case Kind::kInvalid:
+    case Kind::kConstant:
+    case Kind::kResource:
+      break;
+  }
+  return local_contents_;
+}
+
 string XlaExpression::HumanString() const {
   switch (kind_) {
     case Kind::kInvalid:
@@ -95,7 +142,11 @@ xla::XlaOp XlaExpression::AsXlaOp(xla::XlaBuilder* builder) const {
         xla::BorrowingLiteral literal;
         TF_RETURN_IF_ERROR(
             HostTensorToBorrowingLiteral(*constant_value_, &literal));
-        return xla::ConstantLiteral(builder, literal);
+        xla::XlaOp op = xla::ConstantLiteral(builder, literal);
+        if (!local_contents_.empty()) {
+          TF_RETURN_IF_ERROR(builder->SetInstructionContents(op, local_contents_));
+        }
+        return op;
       }
       case Kind::kTensorList:
         TF_FALLTHROUGH_INTENDED;

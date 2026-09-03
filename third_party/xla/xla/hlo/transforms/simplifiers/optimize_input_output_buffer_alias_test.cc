@@ -40,9 +40,11 @@ class OptimizeInputOutputBufferAliasTest
     r2f32_ = ShapeUtil::MakeShape(F32, {4, 5});
     r3f32_ = ShapeUtil::MakeShape(F32, {4, 5, 6});
     r4f32_ = ShapeUtil::MakeShape(F32, {4, 5, 6, 7});
-    d1f32_ = ShapeUtil::MakeShape(F32, {256}, /*dynamic_dimensions=*/{true});
+    d1f32_ = ShapeUtil::MakeShape(F32, {256}, /*dynamic_dimensions=*/{true},
+                                  /*expressions=*/{});
     d2f32_ = ShapeUtil::MakeShape(F32, {128, 128},
-                                  /*dynamic_dimensions=*/{false, true});
+                                  /*dynamic_dimensions=*/{false, true},
+                                  /*expressions=*/{});
     // Static shape with same size as dynamic shape `d1f32_`.
     d3f32_ = ShapeUtil::MakeShape(F32, {512});
   }

@@ -79,9 +79,10 @@ cc_library(
         "//xla:util",
         "//xla:xla_data_proto_cc",
         "//xla/hlo/ir:hlo",
+        "//xla/service/cpu:cpu_options",
+        "//xla/service/cpu:runtime_batch_size_api",
         "//xla/service:dump",
         "//xla/service:hlo_module_config",
-        "//xla/service/cpu:cpu_options",
         "//xla/tsl/platform:byte_order",
         "//xla/tsl/platform:logging",
         "@com_google_absl//absl/algorithm:container",
@@ -351,6 +352,21 @@ xla_cc_test(
         "//xla/tests:xla_internal_test_main",
         "//xla/tsl/platform:statusor",
         "@com_google_googletest//:gtest",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:ir_headers",
+    ],
+)
+
+xla_cc_test(
+    name = "llvm_util_test",
+    srcs = ["llvm_util_test.cc"],
+    deps = [
+        ":llvm_util",
+        "//xla/service/cpu:runtime_batch_size_api",
+        "//xla:shape_util",
+        "//xla/tests:xla_internal_test_main",
+        "@com_google_googletest//:gtest",
+        "@llvm-project//llvm:Core",
         "@llvm-project//llvm:Support",
         "@llvm-project//llvm:ir_headers",
     ],

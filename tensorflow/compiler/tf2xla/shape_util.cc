@@ -19,6 +19,7 @@ limitations under the License.
 
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "xla/layout_util.h"
 #include "xla/shape_util.h"
@@ -100,6 +101,11 @@ absl::Status XLAShapeToTensorShape(const xla::Shape& shape,
   for (int i = 0; i < shape.dimensions().size(); ++i) {
     TF_RETURN_IF_ERROR(tensor_shape->AddDimWithStatus(shape.dimensions(i)));
   }
+  if (!shape.expressions().empty()) {
+    std::vector<xla::DExpr> dexprs(shape.expressions().begin(),
+                                   shape.expressions().end());
+    tensor_shape->set_expressions(std::move(dexprs));
+  }
   return absl::OkStatus();
 }
 
@@ -168,6 +174,11 @@ xla::Shape TensorShapeToXLAShape(xla::PrimitiveType type,
   int rank = tensor_shape.dims();
   std::vector<int64_t> dimensions(rank);
   std::vector<int64_t> layout(rank);
+  MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
+  std::vector<xla::DExpr> expressions;
+  if (flags->tf_xla_enable_dynamic_sizes) {
+    expressions.resize(rank);
+  }
   for (int d = 0; d < rank; ++d) {
     dimensions[d] = tensor_shape.dim_size(d);
     if (dimensions[d] < 0) {
@@ -175,11 +186,17 @@ xla::Shape TensorShapeToXLAShape(xla::PrimitiveType type,
                       "shape; returning unknown sentinel value";
       return xla::ShapeUtil::MakeShapeWithDenseLayout(type, {0}, {0});
     }
+    if (flags->tf_xla_enable_dynamic_sizes) {
+      expressions[d] = tensor_shape.get_filled_expression(d);
+    }
   }
   // XLA uses minor-to-major; Tensorflow uses major-to-minor.
   std::iota(layout.rbegin(), layout.rend(), 0);
   xla::Shape result =
       xla::ShapeUtil::MakeShapeWithDenseLayout(type, dimensions, layout);
+  if (flags->tf_xla_enable_dynamic_sizes) {
+    result.set_expressions(expressions);
+  }
   return result;
 }
 
@@ -200,18 +217,35 @@ absl::StatusOr<xla::Shape> TensorShapeToXLAShape(
   return out;
 }
 
+inline static int var_id = 1;
+
 xla::Shape TensorShapeToXLAShape(xla::PrimitiveType type,
                                  const TensorShape& tensor_shape) {
   int rank = tensor_shape.dims();
   std::vector<int64_t> dimensions(rank);
   std::vector<int64_t> layout(rank);
+  MarkForCompilationPassFlags* flags = GetMarkForCompilationPassFlags();
+  std::vector<xla::DExpr> expressions;
+  if (flags->tf_xla_enable_dynamic_sizes) {
+    expressions.resize(rank);
+  }
+
   for (int d = 0; d < rank; ++d) {
     dimensions[d] = tensor_shape.dim_size(d);
+    if (flags->tf_xla_enable_dynamic_sizes) {
+      expressions[d] = tensor_shape.get_filled_expression(d);
+    }
   }
+
   // XLA uses minor-to-major; Tensorflow uses major-to-minor.
   std::iota(layout.rbegin(), layout.rend(), 0);
 
-  return xla::ShapeUtil::MakeShapeWithDenseLayout(type, dimensions, layout);
+  auto shape =
+      xla::ShapeUtil::MakeShapeWithDenseLayout(type, dimensions, layout);
+  if (flags->tf_xla_enable_dynamic_sizes) {
+    shape.set_expressions(expressions);
+  }
+  return shape;
 }
 
 absl::StatusOr<std::vector<int>> GetShapeLayoutVector(const xla::Shape& shape) {

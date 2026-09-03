@@ -295,6 +295,7 @@ cc_library(
         "//xla/mlir_hlo:all_passes",
         "//xla/mlir_hlo:transforms_passes",
         "//xla/service:all_reduce_promotion",
+        "//xla/service:dynamic_constant_rewriter",
         "//xla/service:all_to_all_decomposer",
         "//xla/service:batched_gather_scatter_normalizer",
         "//xla/service:batchnorm_expander",
@@ -597,6 +598,7 @@ cc_library(
         ":onednn_layer_norm",
         ":onednn_matmul",
         ":onednn_softmax",
+        ":runtime_batch_size_api",
         ":runtime_conv2d",
         ":runtime_conv2d_acl",
         ":runtime_conv2d_mkl",
@@ -689,6 +691,7 @@ cc_library(
         "//xla/service:custom_call_status_internal",
         "//xla/service:executable",
         "//xla/service:hlo_execution_profile",
+        "//xla/service:hlo_profile_printer",
         "//xla/service:hlo_profile_printer_data_cc",
         "//xla/service:hlo_value",
         "//xla/service:maybe_owning_device_memory",
@@ -1094,6 +1097,7 @@ cc_library(
     name = "cpu_runtime",
     srcs = [
         "cpu_runtime.cc",
+        "runtime_batch_size.cc",
         "xfeed_manager.cc",
     ],
     hdrs = [
@@ -1103,6 +1107,7 @@ cc_library(
     copts = runtime_copts(),
     deps = [
         ":cpu_executable_run_options",
+        ":runtime_batch_size_api",
         "//xla:executable_run_options",
         "//xla:shape_util",
         "//xla:types",
@@ -1122,6 +1127,7 @@ cc_library(
         "//xla/stream_executor:stream_executor_h",
         "//xla/tsl/concurrency:async_value",
         "//xla/tsl/platform:errors",
+        "//xla/tsl/platform:env_time",
         "//xla/tsl/platform:logging",
         "//xla/tsl/platform:status",
         "@com_google_absl//absl/algorithm:container",
@@ -1154,6 +1160,11 @@ cc_library(
         "@com_google_absl//absl/synchronization",  # build_cleaner: keep
         "@eigen_archive//:eigen3",
     ],
+)
+
+cc_library(
+    name = "runtime_batch_size_api",
+    hdrs = ["runtime_batch_size.h"],
 )
 
 cc_library(
@@ -1461,6 +1472,7 @@ xla_cc_test(
     tags = ["optonly"],
     deps = [
         ":cpu_runtime",
+        ":runtime_batch_size_api",
         ":runtime_custom_call_status",
         ":runtime_matmul",
         ":runtime_matmul_acl",

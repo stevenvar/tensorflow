@@ -334,6 +334,21 @@ llvm::BasicBlock* EmitReturnBlock(llvm::IRBuilderBase* b);
 void EmitEarlyReturn(llvm::Value* condition, llvm::IRBuilderBase* b,
                      llvm::BasicBlock* return_block = nullptr);
 
+llvm::Value* GetBatchDimByName(llvm::IRBuilderBase* b, int64_t multiplier = 1,
+                               int64_t offset = 0);
+
+llvm::Value* createDynamicGEP(llvm::IRBuilderBase* builder,
+                              llvm::Value* base_ptr,
+                              const std::vector<llvm::Value*>& indices,
+                              absl::Span<const int64_t> dims,
+                              absl::Span<const DExpr> expressions,
+                              llvm::Type* elem_type,
+                              const llvm::Twine& name = "");
+
+// Emits a complete symbolic expression. Unknown values are rejected before
+// any LLVM instructions are constructed, so a successful call is non-null.
+llvm::Value* EmitExpression(llvm::IRBuilderBase* b, const DExpr& expr);
+
 }  // namespace llvm_ir
 }  // namespace xla
 

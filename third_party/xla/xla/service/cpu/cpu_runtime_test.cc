@@ -26,6 +26,7 @@ limitations under the License.
 #include "xla/array2d.h"
 #include "xla/client/local_client.h"
 #include "xla/executable_run_options.h"
+#include "xla/service/cpu/runtime_batch_size.h"
 #include "xla/service/cpu/runtime_custom_call_status.h"
 #include "xla/service/cpu/runtime_matmul.h"
 #include "xla/service/cpu/runtime_matmul_acl.h"
@@ -40,6 +41,14 @@ namespace xla {
 namespace {
 
 class CpuRuntimeTest : public ::testing::Test {};
+
+TEST_F(CpuRuntimeTest, GetBatchSize) {
+  ExecutableRunOptions run_options;
+  run_options.set_batch_size(42);
+
+  EXPECT_EQ(__xla_cpu_runtime_GetBatchSize(&run_options), 42);
+  EXPECT_EQ(__xla_cpu_runtime_GetBatchSize(nullptr), 0);
+}
 
 template <typename T>
 std::unique_ptr<Array2D<float>> MaybeTransposeArray2D(const Array2D<T>& array,

@@ -40,6 +40,7 @@ limitations under the License.
 #include "absl/memory/memory.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
@@ -152,6 +153,7 @@ limitations under the License.
 #include "xla/map_util.h"
 #include "xla/mlir_hlo/transforms/passes.h"
 #include "xla/service/all_reduce_promotion.h"
+#include "xla/service/dynamic_constant_rewriter.h"
 #include "xla/service/all_to_all_decomposer.h"
 #include "xla/service/batched_gather_scatter_normalizer.h"
 #include "xla/service/batchnorm_expander.h"
@@ -450,6 +452,23 @@ void AddHloVerifier(HloPassPipeline* pipeline, HloVerifierOpts&& opts = {},
   }
 }
 
+bool DynamicConstantRewriterEnabled(const HloModule* module) {
+  const auto& extra_options =
+      module->config().debug_options().xla_backend_extra_options();
+  auto it = extra_options.find("xla_cpu_disable_dynamic_constant_rewriter");
+  if (it == extra_options.end()) {
+    return true;
+  }
+  bool disabled = false;
+  if (!absl::SimpleAtob(it->second, &disabled)) {
+    LOG(WARNING)
+        << "Ignoring invalid xla_cpu_disable_dynamic_constant_rewriter value: "
+        << it->second;
+    return true;
+  }
+  return !disabled;
+}
+
 std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
     absl::string_view name, HloModule* module, bool is_fusion_emitters) {
   // Run the following passes to a fixed point.
@@ -465,6 +484,11 @@ std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
       !module->config().debug_options().xla_cpu_enable_fast_min_max());
   options.set_supports_non_canonical_dots(false);
   options.set_executing_on_cpu(true);
+  options.set_enable_divide_by_broadcast_reciprocal(
+      module->config().debug_options().xla_cpu_enable_fast_math() &&
+      !module->config()
+           .debug_options()
+           .xla_cpu_fast_math_honor_division());
   pipeline->AddPass<AlgebraicSimplifier>(options);
   pipeline->AddPass<SortSimplifier>();
   pipeline->AddPass<HloDCE>();
@@ -475,7 +499,7 @@ std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
   }
 
   // Needs to happen after algebraic simplifier.
-  pipeline->AddPass<TreeReductionRewriter>();
+  // pipeline->AddPass<TreeReductionRewriter>();
 
   // BatchNormExpander can create zero-sized ops, so zero-sized HLO
   // elimination has to come after that pass.
@@ -495,6 +519,9 @@ std::unique_ptr<HloPassFix<HloPassPipeline>> CreateSimplificationPipeline(
       options::FoldAllConstants(module->config())
           ? HloConstantFolding::Level::kAggressive
           : HloConstantFolding::Level::kDefault);
+  if (DynamicConstantRewriterEnabled(module)) {
+    pipeline->AddPass<DynamicConstantRewriter>();
+  }
   pipeline->AddPass<ConditionalSimplifier>();
 
   return pipeline;
@@ -885,6 +912,11 @@ absl::Status CpuCompiler::RunHloPassesAfterLayoutAssn(
     options.set_minmax_propagate_nan(
         !module->config().debug_options().xla_cpu_enable_fast_min_max());
     options.set_executing_on_cpu(true);
+    options.set_enable_divide_by_broadcast_reciprocal(
+        module->config().debug_options().xla_cpu_enable_fast_math() &&
+        !module->config()
+             .debug_options()
+             .xla_cpu_fast_math_honor_division());
     pipeline.AddPass<AlgebraicSimplifier>(options);
     pipeline.AddPass<HloDCE>();
     pipeline.AddPass<HloCSE>(/*is_layout_sensitive=*/true);
@@ -1039,6 +1071,25 @@ absl::Status CreateHloProfilingArtifacts(
       (*hlo_profile_index_map)->computation_to_profile_idx();
 
   return absl::OkStatus();
+}
+
+bool ShouldCreateHloProfilingArtifacts(const HloModule& module) {
+  if (!module.config().hlo_profiling_enabled()) {
+    return false;
+  }
+
+  // The thunk runtime launches host kernels through XLA_CPU_KernelCallFrame,
+  // which currently has no profile-counters field. Emitting profiling loads and
+  // stores in this mode can make generated code dereference a null counter
+  // pointer at run time.
+  if (module.config().debug_options().xla_cpu_use_thunk_runtime()) {
+    LOG(WARNING) << "--xla_hlo_profile is not supported by XLA:CPU thunk "
+                    "runtime; disabling HLO profiling for module "
+                 << module.name();
+    return false;
+  }
+
+  return true;
 }
 
 }  // namespace
@@ -1429,7 +1480,7 @@ CpuCompiler::CompileCpuExecutable(std::unique_ptr<HloModule> module) {
       computation_to_profile_idx;
   std::unique_ptr<HloProfileIndexMap> hlo_profile_index_map;
   std::unique_ptr<HloProfilePrinterData> hlo_profile_printer_data;
-  if (module->config().hlo_profiling_enabled()) {
+  if (ShouldCreateHloProfilingArtifacts(*module)) {
     TF_RETURN_IF_ERROR(CreateHloProfilingArtifacts(
         *module, &instruction_to_profile_idx, &computation_to_profile_idx,
         &hlo_profile_index_map, &hlo_profile_printer_data));
@@ -1981,7 +2032,7 @@ CpuCompiler::CompileAheadOfTimeLegacy(
   std::unique_ptr<HloProfileIndexMap> hlo_profile_index_map;
   std::unique_ptr<HloProfilePrinterData> hlo_profile_printer_data;
 
-  if (module->config().hlo_profiling_enabled()) {
+  if (ShouldCreateHloProfilingArtifacts(*module)) {
     TF_RETURN_IF_ERROR(CreateHloProfilingArtifacts(
         *module, &instruction_to_profile_idx, &computation_to_profile_idx,
         &hlo_profile_index_map, &hlo_profile_printer_data));
@@ -2139,7 +2190,7 @@ CpuCompiler::CompileAheadOfTimeThunks(
       computation_to_profile_idx;
   std::unique_ptr<HloProfileIndexMap> hlo_profile_index_map;
   std::unique_ptr<HloProfilePrinterData> hlo_profile_printer_data;
-  if (module->config().hlo_profiling_enabled()) {
+  if (ShouldCreateHloProfilingArtifacts(*module)) {
     TF_RETURN_IF_ERROR(CreateHloProfilingArtifacts(
         *module, &instruction_to_profile_idx, &computation_to_profile_idx,
         &hlo_profile_index_map, &hlo_profile_printer_data));
@@ -2388,7 +2439,7 @@ CpuCompiler::CompileAheadOfTimeThunks(
       cpu_executable->thunks().thunk_sequence();
 
   std::unique_ptr<HloProfilePrinterData> executable_hlo_profile_printer_data =
-      cpu_executable->module().config().hlo_profiling_enabled()
+      cpu_executable->hlo_profiling_enabled()
           ? std::make_unique<HloProfilePrinterData>(
                 cpu_executable->hlo_profile_printer_data())
           : nullptr;

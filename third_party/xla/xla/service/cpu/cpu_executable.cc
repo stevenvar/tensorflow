@@ -54,6 +54,7 @@ limitations under the License.
 #include "xla/service/custom_call_status_internal.h"
 #include "xla/service/executable.h"
 #include "xla/service/hlo_execution_profile.h"
+#include "xla/service/hlo_profile_printer.h"
 #include "xla/service/hlo_profile_printer_data.pb.h"
 #include "xla/service/hlo_value.h"
 #include "xla/service/maybe_owning_device_memory.h"
@@ -75,6 +76,20 @@ limitations under the License.
 
 namespace xla {
 namespace cpu {
+
+namespace {
+
+float GetClockRateGhz(const ExecutableRunOptions* run_options) {
+  if (run_options->stream() == nullptr ||
+      run_options->stream()->parent() == nullptr) {
+    return 1.0f;
+  }
+  float clock_rate_ghz =
+      run_options->stream()->parent()->GetDeviceDescription().clock_rate_ghz();
+  return clock_rate_ghz > 0 ? clock_rate_ghz : 1.0f;
+}
+
+}  // namespace
 
 absl::StatusOr<std::unique_ptr<CpuExecutable>> CpuExecutable::Create(
     std::unique_ptr<FunctionLibrary> function_library,
@@ -163,14 +178,34 @@ static absl::StatusOr<MaybeOwningDeviceMemory> MemoryForAllocation(
     se::DeviceMemoryAllocator* memory_allocator, int device_ordinal) {
   VLOG(3) << allocation.ToString();
   if (allocation.is_entry_computation_parameter()) {
-    se::DeviceMemoryBase out = arguments[allocation.parameter_number()]
+    se::DeviceMemoryBase param_mem = arguments[allocation.parameter_number()]
                                    .Buffer(allocation.param_shape_index())
                                    .AsDeviceMemoryBase();
-    CHECK_LE(allocation.size(), out.size())
-        << "Size mismatch on param " << allocation.parameter_number()
-        << " at shape index " << allocation.param_shape_index().ToString();
-    VLOG(3) << "allocation is a parameter";
-    return MaybeOwningDeviceMemory{out};
+
+    const int64_t compiled_bytes = allocation.size();
+    const int64_t runtime_bytes = param_mem.size();
+
+    if(runtime_bytes == 0){
+      return MaybeOwningDeviceMemory{param_mem};
+    }
+
+    if (compiled_bytes <= runtime_bytes) {
+      return MaybeOwningDeviceMemory{param_mem};
+    }
+
+    //padded owns that device memory
+    TF_ASSIGN_OR_RETURN(
+        se::OwningDeviceMemory padded,
+        memory_allocator->Allocate(device_ordinal, compiled_bytes));
+
+    void* dst = padded->opaque();
+    void* src = param_mem.opaque();
+
+    std::memcpy(dst, src, runtime_bytes);
+    //Fill rest of them with zeros.
+    std::memset(static_cast<char*>(dst) + runtime_bytes, 0, compiled_bytes - runtime_bytes);
+    return MaybeOwningDeviceMemory{std::move(padded)};
+
   } else if (allocation.is_constant()) {
     VLOG(3) << "allocation is a constant";
     if (allocation.index() < constants.size()) {
@@ -226,8 +261,16 @@ absl::Status CpuExecutable::ExecuteComputeFunction(
     absl::Span<MaybeOwningDeviceMemory const> buffers) {
   uint64_t start_micros = tsl::Env::Default()->NowMicros();
 
-  size_t profile_counters_size = 0;
+  std::vector<int64_t> profile_counter_storage;
+  if (hlo_profiling_enabled()) {
+    profile_counter_storage.assign(
+        hlo_profile_printer_data().profile_counters_size(), 0);
+  }
+  size_t profile_counters_size = profile_counter_storage.size();
   int64_t* profile_counters = nullptr;
+  if (!profile_counter_storage.empty()) {
+    profile_counters = profile_counter_storage.data();
+  }
 
   // Call the computation function following the calling convention. See the
   // definition of 'ComputeFunctionType' for the details of the calling
@@ -266,6 +309,15 @@ absl::Status CpuExecutable::ExecuteComputeFunction(
   compute_function_(nullptr, run_options, nullptr, buffer_pointers.data(),
                     &status, profile_counters);
   record_profile();
+  if (profile_counters != nullptr) {
+    std::string hlo_profile =
+        PrintHloProfile(hlo_profile_printer_data(), profile_counters,
+                        GetClockRateGhz(run_options));
+    if (!hlo_profile.empty()) {
+      LOG(INFO) << "XLA:CPU HLO profile for " << module().name() << "\n"
+                << hlo_profile;
+    }
+  }
   std::optional<absl::string_view> error_message =
       CustomCallStatusGetMessage(&status);
   if (error_message) {
@@ -318,7 +370,8 @@ absl::Status CpuExecutable::ExecuteThunks(
       intra_op_thread_pool,
       &task_runner,
       &collective_execute_params,
-      &custom_call_execute_params};
+      &custom_call_execute_params,
+      run_options->batch_size()};
 
   auto executed_event = thunks_->Execute(execute_params);
   tsl::BlockUntilReady(executed_event);
@@ -339,13 +392,15 @@ absl::StatusOr<ExecutionOutput> CpuExecutable::CreateResultShapedBuffer(
     absl::Span<MaybeOwningDeviceMemory> buffers,
     absl::Span<ExecutionInput> arguments) {
   se::Stream* stream = run_options->stream();
-  ExecutionOutput result(/*on_device_shape=*/result_shape(),
-                         run_options->allocator(),
-                         stream->parent()->device_ordinal());
   const HloInputOutputAliasConfig& input_output_alias =
       module().input_output_alias_config();
   HloInstruction* root = hlo_module_->entry_computation()->root_instruction();
   const Shape& root_shape = root->shape();
+  // Use root_shape to initialize ExecutionOuput as the batch multiplier info
+  // is only attached the ROOT
+  ExecutionOutput result(/*on_device_shape=*/root_shape, //result_shape(),
+                         run_options->allocator(),
+                         stream->parent()->device_ordinal());
 
   // Move se::OwningDeviceMemory values which contain the array(s) of the result
   // into the respective location in ScopedShapedBuffer which is returned to the

@@ -16,6 +16,8 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_TF2XLA_XLA_ARGUMENT_H_
 #define TENSORFLOW_COMPILER_TF2XLA_XLA_ARGUMENT_H_
 
+#include <vector>
+
 #include "absl/types/optional.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/host_compute_metadata.pb.h"
@@ -23,6 +25,7 @@ limitations under the License.
 #include "xla/hlo/builder/xla_builder.h"
 #include "xla/hlo/ir/hlo_sharding.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.pb.h"
 
 namespace tensorflow {
 
@@ -76,6 +79,10 @@ struct XlaArgument {
   // host-memory tensor.
   Tensor constant_value;
 
+  // Symbolic expressions for each element of a compile-time constant.
+  // This is only used for shape-like integer tensors crossing cluster
+  // boundaries.
+  std::vector<xla::ExpressionProto> constant_value_expressions;
   // The upper bounds of the value.
   std::optional<Tensor> value_bound;
 
@@ -116,6 +123,7 @@ struct XlaArgument {
 
   // Returns the dimension sizes for either TensorShape or xla::Shape.
   std::vector<int64_t> DimensionSizes() const;
+  std::vector<xla::DExpr> DimensionExpressions() const;
   absl::InlinedVector<int64_t, 4> DimensionSizesAsInlinedVector() const;
 
   // Returns the human-readable string for either TensorShape or xla::Shape.

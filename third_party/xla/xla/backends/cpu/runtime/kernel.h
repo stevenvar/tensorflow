@@ -73,13 +73,25 @@ class Kernel {
 
   // Calls the kernel once in the caller thread for a thread dim (0,0,0).
   // This is a fast path for small host kernels that have just one thread.
-  absl::Status CallOnce(absl::Span<const XLA_CPU_KernelArg> args) const;
+  absl::Status CallOnce(absl::Span<const XLA_CPU_KernelArg> args) const {
+    return CallOnce(args, 0);
+  }
+  absl::Status CallOnce(absl::Span<const XLA_CPU_KernelArg> args,
+                        size_t batch_size) const;
 
   // Launches the kernel on the current thread by iterating over all threads in
   // `thread_dims` and calling the kernel function.
   absl::Status Launch(const ThreadDim& thread_dims,
-                      absl::Span<const DeviceMemoryBase> buffers) const;
+                      absl::Span<const DeviceMemoryBase> buffers) const {
+    return Launch(thread_dims, 0, buffers);
+  }
   absl::Status Launch(const ThreadDim& thread_dims,
+                      absl::Span<const XLA_CPU_KernelArg> args) const {
+    return Launch(thread_dims, 0, args);
+  }
+  absl::Status Launch(const ThreadDim& thread_dims, size_t batch_size,
+                      absl::Span<const DeviceMemoryBase> buffers) const;
+  absl::Status Launch(const ThreadDim& thread_dims, size_t batch_size,
                       absl::Span<const XLA_CPU_KernelArg> args) const;
 
   // Launches the kernel by iterating over all threads in `thread_dims` and
@@ -90,9 +102,21 @@ class Kernel {
   // get the number of tasks that are expected to be completed.
   tsl::AsyncValueRef<LaunchEvent> Launch(
       const ThreadDim& thread_dims, absl::Span<const DeviceMemoryBase> buffers,
-      const Eigen::ThreadPoolDevice* device) const;
+      const Eigen::ThreadPoolDevice* device) const {
+    return Launch(thread_dims, 0, buffers, device);
+  }
   tsl::AsyncValueRef<LaunchEvent> Launch(
       const ThreadDim& thread_dims, absl::Span<const XLA_CPU_KernelArg> args,
+      const Eigen::ThreadPoolDevice* device) const {
+    return Launch(thread_dims, 0, args, device);
+  }
+  tsl::AsyncValueRef<LaunchEvent> Launch(
+      const ThreadDim& thread_dims, size_t batch_size,
+      absl::Span<const DeviceMemoryBase> buffers,
+      const Eigen::ThreadPoolDevice* device) const;
+  tsl::AsyncValueRef<LaunchEvent> Launch(
+      const ThreadDim& thread_dims, size_t batch_size,
+      absl::Span<const XLA_CPU_KernelArg> args,
       const Eigen::ThreadPoolDevice* device) const;
 
   // For host platform, we assume that a core is a thread, and we can run at
@@ -123,12 +147,13 @@ class Kernel {
 };
 
 inline ABSL_ATTRIBUTE_ALWAYS_INLINE absl::Status Kernel::CallOnce(
-    absl::Span<const XLA_CPU_KernelArg> args) const {
+    absl::Span<const XLA_CPU_KernelArg> args,
+    size_t batch_size) const {
   constexpr XLA_CPU_KernelThreadDim kernel_thread_dims = {1, 1, 1};
   constexpr XLA_CPU_KernelThread kernel_thread = {1, 1, 1};
 
   XLA_CPU_KernelCallFrame call_frame = {&kernel_thread_dims, &kernel_thread,
-                                        args.size(), args.data()};
+                                        args.size(), args.data(), batch_size};
 
   XLA_CPU_KernelError* error = (*kernel_)(&call_frame);
 

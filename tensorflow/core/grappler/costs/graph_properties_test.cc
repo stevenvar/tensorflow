@@ -2010,9 +2010,9 @@ TEST_F(GraphPropertiesTest, SymbolicShapes) {
   const auto shape_c = properties.GetOutputProperties("c").at(0).shape();
   EXPECT_EQ(2, shape_a.dim_size());
   EXPECT_EQ(shape_a.dim_size(), shape_c.dim_size());
-  EXPECT_EQ(-1, shape_a.dim(0).size());
+  EXPECT_LT(shape_a.dim(0).size(), -1);
   EXPECT_TRUE(ShapeDimExprEqual(shape_a, 0, shape_c, 0));
-  EXPECT_EQ(-1, shape_a.dim(1).size());
+  EXPECT_LT(shape_a.dim(1).size(), -1);
   EXPECT_TRUE(ShapeDimExprEqual(shape_a, 1, shape_c, 1));
 
   PartialTensorShape shape(shape_a);
@@ -2023,7 +2023,8 @@ TEST_F(GraphPropertiesTest, SymbolicShapes) {
   const auto shape_d = properties.GetOutputProperties("d").at(0).shape();
   EXPECT_EQ(1, shape_b.dim_size());
   EXPECT_EQ(shape_b.dim_size(), shape_d.dim_size());
-  EXPECT_EQ(-1, shape_b.dim(0).size());
+  EXPECT_LT(shape_b.dim(0).size(), -1);
+  EXPECT_NE(shape_a.dim(0).size(), shape_b.dim(0).size());
   EXPECT_FALSE(ShapeDimExprEqual(shape_a, 0, shape_b, 0));
   EXPECT_TRUE(ShapeDimExprEqual(shape_b, 0, shape_d, 0));
 
@@ -2389,6 +2390,7 @@ TEST_F(GraphPropertiesTest, SizeContentsPropagateToFillOutput) {
 
   ASSERT_EQ(1, inferred_fill_shape.dim_size());
   ASSERT_EQ(2, inferred_input_shape.expressions_size());
+  EXPECT_EQ(-1, inferred_input_shape.dim(0).size());
   DimExpr expected =
       DimExprFromProto(inferred_input_shape.expressions(0)) * 24;
   EXPECT_TRUE(DimExprEqual(expected, ShapeDimExpr(inferred_fill_shape, 0)));

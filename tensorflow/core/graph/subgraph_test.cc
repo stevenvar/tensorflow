@@ -199,6 +199,33 @@ TEST_F(SubgraphTest, FedOutputs1_FunctionConvention) {
   ExpectNodes("W1,W2,_arg_input_1_0,t1,t2");
 }
 
+TEST_F(SubgraphTest, FedPlaceholderPreservesShape_FunctionConvention) {
+  ExpectOK(
+      "node { name: 'input' op: 'Placeholder'"
+      "  attr { key: 'dtype' value { type: DT_FLOAT } }"
+      "  attr { key: 'shape' value { shape {"
+      "    dim { size: -1 } dim { size: 224 }"
+      "    dim { size: 224 } dim { size: 3 }"
+      "  } } }"
+      "}"
+      "node { name: 'output' op: 'TestRelu' input: 'input' }");
+
+  EXPECT_EQ("OK", Subgraph("input:0", "", "output",
+                           true /* use_function_convention */));
+
+  Node* arg = FindNode("_arg_input_0_0");
+  ASSERT_NE(arg, nullptr);
+  const AttrValue* output_shapes = arg->attrs().Find("_output_shapes");
+  ASSERT_NE(output_shapes, nullptr);
+  ASSERT_EQ(output_shapes->list().shape_size(), 1);
+  const TensorShapeProto& shape = output_shapes->list().shape(0);
+  ASSERT_EQ(shape.dim_size(), 4);
+  EXPECT_EQ(shape.dim(0).size(), -1);
+  EXPECT_EQ(shape.dim(1).size(), 224);
+  EXPECT_EQ(shape.dim(2).size(), 224);
+  EXPECT_EQ(shape.dim(3).size(), 3);
+}
+
 TEST_F(SubgraphTest, FedRefNode) {
   ExpectOK(
       "node { name: 'W1' op: 'TestParams' }"

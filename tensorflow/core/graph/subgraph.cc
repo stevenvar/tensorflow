@@ -79,19 +79,34 @@ absl::Status FeedInputs(
     TF_RETURN_IF_ERROR(
         feed_rewrites[i]->AddNode(g, {n, id.second}, &feed_node));
 
-    // Set an attribute in _Arg node to indicate it has a batch dimension
+    // Preserve the selected feed tensor's shape on its single-output
+    // replacement node. Placeholders carry this information in "shape",
+    // while inferred shapes are stored in "_output_shapes".
     auto node_attrs = n->attrs();
-    const AttrValue* shape_attr = node_attrs.FindByString("_output_shapes");
-    if (shape_attr && shape_attr->has_list()) {
-      const TensorShapeProto& shape = shape_attr->list().shape(0);
-      for (int i = 0; i < shape.dim_size(); ++i) {
-        if (shape.dim(i).size() == -1) {
+    const TensorShapeProto* feed_shape = nullptr;
+    const AttrValue* output_shapes =
+        node_attrs.FindByString("_output_shapes");
+    if (output_shapes && output_shapes->has_list() &&
+        id.second < output_shapes->list().shape_size()) {
+      feed_shape = &output_shapes->list().shape(id.second);
+    } else if (id.second == 0) {
+      const AttrValue* shape = node_attrs.FindByString("shape");
+      if (shape && shape->has_shape()) {
+        feed_shape = &shape->shape();
+      }
+    }
+
+    if (feed_shape != nullptr) {
+      for (int i = 0; i < feed_shape->dim_size(); ++i) {
+        if (feed_shape->dim(i).size() == -1) {
           feed_node->AddAttr("_dynamic_dim", i);
           break;
         }
       }
-      // Keep _output_shapes for further runs of shape inference
-      feed_node->AddAttr("_output_shapes", *shape_attr);
+
+      AttrValue feed_output_shapes;
+      *feed_output_shapes.mutable_list()->add_shape() = *feed_shape;
+      feed_node->AddAttr("_output_shapes", feed_output_shapes);
     }
     // Update name_index
     (*name_index)[feed_node->name()] = feed_node;

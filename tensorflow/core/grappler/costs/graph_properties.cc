@@ -2518,7 +2518,8 @@ class SymbolicShapeRefiner {
 // dims, and consolidate the information globally.
 class SymbolicShapeManager {
  public:
-  SymbolicShapeManager() {}
+  explicit SymbolicShapeManager(bool enable_dynamic_value_inference)
+      : enable_dynamic_value_inference_(enable_dynamic_value_inference) {}
 
   absl::Status Merge(ShapeHandle s1, ShapeHandle s2) {
     if (!s1.IsSet() || !s2.IsSet()) {
@@ -2555,7 +2556,11 @@ class SymbolicShapeManager {
         int64_t d = dims_.GetMergedValue(dim);
         TensorShapeProto* output_shape = properties->mutable_shape();
         auto* out_dim = output_shape->add_dim();
-        out_dim->set_size(d < 0 ? -1 : d);
+        // Preserve Grappler's symbolic dimension IDs for its normal inference
+        // mode. Existing optimizers use those IDs to distinguish unrelated
+        // unknown dimensions. Dynamic value inference stores that identity in
+        // the expression metadata instead and uses TensorFlow's -1 sentinel.
+        out_dim->set_size(enable_dynamic_value_inference_ && d < 0 ? -1 : d);
         void* root = dims_.RootId(dim);
         DimExpr* expr = nullptr;
         if (auto it = dim_root_expr_.find(root); it != dim_root_expr_.end()) {
@@ -2737,6 +2742,7 @@ class SymbolicShapeManager {
   // Map from union-find root pointer to the best expression for that set.
   absl::flat_hash_map<void*, DimExpr*> dim_root_expr_;
   DisjointSet<shape_inference::DimensionHandle> dims_;
+  const bool enable_dynamic_value_inference_;
 };
 
 // Checks whether there is any conflict in merged shapes and dims in
@@ -3237,7 +3243,7 @@ absl::Status GraphProperties::InferStatically(
 
   // Track shapes globally across the graph.
   std::unique_ptr<SymbolicShapeManager> shape_manager =
-      std::make_unique<SymbolicShapeManager>();
+      std::make_unique<SymbolicShapeManager>(enable_dynamic_value_inference);
   bool found_error = false;
   for (const NodeDef& node : item_.graph.node()) {
     auto node_ctx = refiner->GetContext(&node);
@@ -3265,7 +3271,8 @@ absl::Status GraphProperties::InferStatically(
     if (found_error) {
       // The shapes aren't consistent, we can't infer safely: discard all the
       // information discovered so far.
-      shape_manager = std::make_unique<SymbolicShapeManager>();
+      shape_manager =
+          std::make_unique<SymbolicShapeManager>(enable_dynamic_value_inference);
       break;
     }
   }

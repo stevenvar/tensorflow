@@ -133,6 +133,35 @@ tsl::AsyncValueRef<DotThunk::ExecuteEvent> DotThunk::Execute(
   int64_t n = dot_canonical_dims_.n;
   int64_t k = dot_canonical_dims_.k;
 
+  const int64_t num_batch_dims =
+      dot_dimensions_.lhs_batch_dimensions_size();
+  const int64_t lhs_contracting_dim =
+      dot_dimensions_.lhs_contracting_dimensions(0) - num_batch_dims;
+  const int64_t rhs_contracting_dim =
+      dot_dimensions_.rhs_contracting_dimensions(0) - num_batch_dims;
+
+  if (dot_shape_.lhs_matmul_shape.dimensions().size() > 1) {
+    TF_ASSIGN_OR_RETURN(
+        m, ResolveDimension(dot_shape_.lhs_matmul_shape,
+                            1 - lhs_contracting_dim, params.batch_size));
+  }
+  TF_ASSIGN_OR_RETURN(
+      k, ResolveDimension(dot_shape_.lhs_matmul_shape, lhs_contracting_dim,
+                          params.batch_size));
+  if (dot_shape_.rhs_matmul_shape.dimensions().size() > 1) {
+    TF_ASSIGN_OR_RETURN(
+        n, ResolveDimension(dot_shape_.rhs_matmul_shape,
+                            1 - rhs_contracting_dim, params.batch_size));
+  }
+
+  int64_t batch_size = 1;
+  for (int64_t dim = 0; dim < num_batch_dims; ++dim) {
+    TF_ASSIGN_OR_RETURN(
+        int64_t size,
+        ResolveDimension(dot_slices_.out_shape, dim, params.batch_size));
+    batch_size *= size;
+  }
+
   // Decide if a transpose is required based on an XOR of the canonical and
   // column major flags.
   bool transpose_lhs = (dot_canonical_dims_.lhs_canonical !=
@@ -151,6 +180,8 @@ tsl::AsyncValueRef<DotThunk::ExecuteEvent> DotThunk::Execute(
   PrimitiveType element_type = dot_shape_.lhs_matmul_shape.element_type();
   int64_t byte_width = primitive_util::ByteWidth(element_type);
 
+  // Symbolic tensors are packed using logical dimensions. Padded bounds
+  // reserve capacity; they do not insert gaps between runtime matrices.
   int64_t lhs_stride = m * k * byte_width;
   int64_t rhs_stride = k * n * byte_width;
   int64_t out_stride = m * n * byte_width;
@@ -159,10 +190,10 @@ tsl::AsyncValueRef<DotThunk::ExecuteEvent> DotThunk::Execute(
     return static_cast<uint8_t*>(ptr) + stride * index;
   };
 
-  tsl::CountDownAsyncValueRef<ExecuteEvent> state(dot_shape_.batch_size);
+  tsl::CountDownAsyncValueRef<ExecuteEvent> state(batch_size);
 
   auto dispatch = [&](auto type_tag) {
-    for (int64_t i = 0; i < dot_shape_.batch_size; ++i) {
+    for (int64_t i = 0; i < batch_size; ++i) {
       TypedMatMul<decltype(type_tag)>(
           params.intra_op_threadpool, batch_ptr(out, out_stride, i),
           batch_ptr(lhs, lhs_stride, i), batch_ptr(rhs, rhs_stride, i), m, n, k,

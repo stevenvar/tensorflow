@@ -175,6 +175,19 @@ class ConvolutionThunkBuilder {
     options_ = std::move(options);
   }
 
+  void SetBatchExpression(DExpr expression) {
+    batch_expression_ = std::move(expression);
+  }
+
+  void FillOutput(ElementType value) {
+    auto output_data = output_.data<ElementType>();
+    absl::c_fill(output_data, value);
+  }
+
+  absl::Span<const ElementType> output_data() const {
+    return output_.data<ElementType>();
+  }
+
   BufferAllocations GetAllocations() {
     return CreateBufferAllocations(input_, kernel_, output_);
   }
@@ -183,9 +196,15 @@ class ConvolutionThunkBuilder {
     auto [input_slice, kernel_slice, output_slice] =
         CreateBufferAllocationSlice(*input_alloc_, *kernel_alloc_,
                                     *output_alloc_);
+    Shape input_shape = input_.shape();
+    Shape output_shape = output_.shape();
+    if (batch_expression_) {
+      input_shape.set_expression(0, batch_expression_);
+      output_shape.set_expression(0, batch_expression_);
+    }
     return ConvolutionThunk::Create(
-        {"convolution"}, options_, input_slice, input_.shape(), kernel_slice,
-        kernel_.shape(), output_slice, output_.shape(), dnums_, window_,
+        {"convolution"}, options_, input_slice, input_shape, kernel_slice,
+        kernel_.shape(), output_slice, output_shape, dnums_, window_,
         /*feature_group_count=*/1);
   }
 
@@ -202,6 +221,7 @@ class ConvolutionThunkBuilder {
   std::optional<BufferAllocation> output_alloc_;
 
   ConvolutionThunk::Options options_ = MakeConvolutionOptions();
+  DExpr batch_expression_;
 };
 
 }  // namespace xla::cpu

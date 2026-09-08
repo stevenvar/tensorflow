@@ -6064,6 +6064,51 @@ TEST_F(AlgebraicSimplifierTest, ConvertConvToMatmul) {
   EXPECT_EQ("NO_CHANGE", build_and_simplify());
 }
 
+TEST_F(AlgebraicSimplifierTest,
+       ConvertDynamicConvToMatmulPreservesFlattenedExpression) {
+  Shape input_shape = ShapeUtil::MakeShapeWithDescendingLayout(
+      F32, {10, 2, 2, 3},
+      {DExpr::Var(1), DExpr::Const(2), DExpr::Const(2), DExpr::Const(3)});
+  Shape filter_shape = ShapeUtil::MakeShape(F32, {1, 1, 3, 5});
+  ConvolutionDimensionNumbers dnums =
+      ParseConvolutionDimensionNumbers("b01f_01io->b01f").value();
+  Window window = ParseWindow("size=1x1").value();
+  TF_ASSERT_OK_AND_ASSIGN(
+      Shape output_shape,
+      ShapeInference::InferConvolveShape(
+          input_shape, filter_shape, /*feature_group_count=*/1,
+          /*batch_group_count=*/1, window, dnums,
+          /*preferred_element_type=*/std::nullopt));
+
+  HloComputation::Builder builder(TestName());
+  HloInstruction* input = builder.AddInstruction(
+      HloInstruction::CreateParameter(0, input_shape, "input"));
+  HloInstruction* filter = builder.AddInstruction(
+      HloInstruction::CreateParameter(1, filter_shape, "filter"));
+  builder.AddInstruction(HloInstruction::CreateConvolve(
+      output_shape, input, filter, /*feature_group_count=*/1,
+      /*batch_group_count=*/1, window, dnums, DefaultPrecisionConfig(2)));
+
+  auto module = CreateNewVerifiedModule();
+  HloComputation* computation =
+      module->AddEntryComputationWithLayouts(builder.Build());
+  AlgebraicSimplifierOptions options;
+  options.set_is_layout_sensitive(true);
+  ASSERT_TRUE(AlgebraicSimplifier(options).Run(module.get()).value());
+
+  HloInstruction* root = computation->root_instruction();
+  ASSERT_EQ(root->opcode(), HloOpcode::kBitcast);
+  HloInstruction* dot = root->mutable_operand(0);
+  ASSERT_EQ(dot->opcode(), HloOpcode::kDot);
+  const DExpr& flattened = dot->operand(0)->shape().expressions(0);
+  ASSERT_TRUE(flattened->is_dynamic());
+  DExpr evaluated =
+      flattened.substitute(1, DExpr::Const(3)).simplify();
+  ASSERT_TRUE(evaluated->is_constant());
+  EXPECT_EQ(evaluated->get_val(), 12);
+  EXPECT_TRUE(DynExpr::equal(dot->shape().expressions(0), flattened));
+}
+
 struct ConvTestOptions {
   int input_width = 4;
   int input_height = 2;

@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "xla/backends/cpu/runtime/dot_thunk.h"
 
+#include <algorithm>
 #include <tuple>
 
 #include "absl/strings/str_cat.h"
@@ -23,6 +24,7 @@ limitations under the License.
 #include "xla/backends/cpu/runtime/thunk_testlib.h"
 #include "xla/layout.h"
 #include "xla/layout_util.h"
+#include "xla/literal.h"
 #include "xla/literal_util.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
@@ -142,6 +144,132 @@ TEST(DotThunkTest, ThreadedDot) {
       shape, [&](auto) { return shape.dimensions(0); });
   EXPECT_EQ(out, expected);
 }
+
+TEST(DotThunkTest, UsesLogicalDynamicDimension) {
+  auto lhs = LiteralUtil::CreateR2<float>(
+      {{2.0f}, {2.0f}, {2.0f}, {2.0f}});
+  auto rhs = LiteralUtil::CreateR2<float>({{3.0f}});
+  auto out = LiteralUtil::CreateR2<float>(
+      {{-1.0f}, {-1.0f}, {-1.0f}, {-1.0f}});
+
+  BufferAllocations allocations = CreateBufferAllocations(lhs, rhs, out);
+  auto [lhs_alloc, rhs_alloc, out_alloc] =
+      CreateBufferAllocation(lhs, rhs, out);
+  auto [lhs_slice, rhs_slice, out_slice] =
+      CreateBufferAllocationSlice(lhs_alloc, rhs_alloc, out_alloc);
+
+  Shape lhs_shape = lhs.shape();
+  lhs_shape.set_expression(0, DExpr::Var(1));
+  Shape out_shape = out.shape();
+  out_shape.set_expression(0, DExpr::Var(1));
+
+  DotDimensionNumbers dot_dimensions;
+  dot_dimensions.add_lhs_contracting_dimensions(1);
+  dot_dimensions.add_rhs_contracting_dimensions(0);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto thunk,
+      DotThunk::Create({"dot"}, dot_dimensions, lhs_slice, lhs_shape,
+                       rhs_slice, rhs.shape(), out_slice, out_shape));
+
+  Thunk::ExecuteParams params;
+  params.buffer_allocations = &allocations;
+  params.batch_size = 2;
+  auto execute_event = thunk->Execute(params);
+  tsl::BlockUntilReady(execute_event);
+  ASSERT_FALSE(execute_event.IsError()) << execute_event.GetError();
+
+  EXPECT_EQ(out, LiteralUtil::CreateR2<float>(
+                     {{6.0f}, {6.0f}, {-1.0f}, {-1.0f}}));
+}
+
+class DotThunkDynamicStrideTest
+    : public testing::TestWithParam<std::tuple<int, bool>> {};
+
+TEST_P(DotThunkDynamicStrideTest, UsesLogicalMatrixStrides) {
+  const auto [dynamic_dimension, column_major] = GetParam();
+  Shape shape = ShapeUtil::MakeShape(F32, {2, 4, 4});
+  *shape.mutable_layout() = column_major ? LayoutUtil::MakeLayout({1, 2, 0})
+                                       : LayoutUtil::MakeLayout({2, 1, 0});
+  auto lhs = Literal::CreateFromShape(shape);
+  auto rhs = Literal::CreateFromShape(shape);
+  auto out = Literal::CreateFromShape(shape);
+
+  BufferAllocations allocations = CreateBufferAllocations(lhs, rhs, out);
+  auto [lhs_alloc, rhs_alloc, out_alloc] =
+      CreateBufferAllocation(lhs, rhs, out);
+  auto [lhs_slice, rhs_slice, out_slice] =
+      CreateBufferAllocationSlice(lhs_alloc, rhs_alloc, out_alloc);
+
+  // Vary m, n, or k while keeping capacity for two 4-by-4 matrices.
+  Shape lhs_shape = shape;
+  Shape rhs_shape = shape;
+  Shape out_shape = shape;
+  if (dynamic_dimension == 0) {
+    lhs_shape.set_expression(1, DExpr::Var(1));
+    out_shape.set_expression(1, DExpr::Var(1));
+  } else if (dynamic_dimension == 1) {
+    rhs_shape.set_expression(2, DExpr::Var(1));
+    out_shape.set_expression(2, DExpr::Var(1));
+  } else {
+    lhs_shape.set_expression(2, DExpr::Var(1));
+    rhs_shape.set_expression(1, DExpr::Var(1));
+  }
+
+  DotDimensionNumbers dot_dimensions;
+  dot_dimensions.add_lhs_batch_dimensions(0);
+  dot_dimensions.add_rhs_batch_dimensions(0);
+  dot_dimensions.add_lhs_contracting_dimensions(2);
+  dot_dimensions.add_rhs_contracting_dimensions(1);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto thunk,
+      DotThunk::Create({"dot"}, dot_dimensions, lhs_slice, lhs_shape,
+                       rhs_slice, rhs_shape, out_slice, out_shape));
+
+  Thunk::ExecuteParams params;
+  params.buffer_allocations = &allocations;
+
+  // Reuse the thunk with compact runtime matrices. Padding follows both
+  // matrices, rather than separating them as the static bound would suggest.
+  auto fill_batches = [](auto data, int64_t stride, float first, float second) {
+    std::fill(data.begin(), data.end(), -1000.0f);
+    std::fill_n(data.begin(), stride, first);
+    std::fill_n(data.begin() + stride, stride, second);
+  };
+  for (int64_t runtime_size : {2, 4, 1}) {
+    SCOPED_TRACE(runtime_size);
+    const int64_t m = dynamic_dimension == 0 ? runtime_size : 4;
+    const int64_t n = dynamic_dimension == 1 ? runtime_size : 4;
+    const int64_t k = dynamic_dimension == 2 ? runtime_size : 4;
+    fill_batches(lhs.data<float>(), m * k, 2.0f, 4.0f);
+    fill_batches(rhs.data<float>(), k * n, 3.0f, 5.0f);
+    auto output = out.data<float>();
+    std::fill(output.begin(), output.end(), -1.0f);
+
+    params.batch_size = runtime_size;
+    auto execute_event = thunk->Execute(params);
+    tsl::BlockUntilReady(execute_event);
+    ASSERT_FALSE(execute_event.IsError()) << execute_event.GetError();
+
+    // Distinct batch values expose wrong offsets. Spare output storage must
+    // remain untouched, even when the allocation is reused for a smaller size.
+    for (int64_t i = 0; i < output.size(); ++i) {
+      const float expected = i < m * n         ? 6.0f * k
+                             : i < 2 * m * n ? 20.0f * k
+                                             : -1.0f;
+      EXPECT_EQ(output[i], expected) << "element=" << i;
+    }
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    DotThunkTest, DotThunkDynamicStrideTest,
+    testing::Combine(testing::Values(0, 1, 2), testing::Bool()),
+    [](const testing::TestParamInfo<DotThunkDynamicStrideTest::ParamType>& info) {
+      const int dimension = std::get<0>(info.param);
+      const bool column_major = std::get<1>(info.param);
+      return absl::StrCat(dimension == 0 ? "M" : dimension == 1 ? "N" : "K",
+                         column_major ? "ColumnMajor" : "RowMajor");
+    });
 
 INSTANTIATE_TEST_SUITE_P(
     DotThunkLayoutTest, DotThunkLayoutTest,

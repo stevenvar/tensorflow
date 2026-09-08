@@ -35,6 +35,7 @@ limitations under the License.
 #include "xla/ffi/execution_context.h"
 #include "xla/runtime/buffer_use.h"
 #include "xla/runtime/resource_use.h"
+#include "xla/shape.h"
 #include "xla/service/cpu/xfeed_manager.h"
 #include "xla/service/global_device_id.h"
 #include "xla/tsl/concurrency/async_value_ref.h"
@@ -47,6 +48,11 @@ struct ThreadPoolDevice;
 }  // namespace Eigen
 
 namespace xla::cpu {
+
+// Evaluates a shape dimension using the runtime value of its single symbolic
+// variable. Static dimensions are returned unchanged.
+absl::StatusOr<int64_t> ResolveDimension(const Shape& shape, int64_t dimension,
+                                         int64_t dynamic_value);
 
 // Forward declare.
 class ThunkSequence;

@@ -19,10 +19,13 @@ limitations under the License.
 #include <memory>
 #include <optional>
 #include <ostream>
+#include <set>
 #include <string>
 #include <utility>
 
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "xla/backends/cpu/collectives/cpu_collectives.h"
 #include "xla/backends/cpu/collectives/in_process_collectives.h"
@@ -37,6 +40,42 @@ limitations under the License.
 #include "tsl/profiler/lib/traceme_encode.h"
 
 namespace xla::cpu {
+
+absl::StatusOr<int64_t> ResolveDimension(const Shape& shape,
+                                         int64_t dimension,
+                                         int64_t dynamic_value) {
+  const DExpr& expression = shape.expressions(dimension);
+  if (!expression->is_dynamic()) {
+    return shape.dimensions(dimension);
+  }
+  if (dynamic_value <= 0) {
+    return absl::InvalidArgumentError(
+        "Dynamic dimension evaluation requires a positive runtime value");
+  }
+
+  const std::set<int> ids = expression->get_all_ids();
+  if (ids.size() != 1) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Dynamic dimension expression must contain exactly one variable, got ",
+        ids.size()));
+  }
+
+  DExpr resolved =
+      expression.substitute(*ids.begin(), DExpr::Const(dynamic_value))
+          .simplify();
+  if (!resolved->is_constant()) {
+    return absl::InvalidArgumentError(
+        "Dynamic dimension expression did not resolve to a constant");
+  }
+
+  const int64_t value = resolved->get_val();
+  if (value <= 0 || value > shape.dimensions(dimension)) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Resolved dynamic dimension ", value,
+        " is outside its physical bound ", shape.dimensions(dimension)));
+  }
+  return value;
+}
 
 absl::string_view Thunk::KindToString(Kind kind) {
   switch (kind) {

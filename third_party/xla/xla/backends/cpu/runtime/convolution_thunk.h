@@ -69,11 +69,13 @@ class ConvolutionThunk final : public Thunk {
 
   tsl::AsyncValueRef<Thunk::ExecuteEvent> HandleEigen2DConvolution(
       const ExecuteParams& params, se::DeviceMemoryBase input,
-      se::DeviceMemoryBase kernel, se::DeviceMemoryBase output);
+      se::DeviceMemoryBase kernel, se::DeviceMemoryBase output,
+      int64_t input_batch);
 
   tsl::AsyncValueRef<Thunk::ExecuteEvent> HandleEigen3DConvolution(
       const ExecuteParams& params, se::DeviceMemoryBase input,
-      se::DeviceMemoryBase kernel, se::DeviceMemoryBase output);
+      se::DeviceMemoryBase kernel, se::DeviceMemoryBase output,
+      int64_t input_batch);
 
   Options options_;
   ConvolutionSlices convolution_slices_;

@@ -2301,14 +2301,6 @@ class SymbolicShapeRefiner {
             recovered_rank = true;
           }
         }
-        if (!recovered_rank && node->op() == "_Arg") {
-          DimensionHandle d0 = GetUnknownOutputDim(node, out, /*dim_id=*/0);
-          ShapeHandle vec = ic->MakeShape({d0});
-          ic->set_output(out, vec);
-          s = vec;
-          recovered_rank = true;
-        }
-
         if (!recovered_rank) {
           VLOG(1) << "RANK still unknown. " << node->name();
           continue;

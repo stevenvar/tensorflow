@@ -132,9 +132,6 @@ tsl::AsyncValueRef<DotThunk::ExecuteEvent> DotThunk::Execute(
   int64_t m = dot_canonical_dims_.m;
   int64_t n = dot_canonical_dims_.n;
   int64_t k = dot_canonical_dims_.k;
-  int64_t physical_m = m;
-  int64_t physical_n = n;
-  const int64_t physical_k = k;
 
   const int64_t num_batch_dims =
       dot_dimensions_.lhs_batch_dimensions_size();
@@ -174,7 +171,6 @@ tsl::AsyncValueRef<DotThunk::ExecuteEvent> DotThunk::Execute(
 
   if (!dot_canonical_dims_.output_column_major) {
     std::swap(m, n);
-    std::swap(physical_m, physical_n);
     std::swap(lhs, rhs);
     std::swap(transpose_lhs, transpose_rhs);
     transpose_lhs = !transpose_lhs;
@@ -184,9 +180,11 @@ tsl::AsyncValueRef<DotThunk::ExecuteEvent> DotThunk::Execute(
   PrimitiveType element_type = dot_shape_.lhs_matmul_shape.element_type();
   int64_t byte_width = primitive_util::ByteWidth(element_type);
 
-  int64_t lhs_stride = physical_m * physical_k * byte_width;
-  int64_t rhs_stride = physical_k * physical_n * byte_width;
-  int64_t out_stride = physical_m * physical_n * byte_width;
+  // Symbolic tensors are packed using logical dimensions. Padded bounds
+  // reserve capacity; they do not insert gaps between runtime matrices.
+  int64_t lhs_stride = m * k * byte_width;
+  int64_t rhs_stride = k * n * byte_width;
+  int64_t out_stride = m * n * byte_width;
 
   auto batch_ptr = [&](void* ptr, int64_t stride, int64_t index) -> void* {
     return static_cast<uint8_t*>(ptr) + stride * index;

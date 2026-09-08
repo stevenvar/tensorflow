@@ -782,6 +782,7 @@ xla_cc_test(
         ":dot_thunk",
         ":thunk",
         ":thunk_testlib",
+        "//xla:literal",
         "//xla:literal_util",
         "//xla:shape_util",
         "//xla:xla_data_proto_cc",

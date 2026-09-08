@@ -71,6 +71,33 @@ TYPED_TEST(ConvolutionThunkTypedTest, SuccessfulConvolution3D) {
   SuccessfulConvolution<TypeParam>(/*convolution_rank=*/3);
 }
 
+TEST(ConvolutionThunkTest, UsesLogicalDynamicBatch) {
+  ConvolutionDimensions dims;
+  dims.batch_size = 4;
+  dims.input_size = 1;
+  dims.input_channels = 1;
+  dims.kernel_size = 1;
+  dims.output_channels = 1;
+  dims.output_size = 1;
+  ConvolutionThunkBuilder<float> builder(dims);
+  builder.SetBatchExpression(DExpr::Var(1));
+  builder.FillOutput(-1.0f);
+
+  TF_ASSERT_OK_AND_ASSIGN(auto thunk, builder.Build());
+  BufferAllocations allocations = builder.GetAllocations();
+  Thunk::ExecuteParams params;
+  params.buffer_allocations = &allocations;
+  params.batch_size = 2;
+
+  auto execute_event = thunk->Execute(params);
+  tsl::BlockUntilReady(execute_event);
+  ASSERT_FALSE(execute_event.IsError()) << execute_event.GetError();
+
+  // Only the logical batch is computed; padded output storage is untouched.
+  EXPECT_THAT(builder.output_data(), testing::ElementsAre(0.0f, 0.0f, -1.0f,
+                                                          -1.0f));
+}
+
 TEST(ConvolutionThunkTest, CreationErrorOnUnsupportedType) {
   ConvolutionThunkBuilder<int> builder;
 

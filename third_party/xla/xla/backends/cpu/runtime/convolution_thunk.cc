@@ -107,13 +107,18 @@ tsl::AsyncValueRef<Thunk::ExecuteEvent> ConvolutionThunk::Execute(
         "multi-threaded mode.");
   }
 
+  TF_ASSIGN_OR_RETURN(
+      int64_t input_batch,
+      ResolveDimension(convolution_slices_.input_shape,
+                       dnums_.input_batch_dimension(), params.batch_size));
+
   // Eigen convolution
   if (convolution_canonical_dims_.convolution_rank() == 2) {
     return HandleEigen2DConvolution(params, input_data, kernel_data,
-                                    output_data);
+                                    output_data, input_batch);
   } else {
     return HandleEigen3DConvolution(params, input_data, kernel_data,
-                                    output_data);
+                                    output_data, input_batch);
   }
 }
 
@@ -121,7 +126,8 @@ tsl::AsyncValueRef<Thunk::ExecuteEvent>
 ConvolutionThunk::HandleEigen2DConvolution(const ExecuteParams& params,
                                            se::DeviceMemoryBase input,
                                            se::DeviceMemoryBase kernel,
-                                           se::DeviceMemoryBase output) {
+                                           se::DeviceMemoryBase output,
+                                           int64_t input_batch) {
   auto dispatch = [&](auto type_tag, const auto& eigen_device,
                       tsl::CountDownAsyncValueRef<ExecuteEvent> count_down) {
     using scalar_type = decltype(type_tag);
@@ -129,7 +135,7 @@ ConvolutionThunk::HandleEigen2DConvolution(const ExecuteParams& params,
         eigen_device, static_cast<scalar_type*>(output.opaque()),
         static_cast<scalar_type*>(input.opaque()),
         static_cast<scalar_type*>(kernel.opaque()),
-        convolution_canonical_dims_.input_batch,
+        input_batch,
         convolution_canonical_dims_.input_dims.x,
         convolution_canonical_dims_.input_dims.y,
         convolution_canonical_dims_.input_channels,
@@ -184,7 +190,8 @@ tsl::AsyncValueRef<Thunk::ExecuteEvent>
 ConvolutionThunk::HandleEigen3DConvolution(const ExecuteParams& params,
                                            se::DeviceMemoryBase input,
                                            se::DeviceMemoryBase kernel,
-                                           se::DeviceMemoryBase output) {
+                                           se::DeviceMemoryBase output,
+                                           int64_t input_batch) {
   auto dispatch = [&](auto type_tag, const auto& eigen_device,
                       tsl::CountDownAsyncValueRef<ExecuteEvent> count_down) {
     using scalar_type = decltype(type_tag);
@@ -192,7 +199,7 @@ ConvolutionThunk::HandleEigen3DConvolution(const ExecuteParams& params,
         eigen_device, static_cast<scalar_type*>(output.opaque()),
         static_cast<scalar_type*>(input.opaque()),
         static_cast<scalar_type*>(kernel.opaque()),
-        convolution_canonical_dims_.input_batch,
+        input_batch,
         convolution_canonical_dims_.input_dims.x,
         convolution_canonical_dims_.input_dims.y,
         convolution_canonical_dims_.input_dims.z,

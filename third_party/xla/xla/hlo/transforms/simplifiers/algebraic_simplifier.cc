@@ -9781,16 +9781,23 @@ absl::StatusOr<bool> AlgebraicSimplifierVisitor::SimplifyConvToDot(
 
   // Computes the product of the non-feature dimensions.
   int64_t conv_width = 1;
+  DExpr conv_width_expr = DExpr::Const(1);
   for (int i = 0; i < input_shape.dimensions().size(); ++i) {
     if (i != dnums.input_feature_dimension()) {
       conv_width *= input_shape.dimensions(i);
+      const DExpr& dim_expr = input_shape.expressions(i);
+      conv_width_expr =
+          conv_width_expr *
+          (dim_expr ? dim_expr : DExpr::Const(input_shape.dimensions(i)));
     }
   }
+  conv_width_expr = conv_width_expr.simplify();
 
   // We already checked feature_dimension is most minor, so data in input_shape
   // and row-major {conv_width,input_channels} are bitwise identical.
   Shape new_input_shape = ShapeUtil::MakeShapeWithDescendingLayout(
-      input_shape.element_type(), {conv_width, input_channels});
+      input_shape.element_type(), {conv_width, input_channels},
+      {conv_width_expr, DExpr::Const(input_channels)});
   simplifier_->UpdateLayout(&new_input_shape);
   // We already checked input_feature_dimension is more major than
   // output_feature_dimension, so data in filter_shape and row-major
@@ -9799,7 +9806,8 @@ absl::StatusOr<bool> AlgebraicSimplifierVisitor::SimplifyConvToDot(
       filter_shape.element_type(), {input_channels, output_channels});
   simplifier_->UpdateLayout(&new_filter_shape);
   Shape dot_output_shape = ShapeUtil::MakeShapeWithDescendingLayout(
-      convolution_shape.element_type(), {conv_width, output_channels});
+      convolution_shape.element_type(), {conv_width, output_channels},
+      {conv_width_expr, DExpr::Const(output_channels)});
   simplifier_->UpdateLayout(&dot_output_shape);
 
   auto new_lhs = add_bitcast(new_input_shape, lhs);

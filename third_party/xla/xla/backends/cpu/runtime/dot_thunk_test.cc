@@ -143,6 +143,85 @@ TEST(DotThunkTest, ThreadedDot) {
   EXPECT_EQ(out, expected);
 }
 
+TEST(DotThunkTest, UsesLogicalDynamicDimension) {
+  auto lhs = LiteralUtil::CreateR2<float>(
+      {{2.0f}, {2.0f}, {2.0f}, {2.0f}});
+  auto rhs = LiteralUtil::CreateR2<float>({{3.0f}});
+  auto out = LiteralUtil::CreateR2<float>(
+      {{-1.0f}, {-1.0f}, {-1.0f}, {-1.0f}});
+
+  BufferAllocations allocations = CreateBufferAllocations(lhs, rhs, out);
+  auto [lhs_alloc, rhs_alloc, out_alloc] =
+      CreateBufferAllocation(lhs, rhs, out);
+  auto [lhs_slice, rhs_slice, out_slice] =
+      CreateBufferAllocationSlice(lhs_alloc, rhs_alloc, out_alloc);
+
+  Shape lhs_shape = lhs.shape();
+  lhs_shape.set_expression(0, DExpr::Var(1));
+  Shape out_shape = out.shape();
+  out_shape.set_expression(0, DExpr::Var(1));
+
+  DotDimensionNumbers dot_dimensions;
+  dot_dimensions.add_lhs_contracting_dimensions(1);
+  dot_dimensions.add_rhs_contracting_dimensions(0);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto thunk,
+      DotThunk::Create({"dot"}, dot_dimensions, lhs_slice, lhs_shape,
+                       rhs_slice, rhs.shape(), out_slice, out_shape));
+
+  Thunk::ExecuteParams params;
+  params.buffer_allocations = &allocations;
+  params.batch_size = 2;
+  auto execute_event = thunk->Execute(params);
+  tsl::BlockUntilReady(execute_event);
+  ASSERT_FALSE(execute_event.IsError()) << execute_event.GetError();
+
+  EXPECT_EQ(out, LiteralUtil::CreateR2<float>(
+                     {{6.0f}, {6.0f}, {-1.0f}, {-1.0f}}));
+}
+
+TEST(DotThunkTest, UsesPhysicalStrideForDynamicBatchedDot) {
+  auto lhs = LiteralUtil::CreateR3<float>(
+      {{{2.0f}, {2.0f}, {2.0f}, {2.0f}},
+       {{4.0f}, {4.0f}, {4.0f}, {4.0f}}});
+  auto rhs = LiteralUtil::CreateR3<float>({{{3.0f}}, {{5.0f}}});
+  auto out = LiteralUtil::CreateR3<float>(
+      {{{-1.0f}, {-1.0f}, {-1.0f}, {-1.0f}},
+       {{-1.0f}, {-1.0f}, {-1.0f}, {-1.0f}}});
+
+  BufferAllocations allocations = CreateBufferAllocations(lhs, rhs, out);
+  auto [lhs_alloc, rhs_alloc, out_alloc] =
+      CreateBufferAllocation(lhs, rhs, out);
+  auto [lhs_slice, rhs_slice, out_slice] =
+      CreateBufferAllocationSlice(lhs_alloc, rhs_alloc, out_alloc);
+
+  Shape lhs_shape = lhs.shape();
+  lhs_shape.set_expression(1, DExpr::Var(1));
+  Shape out_shape = out.shape();
+  out_shape.set_expression(1, DExpr::Var(1));
+
+  DotDimensionNumbers dot_dimensions;
+  dot_dimensions.add_lhs_batch_dimensions(0);
+  dot_dimensions.add_rhs_batch_dimensions(0);
+  dot_dimensions.add_lhs_contracting_dimensions(2);
+  dot_dimensions.add_rhs_contracting_dimensions(1);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto thunk,
+      DotThunk::Create({"dot"}, dot_dimensions, lhs_slice, lhs_shape,
+                       rhs_slice, rhs.shape(), out_slice, out_shape));
+
+  Thunk::ExecuteParams params;
+  params.buffer_allocations = &allocations;
+  params.batch_size = 2;
+  auto execute_event = thunk->Execute(params);
+  tsl::BlockUntilReady(execute_event);
+  ASSERT_FALSE(execute_event.IsError()) << execute_event.GetError();
+
+  EXPECT_EQ(out, LiteralUtil::CreateR3<float>(
+                     {{{6.0f}, {6.0f}, {-1.0f}, {-1.0f}},
+                      {{20.0f}, {20.0f}, {-1.0f}, {-1.0f}}}));
+}
+
 INSTANTIATE_TEST_SUITE_P(
     DotThunkLayoutTest, DotThunkLayoutTest,
     testing::Combine(testing::Bool(), testing::Bool(), testing::Bool(),

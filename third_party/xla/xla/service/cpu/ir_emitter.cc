@@ -850,6 +850,13 @@ absl::Status IrEmitter::HandleConvolution(HloInstruction* convolution) {
       const Shape& input_shape = convolution->operand(0)->shape();
       int64_t input_batch =
           input_shape.dimensions(dnums.input_batch_dimension());
+      const DExpr& input_batch_expr =
+          input_shape.expressions(dnums.input_batch_dimension());
+      llvm::Value* input_batch_value =
+          input_batch_expr->is_dynamic()
+              ? llvm_ir::EmitExpression(b(), input_batch_expr)
+              : b()->getInt64(input_batch);
+      TF_RET_CHECK(input_batch_value != nullptr);
       for (int d : dnums.input_spatial_dimensions()) {
         input_dims.push_back(input_shape.dimensions(d));
       }
@@ -946,7 +953,7 @@ absl::Status IrEmitter::HandleConvolution(HloInstruction* convolution) {
           GetEmittedValueFor(convolution),
           lhs_address,
           rhs_address,
-          b()->getInt64(input_batch),
+          input_batch_value,
       };
       for (int64_t d : input_dims) {
         args.push_back(b()->getInt64(d));

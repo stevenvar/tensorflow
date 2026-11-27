@@ -16,10 +16,13 @@ limitations under the License.
 #include "tensorflow/compiler/jit/kernels/xla_ops_internal.h"
 
 #include <cstdint>
+#include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "xla/shape_expr.h"
+#include "tensorflow/compiler/jit/device_compilation_cluster_signature.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/platform/test.h"
 
@@ -69,6 +72,180 @@ XlaArgument MakeDynamicConstantArgument(int32 observed_value) {
   arg.constant_value_expressions.resize(1);
   arg.constant_value_expressions[0].set_variable_id(1);
   return arg;
+}
+
+XlaArgument MakeConstantContents(DataType dtype,
+                                const std::vector<int64_t>& values,
+                                const std::vector<xla::DExpr>& expressions) {
+  XlaArgument arg;
+  arg.kind = XlaArgument::kConstant;
+  arg.type = dtype;
+  arg.shape = TensorShape({static_cast<int64_t>(values.size())});
+  arg.constant_value = Tensor(dtype, std::get<TensorShape>(arg.shape));
+  for (int i = 0; i < values.size(); ++i) {
+    if (dtype == DT_INT32) {
+      arg.constant_value.flat<int32>()(i) = values[i];
+    } else {
+      arg.constant_value.flat<int64_t>()(i) = values[i];
+    }
+  }
+  for (const xla::DExpr& expr : expressions) {
+    xla::ExpressionProto proto;
+    expr.to_proto(&proto);
+    arg.constant_value_expressions.push_back(std::move(proto));
+  }
+  return arg;
+}
+
+std::vector<int64_t> ConstantValues(const XlaArgument& arg) {
+  std::vector<int64_t> values;
+  for (int64_t i = 0; i < arg.constant_value.NumElements(); ++i) {
+    values.push_back(arg.type == DT_INT32
+                         ? arg.constant_value.flat<int32>()(i)
+                         : arg.constant_value.flat<int64_t>()(i));
+  }
+  return values;
+}
+
+class ConstantNormalizationTest : public ::testing::TestWithParam<DataType> {};
+
+TEST_P(ConstantNormalizationTest, PreservesEqualLiteralsAndRuntimeTensor) {
+  const XlaArgument original = MakeConstantContents(
+      GetParam(), {10, 10, 10},
+      {xla::DExpr::Var(1), xla::DExpr::Const(10), xla::DExpr::Unknown()});
+  XlaArgument normalized = original;
+
+  // Equal numeric values have different meanings. Only the marked A changes.
+  auto status = NormalizeConstantArgument(20, &normalized);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(ConstantValues(normalized), (std::vector<int64_t>{20, 10, 10}));
+  EXPECT_EQ(ConstantValues(original), (std::vector<int64_t>{10, 10, 10}));
+  for (int i = 0; i < original.constant_value_expressions.size(); ++i) {
+    EXPECT_EQ(normalized.constant_value_expressions[i].SerializeAsString(),
+              original.constant_value_expressions[i].SerializeAsString());
+  }
+}
+
+TEST_P(ConstantNormalizationTest, LeavesUnmarkedConstantsAlone) {
+  XlaArgument arg = MakeConstantContents(GetParam(), {10}, {});
+  const auto original_data = arg.constant_value.tensor_data().data();
+  auto status = NormalizeConstantArgument(20, &arg);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(ConstantValues(arg), (std::vector<int64_t>{10}));
+  EXPECT_TRUE(arg.constant_value_expressions.empty());
+  EXPECT_EQ(arg.constant_value.tensor_data().data(), original_data);
+}
+
+TEST_P(ConstantNormalizationTest, LiteralContentsDoNotRequireRootBound) {
+  XlaArgument arg = MakeConstantContents(GetParam(), {10}, {xla::DExpr::Const(10)});
+  auto status = NormalizeConstantArgument(0, &arg);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(ConstantValues(arg), (std::vector<int64_t>{10}));
+}
+
+TEST_P(ConstantNormalizationTest, EvaluatesDerivedAndRepeatedContents) {
+  const xla::DExpr a = xla::DExpr::Var(1);
+  XlaArgument arg = MakeConstantContents(GetParam(), {3, 4, 720, 720},
+                                        {a / 240, a / 240 + 1, a, a});
+  auto status = NormalizeConstantArgument(1440, &arg);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(ConstantValues(arg), (std::vector<int64_t>{6, 7, 1440, 1440}));
+}
+
+TEST_P(ConstantNormalizationTest, AllowsNegativeIntegerContents) {
+  // Tensor contents may be negative even though allocation dimensions cannot.
+  XlaArgument arg = MakeConstantContents(
+      GetParam(), {-9}, {xla::DExpr::Const(1) - xla::DExpr::Var(1)});
+  auto status = NormalizeConstantArgument(20, &arg);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(ConstantValues(arg), (std::vector<int64_t>{-19}));
+}
+
+TEST_P(ConstantNormalizationTest, DoesNotCopyUnchangedTensor) {
+  XlaArgument arg = MakeConstantContents(GetParam(), {20}, {xla::DExpr::Var(1)});
+  const auto original_data = arg.constant_value.tensor_data().data();
+  auto status = NormalizeConstantArgument(20, &arg);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(arg.constant_value.tensor_data().data(), original_data);
+}
+
+TEST_P(ConstantNormalizationTest, RejectsInvalidExpressionsWithoutPartialWrite) {
+  const xla::DExpr a = xla::DExpr::Var(1);
+  const std::vector<xla::DExpr> invalid = {
+      xla::DExpr::Var(2), a + xla::DExpr::Var(2),
+      a / xla::DExpr::Const(0), a / (a - 20), a + xla::DExpr::Unknown()};
+  for (const auto& expr : invalid) {
+    // The first element can be normalized, but the second must reject it all.
+    XlaArgument arg = MakeConstantContents(GetParam(), {10, 10}, {a, expr});
+    const auto original_data = arg.constant_value.tensor_data().data();
+    auto status = NormalizeConstantArgument(20, &arg);
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(ConstantValues(arg), (std::vector<int64_t>{10, 10}));
+    EXPECT_EQ(arg.constant_value.tensor_data().data(), original_data);
+  }
+}
+
+TEST_P(ConstantNormalizationTest, RejectsMismatchedMetadataAndMissingBound) {
+  XlaArgument arg = MakeConstantContents(GetParam(), {10},
+                                        {xla::DExpr::Var(1), xla::DExpr::Var(1)});
+  EXPECT_FALSE(NormalizeConstantArgument(20, &arg).ok());
+  arg.constant_value_expressions.resize(1);
+  EXPECT_FALSE(NormalizeConstantArgument(0, &arg).ok());
+  EXPECT_EQ(ConstantValues(arg), (std::vector<int64_t>{10}));
+}
+
+TEST_P(ConstantNormalizationTest, CacheKeyUsesPaddedContentsAndRetainsLiterals) {
+  const xla::DExpr a = xla::DExpr::Var(1);
+  std::vector<XlaArgument> first = {
+      MakeConstantContents(GetParam(), {3, 720}, {a / 240, a}),
+      MakeConstantContents(GetParam(), {720}, {})};
+  std::vector<XlaArgument> second = {
+      MakeConstantContents(GetParam(), {4, 960}, {a / 240, a}),
+      MakeConstantContents(GetParam(), {720}, {})};
+  for (auto* args : {&first, &second}) {
+    for (auto& arg : *args) {
+      auto status = NormalizeConstantArgument(1440, &arg);
+      ASSERT_TRUE(status.ok()) << status;
+    }
+  }
+  NameAttrList function;
+  function.set_name("shape_consumer");
+  auto first_key = DeviceCompilationClusterSignature::Build(function, first);
+  auto second_key = DeviceCompilationClusterSignature::Build(function, second);
+  ASSERT_TRUE(first_key.ok()) << first_key.status();
+  ASSERT_TRUE(second_key.ok()) << second_key.status();
+  EXPECT_EQ(*first_key, *second_key);
+  EXPECT_EQ(DeviceCompilationClusterSignature::Hash()(*first_key),
+            DeviceCompilationClusterSignature::Hash()(*second_key));
+
+  // A changed ordinary constant must still require its own executable.
+  second[1] = MakeConstantContents(GetParam(), {960}, {});
+  auto changed_key = DeviceCompilationClusterSignature::Build(function, second);
+  ASSERT_TRUE(changed_key.ok()) << changed_key.status();
+  EXPECT_FALSE(*first_key == *changed_key);
+}
+
+INSTANTIATE_TEST_SUITE_P(IntegerTypes, ConstantNormalizationTest,
+                        ::testing::Values(DT_INT32, DT_INT64));
+
+TEST(ConstantNormalizationScalarTest, ChecksInt32RangeAndSupportsInt64) {
+  const int64_t bound = static_cast<int64_t>(std::numeric_limits<int32>::max()) + 1;
+  XlaArgument narrow = MakeDynamicConstantArgument(10);
+  EXPECT_FALSE(NormalizeConstantArgument(bound, &narrow).ok());
+  EXPECT_EQ(ConstantValues(narrow), (std::vector<int64_t>{10}));
+
+  XlaArgument wide;
+  wide.kind = XlaArgument::kConstant;
+  wide.type = DT_INT64;
+  wide.shape = TensorShape({});
+  wide.constant_value = Tensor(DT_INT64, TensorShape({}));
+  wide.constant_value.scalar<int64_t>()() = 10;
+  wide.constant_value_expressions.resize(1);
+  wide.constant_value_expressions[0].set_variable_id(1);
+  auto status = NormalizeConstantArgument(bound, &wide);
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(wide.constant_value.scalar<int64_t>()(), bound);
+  EXPECT_EQ(wide.constant_value.dims(), 0);
 }
 
 xla::Shape MakeDynamicXlaInput(xla::DExpr leading_expr) {

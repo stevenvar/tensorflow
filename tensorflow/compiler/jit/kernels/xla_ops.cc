@@ -18,6 +18,7 @@ limitations under the License.
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <numeric>
@@ -512,6 +513,75 @@ std::vector<XlaArgument> BuildStaticCompilationArguments(
     arg.constant_value_expressions.clear();
   }
   return static_args;
+}
+
+absl::Status NormalizeConstantArgument(int64_t root_bound, XlaArgument* arg) {
+  if (arg->kind != XlaArgument::kConstant ||
+      arg->constant_value_expressions.empty()) {
+    return absl::OkStatus();
+  }
+  const Tensor& original = arg->constant_value;
+  if (arg->constant_value_expressions.size() != original.NumElements()) {
+    return errors::InvalidArgument(
+        "Symbolic constant contents must match the tensor element count");
+  }
+  if (original.dtype() != DT_INT32 && original.dtype() != DT_INT64) {
+    return errors::InvalidArgument(
+        "Symbolic constant contents require an int32 or int64 tensor");
+  }
+  // Compilation arguments share tensor buffers with the runtime arguments.
+  // Copy on the first changed element and publish only after all checks pass.
+  Tensor normalized;
+  bool changed = false;
+  for (int64_t i = 0; i < original.NumElements(); ++i) {
+    xla::DExpr expr = xla::DExprFromProto(arg->constant_value_expressions[i]);
+    if (!expr || !expr->is_dynamic()) {
+      continue;
+    }
+    if (root_bound <= 0) {
+      return errors::InvalidArgument(
+          "Symbolic constant contents require a positive cluster root bound");
+    }
+    const std::set<int> ids = expr->get_all_ids();
+    if (ids.size() != 1 || ids.count(1) == 0) {
+      return errors::InvalidArgument(
+          "Symbolic constant element ", i,
+          " must use the normalized cluster root Var(1)");
+    }
+    // Validate before evaluating: simplification can CHECK on division by zero.
+    xla::DExpr evaluated = expr.substitute(1, xla::DExpr::Const(root_bound));
+    if (!evaluated || !evaluated->is_constant()) {
+      return errors::InvalidArgument(
+          "Cannot evaluate symbolic constant element ", i,
+          " at compilation bound ", root_bound);
+    }
+    const int64_t value = evaluated->get_val();
+    if (original.dtype() == DT_INT32 &&
+        (value < std::numeric_limits<int32>::min() ||
+         value > std::numeric_limits<int32>::max())) {
+      return errors::InvalidArgument(
+          "Symbolic constant element ", i, " overflows int32: ", value);
+    }
+    const int64_t old_value = original.dtype() == DT_INT32
+                                  ? original.flat<int32>()(i)
+                                  : original.flat<int64_t>()(i);
+    if (value == old_value) {
+      continue;
+    }
+    if (!changed) {
+      normalized = tensor::DeepCopy(original);
+      changed = true;
+    }
+    if (original.dtype() == DT_INT32) {
+      normalized.flat<int32>()(i) = static_cast<int32>(value);
+    } else {
+      normalized.flat<int64_t>()(i) = value;
+    }
+  }
+  if (changed) {
+    arg->constant_value = std::move(normalized);
+  }
+  return absl::OkStatus();
 }
 
 void StripIgnoredDynamicArgumentOccurrences(
@@ -1021,13 +1091,8 @@ absl::Status CompileToLocalExecutable(
     // inferred-output-shapes attr attached during encapsulation.
     std::vector<XlaCompiler::Argument> norm_args(args.begin(), args.end());
     int64_t filled_batch = 0;
-    bool saw_dynamic_dim_value = false;
-    // Only supporting one dynamic dimension. 
-    bool has_multiple_dynamic_dim_values = false;
-    int64_t dynamic_dim_value = 0;
     XlaBatchMatcher* xla_batch_matcher =
         xla_device_compiler->xla_batch_matcher();
-    std::optional<xla::DExpr> dynamic_dim_expr;
     std::optional<xla::DExpr> shared_dynamic_subexpr;
     auto normalize_dynamic_expr =
         [&](xla::DExpr expr, absl::string_view context = "") {
@@ -1115,17 +1180,6 @@ absl::Status CompileToLocalExecutable(
             arg.constant_value_expressions.push_back(std::move(expr));
           }
         };
-    auto record_dynamic_dim_value = [&](int64_t dim_size, xla::DExpr expr) {
-      if (!saw_dynamic_dim_value) {
-        saw_dynamic_dim_value = true;
-        dynamic_dim_value = dim_size;
-        dynamic_dim_expr = std::move(expr);
-        return;
-      }
-      if (dynamic_dim_value != dim_size) {
-        has_multiple_dynamic_dim_values = true;
-      }
-    };
     if (options.flib_def != nullptr) {
       const FunctionDef* fdef = options.flib_def->Find(function.name());
       if (fdef != nullptr) {
@@ -1149,7 +1203,6 @@ absl::Status CompileToLocalExecutable(
                 std::get<TensorShape>(norm_args[arg_index].shape);
             const AttrValue& v = dyn_dim_attr->second;
             int64_t idx = v.i();
-            record_dynamic_dim_value(shp.dim_size(idx), xla::DExpr::Var(1));
             if (!filled_batch && xla_batch_matcher) {
               filled_batch =
                   xla_batch_matcher->get_xla_compile_batch(function.name(), shp.dim_size(idx));
@@ -1159,7 +1212,7 @@ absl::Status CompileToLocalExecutable(
             for (int d : shp.dim_sizes()) {
               dyn_exprs.push_back(xla::DExpr::Const(d));
             }
-            dyn_exprs[idx] = *dynamic_dim_expr;
+            dyn_exprs[idx] = xla::DExpr::Var(1);
             shp.set_expressions(std::move(dyn_exprs));
             continue;
           }
@@ -1199,7 +1252,6 @@ absl::Status CompileToLocalExecutable(
                   VLOG(1) << "Solved dynamic dimension from "
                           << shp.dim_size(idx) << " to " << var_value;
                 }
-                record_dynamic_dim_value(var_value, e);
                 VLOG(1) << "Filled batch for function " << function.name()
                           << " with value " << var_value;
                 filled_batch =
@@ -1242,10 +1294,6 @@ absl::Status CompileToLocalExecutable(
       LOG(WARNING) << solve_filter_decision.diagnostic;
       StripIgnoredDynamicArgumentOccurrences(
           solve_filter_decision.ignored_occurrences, &norm_args);
-      saw_dynamic_dim_value = false;
-      has_multiple_dynamic_dim_values = false;
-      dynamic_dim_value = 0;
-      dynamic_dim_expr.reset();
       filled_batch = 0;
       for (int arg_index = 0; arg_index < norm_args.size(); ++arg_index) {
         if (!absl::holds_alternative<TensorShape>(norm_args[arg_index].shape)) {
@@ -1263,7 +1311,6 @@ absl::Status CompileToLocalExecutable(
           if (!solved_value.has_value()) {
             continue;
           }
-          record_dynamic_dim_value(*solved_value, simplified_expr);
           if (!filled_batch && xla_batch_matcher) {
             filled_batch =
                 xla_batch_matcher->get_xla_compile_batch(*solved_value);
@@ -1278,86 +1325,8 @@ absl::Status CompileToLocalExecutable(
       int64_t old_value;
     };
     std::vector<SaveOldVar> old_vars;
-    auto maybe_rewrite_scalar_constant = [&](int arg_index) {
-      if (!saw_dynamic_dim_value || has_multiple_dynamic_dim_values) {
-        return;
-      }
-
-      auto& arg = norm_args[arg_index];
-      if (arg.kind != XlaCompiler::Argument::kConstant) {
-        return;
-      }
-
-      const bool is_scalar = TensorShapeUtils::IsScalar(arg.constant_value.shape());
-      const bool is_vector = TensorShapeUtils::IsVector(arg.constant_value.shape()) &&
-                             arg.constant_value.NumElements() > 0;
-      if (!is_scalar && !is_vector) {
-        return;
-      }
-
-      auto set_constant_contents = [&]<typename T>(int rewrite_index) {
-        arg.constant_value_expressions.clear();
-        const int64_t num_elements = arg.constant_value.NumElements();
-        arg.constant_value_expressions.reserve(num_elements);
-        for (int64_t i = 0; i < num_elements; ++i) {
-          xla::ExpressionProto expr;
-          if (i == rewrite_index) {
-            dynamic_dim_expr->to_proto(&expr);
-          } else {
-            expr.set_constant_value(arg.constant_value.flat<T>()(i));
-          }
-          arg.constant_value_expressions.push_back(std::move(expr));
-        }
-      };
-
-      if (arg.constant_value.dtype() == DT_INT32) {
-        auto flat = arg.constant_value.flat<int32>();
-        int rewrite_index = -1;
-        // Heuristic: rewrite only scalar constants or shape-like int vectors.
-        // In practice we expect at most one entry to match the observed
-        // runtime batch size, so rewrite the first matching entry.
-        for (int i = 0; i < arg.constant_value.NumElements(); ++i) {
-          if (flat(i) == dynamic_dim_value) {
-            rewrite_index = i;
-            break;
-          }
-        }
-        if (rewrite_index >= 0) {
-          arg.constant_value = tensor::DeepCopy(arg.constant_value);
-          auto mutable_flat = arg.constant_value.flat<int32>();
-          VLOG(1) << "XlaCompileOp int32 constant arg " << arg_index
-                  << " index " << rewrite_index
-                  << " matches dynamic_dim_value=" << dynamic_dim_value;
-          mutable_flat(rewrite_index) = filled_batch;
-          set_constant_contents.template operator()<int32>(rewrite_index);
-        }
-      } else if (arg.constant_value.dtype() == DT_INT64) {
-        auto flat = arg.constant_value.flat<int64_t>();
-        int rewrite_index = -1;
-        // Same heuristic for int64 scalar constants or shape-like vectors.
-        for (int i = 0; i < arg.constant_value.NumElements(); ++i) {
-          if (flat(i) == dynamic_dim_value) {
-            rewrite_index = i;
-            break;
-          }
-        }
-        if (rewrite_index >= 0) {
-          arg.constant_value = tensor::DeepCopy(arg.constant_value);
-          auto mutable_flat = arg.constant_value.flat<int64_t>();
-          VLOG(1) << "XlaCompileOp int64 constant arg " << arg_index
-                  << " index " << rewrite_index
-                  << " matches dynamic_dim_value=" << dynamic_dim_value;
-          mutable_flat(rewrite_index) = filled_batch;
-          set_constant_contents.template operator()<int64_t>(rewrite_index);
-        }
-      }
-    };
-    // We rewrite only dynamic dimensions to the padded compile batch and then
-    // restore the original runtime sizes after compilation. Some scalar
-    // constants are actually runtime batch sizes folded by earlier TF passes,
-    // so rewrite only those that match the detected dynamic runtime value.
-    // Scalar constants are deep-copied before rewrite so the change stays
-    // local to norm_args and does not require restoration.
+    // Use the same root bound for dimensions and symbolic constant contents
+    // before constructing the compilation signature.
     if (filled_batch) {
       for (int i = 0; i < norm_args.size(); ++i) {
         TensorShape& shp = std::get<TensorShape>(norm_args[i].shape);
@@ -1400,7 +1369,18 @@ absl::Status CompileToLocalExecutable(
             }
           }
         }
-        maybe_rewrite_scalar_constant(i);
+      }
+    }
+    for (int i = 0; i < norm_args.size(); ++i) {
+      absl::Status contents_status =
+          xla_ops_internal::NormalizeConstantArgument(filled_batch, &norm_args[i]);
+      if (!contents_status.ok()) {
+        if (dynamic_solve_conflict != nullptr) {
+          *dynamic_solve_conflict = true;
+        }
+        return errors::InvalidArgument(
+            "Cannot normalize symbolic contents for argument ", i, ": ",
+            contents_status.message());
       }
     }
     auto status = xla_device_compiler->CompileIfNeeded(

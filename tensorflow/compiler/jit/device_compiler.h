@@ -33,6 +33,7 @@ limitations under the License.
 #include "tensorflow/compiler/jit/device_compilation_profiler.h"
 #include "tensorflow/compiler/jit/device_compiler_client.h"
 #include "tensorflow/compiler/jit/device_executable_persistor.h"
+#include "tensorflow/compiler/jit/dynamic_shape_bounds.h"
 #include "tensorflow/compiler/jit/flags.h"
 #include "tensorflow/compiler/jit/tf_graph_to_hlo_compiler.h"
 #include "tensorflow/compiler/jit/xla_compile_util.h"
@@ -328,6 +329,13 @@ DeviceCompiler<ExecutableType, ClientType>::CompileStrict(
   TF_RETURN_IF_ERROR(cache_value.compilation_status);
   TF_RET_CHECK(cache_value.executable == nullptr);
   TF_RET_CHECK(out_compilation_result->computation != nullptr);
+
+  // A padded root must cover intermediate buffers as well as cluster inputs.
+  // Check before loading or building an executable, including nested HLOs.
+  if (GetMarkForCompilationPassFlags()->tf_xla_enable_dynamic_sizes) {
+    TF_RETURN_IF_ERROR(CheckDynamicShapeBounds(
+        out_compilation_result->computation->proto()));
+  }
 
   auto loaded_executable = persistor_->TryToLoadExecutable(
       DeviceCompilationClusterSignature::Hash()(sig), sig.HumanString(),

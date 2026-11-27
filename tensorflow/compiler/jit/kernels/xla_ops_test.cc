@@ -357,6 +357,119 @@ TEST(DynamicRuntimeSolveTest, RejectsConflictingNonSingletonEvidence) {
             std::string::npos);
 }
 
+// Exercise the same recovery policy before padding and at executable entry.
+void ExpectRootResolution(const std::vector<xla::DExpr>& expressions,
+                          const std::vector<int64_t>& observed,
+                          std::optional<int64_t> expected_root) {
+  ASSERT_EQ(expressions.size(), observed.size());
+  std::vector<XlaArgument> args;
+  std::vector<xla::Shape> xla_shapes;
+  std::vector<TensorShape> runtime_shapes;
+  std::vector<int> mapping;
+  std::vector<std::string> names;
+  for (int i = 0; i < expressions.size(); ++i) {
+    args.push_back(MakeDynamicArgument(observed[i], expressions[i]));
+    xla_shapes.push_back(MakeDynamicXlaInput(expressions[i]));
+    runtime_shapes.emplace_back(TensorShape({observed[i], 16}));
+    mapping.push_back(i);
+    names.push_back(std::to_string(i));
+  }
+  const auto compile = AnalyzeIgnoredDynamicArgumentOccurrences(args);
+  const auto runtime = ResolveForTest(xla_shapes, runtime_shapes, mapping, names);
+  EXPECT_EQ(compile.can_run, expected_root.has_value()) << compile.diagnostic;
+  EXPECT_EQ(runtime.can_run, expected_root.has_value()) << runtime.diagnostic;
+  if (expected_root.has_value()) {
+    EXPECT_EQ(compile.root_value, expected_root);
+    ASSERT_TRUE(runtime.has_batch_size) << runtime.diagnostic;
+    EXPECT_EQ(runtime.batch_size, *expected_root);
+  } else {
+    EXPECT_FALSE(runtime.has_batch_size);
+  }
+}
+
+TEST(DynamicRootValidationTest, ChecksRoundedDivisionUsingRecoveredRoot) {
+  const xla::DExpr a = xla::DExpr::Var(1);
+  // 721 / 240 is 3. Inverting that observation as exact division gives 720.
+  ExpectRootResolution({a, a / 240}, {721, 3}, 721);
+  ExpectRootResolution({a / 240, a}, {3, 721}, 721);
+  ExpectRootResolution({a + 1, a / 240}, {722, 3}, 721);
+}
+
+TEST(DynamicRootValidationTest, RequiresUnambiguousEvidence) {
+  const xla::DExpr a = xla::DExpr::Var(1);
+  ExpectRootResolution({a / 240}, {3}, std::nullopt);
+  ExpectRootResolution({a / 240 + 1}, {4}, std::nullopt);
+  ExpectRootResolution({xla::DExpr::Const(100) / a}, {3}, std::nullopt);
+  ExpectRootResolution({(a / 240) * 240}, {720}, std::nullopt);
+}
+
+TEST(DynamicRootValidationTest, PreservesInjectiveArithmeticRecovery) {
+  const xla::DExpr a = xla::DExpr::Var(1);
+  ExpectRootResolution({3 * a, a / 240}, {2163, 3}, 721);
+  ExpectRootResolution({xla::DExpr::Const(100) - a}, {90}, 10);
+  ExpectRootResolution({xla::DExpr::Max(a - 2, xla::DExpr::Const(0))}, {98}, 100);
+  ExpectRootResolution({a / 1}, {721}, 721);
+}
+
+TEST(DynamicRootValidationTest, ValidatesExpressionsThatCannotBeInverted) {
+  const xla::DExpr a = xla::DExpr::Var(1);
+  const xla::DExpr clamped = xla::DExpr::Max(a - 10, xla::DExpr::Const(0));
+  ExpectRootResolution({a, clamped}, {5, 0}, 5);
+  ExpectRootResolution({a, clamped}, {5, 2}, std::nullopt);
+  ExpectRootResolution({a, a * a}, {5, 25}, 5);
+  ExpectRootResolution({a, a * a}, {5, 24}, std::nullopt);
+  ExpectRootResolution({a, a / 240}, {721, 4}, std::nullopt);
+}
+
+TEST(DynamicRootValidationTest, RejectsUnevaluableObservations) {
+  const xla::DExpr a = xla::DExpr::Var(1);
+  ExpectRootResolution({a, a / (a - 5)}, {5, 2}, std::nullopt);
+  ExpectRootResolution({a, a + xla::DExpr::Unknown()}, {5, 2}, std::nullopt);
+  ExpectRootResolution({a, xla::DExpr::Var(2)}, {5, 5}, std::nullopt);
+}
+
+TEST(DynamicRootValidationTest, KeepsBroadcastExceptionForDividedDimension) {
+  const xla::DExpr a = xla::DExpr::Var(1);
+  std::vector<XlaArgument> args = {MakeDynamicArgument(720, a),
+                                 MakeDynamicArgument(1, a / 240)};
+  auto decision = AnalyzeIgnoredDynamicArgumentOccurrences(args);
+  ASSERT_TRUE(decision.can_run) << decision.diagnostic;
+  EXPECT_EQ(decision.root_value, 720);
+  ASSERT_EQ(decision.ignored_occurrences.size(), 1);
+  EXPECT_EQ(decision.ignored_occurrences[0].arg_index, 1);
+  EXPECT_FALSE(decision.ignored_occurrences[0].solved_value.has_value());
+  StripIgnoredDynamicArgumentOccurrences(decision.ignored_occurrences, &args);
+  EXPECT_FALSE(std::get<TensorShape>(args[1].shape).get_expression(0));
+}
+
+TEST(DynamicRootValidationTest, ChecksConstantContentsAgainstRuntimeRoot) {
+  const xla::DExpr a = xla::DExpr::Var(1);
+  std::vector<XlaArgument> args = {
+      MakeDynamicArgument(721, a),
+      MakeConstantContents(DT_INT32, {3}, {a / 240})};
+  auto decision = AnalyzeIgnoredDynamicArgumentOccurrences(args);
+  ASSERT_TRUE(decision.can_run) << decision.diagnostic;
+  EXPECT_EQ(decision.root_value, 721);
+
+  // A value of 1 in a shape tensor is still checked as an ordinary value.
+  args[1].constant_value.flat<int32>()(0) = 1;
+  EXPECT_FALSE(AnalyzeIgnoredDynamicArgumentOccurrences(args).can_run);
+  args.erase(args.begin());
+  EXPECT_FALSE(AnalyzeIgnoredDynamicArgumentOccurrences(args).can_run);
+}
+
+TEST(DynamicRootValidationTest, RejectsMissingMappingOrWrongRank) {
+  const std::vector<xla::Shape> xla_shapes = {
+      MakeDynamicXlaInput(xla::DExpr::Var(1))};
+  const std::vector<TensorShape> runtime_shapes = {TensorShape({5, 16})};
+  const std::vector<int> missing = {-1};
+  const std::vector<int> mapped = {0};
+  const std::vector<std::string> names = {"input"};
+  EXPECT_FALSE(ResolveForTest(xla_shapes, runtime_shapes, missing, names).can_run);
+  const std::vector<TensorShape> wrong_rank = {TensorShape({5})};
+  EXPECT_FALSE(ResolveForTest(xla_shapes, wrong_rank, mapped, names).can_run);
+}
+
 TEST(DynamicSolveFilterTest, IgnoresSingletonWhenNonSingletonEvidenceExists) {
   std::vector<XlaArgument> args = {
       MakeDynamicArgument(1),
@@ -424,7 +537,7 @@ TEST(DynamicSolveFilterTest,
 
   EXPECT_FALSE(decision.can_run);
   EXPECT_TRUE(decision.ignored_occurrences.empty());
-  EXPECT_NE(decision.diagnostic.find("conflicting non-singleton candidates"),
+  EXPECT_NE(decision.diagnostic.find("dynamic observation mismatch"),
             std::string::npos);
 }
 

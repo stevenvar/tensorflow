@@ -221,6 +221,8 @@ absl::StatusOr<ElementsAttr> ConvertTensorProto(const TensorProto& input_tensor,
     TensorProto tensor_copy = input_tensor;
     auto* shape = tensor_copy.mutable_tensor_shape();
     shape->clear_dim();
+    // Reset expression metadata for the temporary one-element shape.
+    shape->clear_expressions();
     shape->add_dim()->set_size(1);
 
     TF_ASSIGN_OR_RETURN(ElementsAttr single_attr,

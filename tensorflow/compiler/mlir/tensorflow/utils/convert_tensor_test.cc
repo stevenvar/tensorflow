@@ -17,6 +17,8 @@ limitations under the License.
 
 #include <cstring>
 #include <initializer_list>
+#include <optional>
+#include <string>
 
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
@@ -27,9 +29,11 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/utils/dynamic_shape_utils.h"
 #include "xla/hlo/testlib/test.h"
+#include "tensorflow/core/framework/tensor_shape_expr.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/tensor_util.h"
 #include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/ir/importexport/convert_tensor.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/types.h"
@@ -308,6 +312,73 @@ TEST(ConvertTensorProtoTest, NonSplatTensor) {
                 {1.0f, 2.0f, 3.0f, 4.0f})),
             ResultOf(IsSplat, IsFalse())));
 }
+
+enum class SplatConverter { kTensorFlow, kTFG };
+
+class ConvertTensorProtoExpressionsTest
+    : public ::testing::TestWithParam<SplatConverter> {
+ protected:
+  void SetUp() override { SetTensorShapeExpressionsEnabledForTesting(true); }
+  void TearDown() override {
+    SetTensorShapeExpressionsEnabledForTesting(std::nullopt);
+  }
+
+  TensorProto MakeTensor() {
+    TensorProto tensor;
+    tensor.set_dtype(DT_FLOAT);
+    for (int64_t dim : {2, 3}) {
+      tensor.mutable_tensor_shape()->add_dim()->set_size(dim);
+      tensor.mutable_tensor_shape()->add_expressions()->set_constant_value(dim);
+    }
+    return tensor;
+  }
+
+  void ExpectSplat(const TensorProto& tensor, float value) {
+    const std::string original = tensor.SerializeAsString();
+    mlir::MLIRContext context;
+    mlir::Builder builder(&context);
+    TF_ASSERT_OK_AND_ASSIGN(
+        mlir::ElementsAttr attribute,
+        GetParam() == SplatConverter::kTensorFlow
+            ? ConvertTensorProto(tensor, &builder)
+            : mlir::tfg::ConvertTensorProto(tensor, builder));
+    // Only the temporary conversion tensor has shape [1]. The returned splat
+    // must keep the full shape, and the caller's expression metadata is intact.
+    EXPECT_EQ(attribute,
+              mlir::DenseElementsAttr::get(
+                  mlir::RankedTensorType::get({2, 3}, builder.getF32Type()),
+                  value));
+    EXPECT_TRUE(IsSplat(attribute));
+    EXPECT_EQ(tensor.SerializeAsString(), original);
+  }
+};
+
+TEST_P(ConvertTensorProtoExpressionsTest, ConstantDimensionExpressions) {
+  TensorProto tensor = MakeTensor();
+  // A single stored value represents all six tensor elements. Reusing both
+  // dimension expressions on the temporary [1] tensor used to fail rank checks.
+  tensor.add_float_val(42.0f);
+  ExpectSplat(tensor, 42.0f);
+}
+
+TEST_P(ConvertTensorProtoExpressionsTest, SymbolicDimensionExpression) {
+  TensorProto tensor = MakeTensor();
+  tensor.mutable_tensor_shape()->mutable_expressions(0)->set_variable_id(1);
+  tensor.add_float_val(42.0f);
+  ExpectSplat(tensor, 42.0f);
+}
+
+TEST_P(ConvertTensorProtoExpressionsTest, ImplicitZeroValues) {
+  // An empty value list represents zeros. TFG also uses its [1] shortcut here.
+  ExpectSplat(MakeTensor(), 0.0f);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    BothConverters, ConvertTensorProtoExpressionsTest,
+    ::testing::Values(SplatConverter::kTensorFlow, SplatConverter::kTFG),
+    [](const ::testing::TestParamInfo<SplatConverter>& info) {
+      return info.param == SplatConverter::kTensorFlow ? "TensorFlow" : "TFG";
+    });
 
 TEST(ConvertTypeToTensorSpecProtoTest, UnrankedTensorType) {
   mlir::MLIRContext context;

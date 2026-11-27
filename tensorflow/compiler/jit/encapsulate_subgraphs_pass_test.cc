@@ -753,6 +753,40 @@ TEST(EncapsulateSubgraphsTest, InputDeduplication) {
   EXPECT_EQ(expected_edges, GraphEdges(*graph));
 }
 
+TEST(EncapsulateSubgraphsTest, PreservesSymbolicConstantContentsOnArguments) {
+  Scope root = Scope::NewRootScope().ExitOnError().WithDevice(
+      "/job:localhost/replica:0/task:0/cpu:0");
+  auto shape = ops::Const(root.WithOpName("shape"), {720, 10});
+  auto consumer = ops::Identity(root.WithOpName("consumer"), shape);
+  consumer.node()->AddAttr("_cluster", "shape_consumer");
+
+  // A folded shape-value tensor has shape [2] and contents {A, 10}.
+  TensorShapeProto contents;
+  contents.add_dim()->set_size(720);
+  contents.add_dim()->set_size(10);
+  contents.add_expressions()->set_variable_id(1);
+  contents.add_expressions()->set_constant_value(10);
+  const string serialized = contents.SerializeAsString();
+  shape.node()->AddAttr("_user_inferred_value_contents", serialized);
+
+  Graph before(OpRegistry::Global());
+  TF_ASSERT_OK(root.ToGraph(&before));
+  FunctionLibraryDefinition library(OpRegistry::Global(), FunctionDefLibrary());
+  std::unique_ptr<Graph> after;
+  TF_ASSERT_OK(EncapsulateSubgraphsInFunctions(
+      "_cluster", before, /*rewrite_subgraph_fn=*/{},
+      /*reuse_existing_functions=*/false, &after, &library));
+
+  const FunctionDef* function = library.Find("shape_consumer");
+  ASSERT_NE(function, nullptr);
+  ASSERT_EQ(function->signature().input_arg_size(), 1);
+  auto arg = function->arg_attr().find(0);
+  ASSERT_NE(arg, function->arg_attr().end());
+  auto attr = arg->second.attr().find("_user_inferred_value_contents");
+  ASSERT_NE(attr, arg->second.attr().end());
+  EXPECT_EQ(attr->second.s(), serialized);
+}
+
 const Node* FindNodeByName(const Graph& graph, const string& name) {
   for (const Node* node : graph.nodes()) {
     if (node->name() == name) return node;

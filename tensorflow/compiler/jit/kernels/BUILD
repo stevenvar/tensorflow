@@ -86,6 +86,7 @@ tf_cc_test(
     env = {"TF_XLA_FLAGS": "--tf_xla_enable_dynamic_sizes"},
     deps = [
         ":xla_ops_no_jit_rewrite_registration",
+        "//tensorflow/compiler/jit:device_compilation_cluster_signature",
         "//tensorflow/compiler/tf2xla:xla_argument",
         "//tensorflow/core:framework",
         "//tensorflow/core/platform:test",

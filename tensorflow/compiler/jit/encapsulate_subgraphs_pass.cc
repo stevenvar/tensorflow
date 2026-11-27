@@ -544,6 +544,11 @@ absl::Status Encapsulator::Subgraph::RecordArg(
     if (shape_derived_attr) {
       builder.Attr(kXlaShapeDerivedAttrName, *shape_derived_attr);
     }
+    // Keep folded shape-derived values symbolic across the cluster boundary.
+    auto contents_attr = attrs.FindByString("_user_inferred_value_contents");
+    if (contents_attr) {
+      builder.Attr("_user_inferred_value_contents", *contents_attr);
+    }
     absl::Status s = builder.Finalize(&arg_def);
     if (!s.ok()) return s;
 

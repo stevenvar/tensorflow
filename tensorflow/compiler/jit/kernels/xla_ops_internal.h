@@ -21,6 +21,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/functional/function_ref.h"
+#include "absl/status/status.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/xla_argument.h"
@@ -73,6 +74,12 @@ DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
 
 std::vector<XlaArgument> BuildStaticCompilationArguments(
     absl::Span<const XlaArgument> args);
+
+// Evaluates symbolic constant contents at the selected compilation bound.
+// Expressions must already use the normalized cluster root Var(1). Literal
+// elements and the original expression metadata are preserved. On error, the
+// argument is unchanged.
+absl::Status NormalizeConstantArgument(int64_t root_bound, XlaArgument* arg);
 
 void StripIgnoredDynamicArgumentOccurrences(
     const std::vector<IgnoredDynamicArgumentOccurrence>& ignored_occurrences,

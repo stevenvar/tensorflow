@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/compiler/jit/kernels/xla_ops.h"
 #include "tensorflow/compiler/jit/kernels/xla_ops_internal.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -211,12 +212,67 @@ using PjRtExecutableClosureStore =
     ExecutableClosureStore<xla::PjRtLoadedExecutable, xla::PjRtClient>;
 
 struct DynamicSolveEvidence {
-  int64_t solved_value;
+  // Present only when the observation has an unambiguous inverse.
+  std::optional<int64_t> solved_value;
   int64_t observed_value;
   std::string expr;
+  xla::DExpr expression;
   // Shape-tensor values may equal 1 without representing a broadcast operand.
   bool may_be_broadcast_singleton;
 };
+
+// Integer division can map several roots to the same observation. Recover
+// roots through injective arithmetic; use other expressions for validation.
+bool CanRecoverRoot(xla::DynExpr* expr) {
+  auto binary = [](auto* op, bool nonzero_constant) {
+    xla::DynExpr* dynamic = op->get_lhs();
+    xla::DynExpr* constant = op->get_rhs();
+    if (dynamic->is_constant()) std::swap(dynamic, constant);
+    return constant->is_constant() &&
+           (!nonzero_constant || constant->get_val() != 0) &&
+           CanRecoverRoot(dynamic);
+  };
+  switch (expr->kind()) {
+    case xla::DExprKind::kVariable:
+      return true;
+    case xla::DExprKind::kAdd:
+      return binary(static_cast<class xla::Add*>(expr), false);
+    case xla::DExprKind::kSub:
+      return binary(static_cast<class xla::Sub*>(expr), false);
+    case xla::DExprKind::kMul:
+      return binary(static_cast<class xla::Mul*>(expr), true);
+    case xla::DExprKind::kDiv: {
+      auto* div = static_cast<class xla::Div*>(expr);
+      if (!div->get_rhs()->is_constant()) return false;
+      const int64_t divisor = div->get_rhs()->get_val();
+      return (divisor == 1 || divisor == -1) &&
+             CanRecoverRoot(div->get_lhs());
+    }
+    case xla::DExprKind::kMax:
+      // Max::solve only succeeds above the constant branch's value.
+      return binary(static_cast<xla::MaxExpr*>(expr), false);
+    default:
+      return false;
+  }
+}
+
+std::optional<int64_t> ValueAtRoot(const xla::DExpr& expr, int64_t root) {
+  const std::set<int> ids = expr->get_all_ids();
+  if (ids.size() != 1) return std::nullopt;
+  xla::DExpr evaluated = expr.substitute(*ids.begin(), xla::DExpr::Const(root));
+  if (!evaluated || !evaluated->is_constant()) return std::nullopt;
+  return evaluated->get_val();
+}
+
+DynamicSolveEvidence MakeSolveEvidence(const xla::DExpr& expr, int64_t observed,
+                                      bool may_be_broadcast_singleton) {
+  std::optional<int64_t> root;
+  if (expr->get_all_ids().size() == 1 && CanRecoverRoot(expr.get())) {
+    root = expr->solve(observed);
+    if (root.has_value() && *root <= 0) root.reset();
+  }
+  return {root, observed, DExprToString(expr), expr, may_be_broadcast_singleton};
+}
 
 struct DynamicSolveSelection {
   std::set<int64_t> singleton_values;
@@ -234,11 +290,12 @@ DynamicSolveSelection SelectDynamicSolveEvidence(
   for (const Candidate& candidate : candidates) {
     const DynamicSolveEvidence& evidence = candidate.evidence;
     selection.expressions.insert(evidence.expr);
+    if (!evidence.solved_value.has_value()) continue;
     if (evidence.may_be_broadcast_singleton &&
         evidence.observed_value == 1) {
-      selection.singleton_values.insert(evidence.solved_value);
+      selection.singleton_values.insert(*evidence.solved_value);
     } else {
-      selection.nonsingleton_values.insert(evidence.solved_value);
+      selection.nonsingleton_values.insert(*evidence.solved_value);
     }
   }
 
@@ -256,17 +313,36 @@ DynamicSolveSelection SelectDynamicSolveEvidence(
             ? "used non-singleton evidence"
             : "preferred non-singleton evidence over singleton-derived "
               "candidates";
-    return selection;
-  }
-
-  if (selection.singleton_values.size() == 1) {
+  } else if (selection.singleton_values.size() == 1) {
     selection.chosen_value = *selection.singleton_values.begin();
     selection.reason = "used singleton-derived evidence only";
   } else if (selection.singleton_values.size() > 1) {
     selection.rejected = true;
     selection.reason = "conflicting singleton-derived candidates";
   } else {
-    selection.reason = "no dynamic values were solved";
+    selection.rejected = true;
+    selection.reason = "no unambiguous observation identifies the dynamic root";
+  }
+
+  if (selection.rejected) return selection;
+  for (const Candidate& candidate : candidates) {
+    const DynamicSolveEvidence& evidence = candidate.evidence;
+    const auto expected =
+        ValueAtRoot(evidence.expression, *selection.chosen_value);
+    if (expected.has_value() && *expected == evidence.observed_value) continue;
+    // Only shape dimensions have the existing broadcast-singleton exception.
+    if (expected.has_value() && evidence.may_be_broadcast_singleton &&
+        evidence.observed_value == 1 && !selection.nonsingleton_values.empty()) {
+      continue;
+    }
+    selection.rejected = true;
+    selection.reason = absl::StrCat(
+        "dynamic observation mismatch: expr=", evidence.expr,
+        " observed=", evidence.observed_value,
+        " expected=",
+        expected.has_value() ? std::to_string(*expected) : "<unknown>",
+        " root=", *selection.chosen_value);
+    break;
   }
   return selection;
 }
@@ -334,30 +410,29 @@ DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
     const XlaArgument& arg = args[arg_index];
     if (absl::holds_alternative<TensorShape>(arg.shape)) {
       const TensorShape& shape = std::get<TensorShape>(arg.shape);
+      if (shape.get_expressions().size() > shape.dims()) {
+        result.can_run = false;
+        result.diagnostic = "Dynamic argument expressions exceed the tensor rank";
+        return result;
+      }
       for (int dim = 0; dim < shape.get_expressions().size(); ++dim) {
         const xla::DExpr& expr = shape.get_expression(dim);
         if (!(expr && expr->is_dynamic())) {
           continue;
         }
-        xla::DExpr simplified_expr = expr.simplify();
-        std::optional<int64_t> solved_value =
-            simplified_expr->solve(shape.dim_size(dim));
-        if (!solved_value.has_value()) {
-          continue;
-        }
-        const std::string expr_string = DExprToString(simplified_expr);
-        variable_ids_to_candidates[simplified_expr->get_all_ids()].push_back(
+        DynamicSolveEvidence evidence = MakeSolveEvidence(
+            expr, shape.dim_size(dim), /*may_be_broadcast_singleton=*/true);
+        if (arg.kind == XlaArgument::kConstant) evidence.solved_value.reset();
+        variable_ids_to_candidates[expr->get_all_ids()].push_back(
             Candidate{
-                DynamicSolveEvidence{*solved_value, shape.dim_size(dim),
-                                     expr_string,
-                                     /*may_be_broadcast_singleton=*/true},
+                evidence,
                 IgnoredDynamicArgumentOccurrence{
                     IgnoredDynamicArgumentOccurrence::Source::kShapeDimension,
                     arg_index,
                     dim,
                     shape.dim_size(dim),
-                    *solved_value,
-                    expr_string}});
+                    evidence.solved_value,
+                    evidence.expr}});
       }
     }
 
@@ -376,27 +451,28 @@ DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
       std::optional<int64_t> observed_value =
           GetConstantArgumentElementValue(arg, element_index);
       if (!observed_value.has_value()) {
-        continue;
+        result.can_run = false;
+        result.diagnostic = absl::StrCat(
+            "Cannot read symbolic constant argument ", arg_index,
+            " element ", element_index);
+        return result;
       }
-      xla::DExpr simplified_expr = expr.simplify();
-      std::optional<int64_t> solved_value =
-          simplified_expr->solve(*observed_value);
-      if (!solved_value.has_value()) {
-        continue;
-      }
-      const std::string expr_string = DExprToString(simplified_expr);
-      variable_ids_to_candidates[simplified_expr->get_all_ids()].push_back(
+      // Compile-time constants are omitted from _XlaRun. Recover the root
+      // from runtime tensor shapes so it remains available on a cache hit.
+      DynamicSolveEvidence evidence{
+          std::nullopt, *observed_value, DExprToString(expr), expr,
+          /*may_be_broadcast_singleton=*/false};
+      variable_ids_to_candidates[expr->get_all_ids()].push_back(
           Candidate{
-              DynamicSolveEvidence{*solved_value, *observed_value, expr_string,
-                                   /*may_be_broadcast_singleton=*/false},
+              evidence,
               IgnoredDynamicArgumentOccurrence{
                   IgnoredDynamicArgumentOccurrence::Source::
                       kConstantValueElement,
                   arg_index,
                   element_index,
                   *observed_value,
-                  *solved_value,
-                  expr_string}});
+                  evidence.solved_value,
+                  evidence.expr}});
     }
   }
 
@@ -405,14 +481,16 @@ DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
     DynamicSolveSelection selection = SelectDynamicSolveEvidence(
         absl::MakeConstSpan(candidates));
 
-    if (selection.rejected) {
+    if (selection.rejected || variable_ids.size() != 1 ||
+        variable_ids_to_candidates.size() != 1) {
       result.can_run = false;
     } else if (selection.chosen_value.has_value() &&
                !selection.nonsingleton_values.empty()) {
       for (const auto& candidate : candidates) {
         if (candidate.evidence.may_be_broadcast_singleton &&
             candidate.evidence.observed_value == 1 &&
-            candidate.evidence.solved_value != *selection.chosen_value) {
+            ValueAtRoot(candidate.evidence.expression, *selection.chosen_value) !=
+                candidate.evidence.observed_value) {
           VLOG(1) << "Ignoring singleton-derived dynamic "
                   << "occurrence during XLA signature filtering: "
                   << "variable_ids={" << absl::StrJoin(variable_ids, ", ")
@@ -421,7 +499,9 @@ DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
                   << " ignored_observed_value="
                   << candidate.evidence.observed_value
                   << " ignored_solved_value="
-                  << candidate.evidence.solved_value
+                  << (candidate.evidence.solved_value.has_value()
+                          ? std::to_string(*candidate.evidence.solved_value)
+                          : "<not invertible>")
                   << " arg_index=" << candidate.occurrence.arg_index
                   << (candidate.occurrence.source ==
                               IgnoredDynamicArgumentOccurrence::Source::
@@ -433,6 +513,7 @@ DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
         }
       }
     }
+    if (result.can_run) result.root_value = selection.chosen_value;
 
     expr_summaries.push_back(absl::StrCat(
         "variable_ids={", absl::StrJoin(variable_ids, ", "),
@@ -450,8 +531,8 @@ DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
 
   if (!result.can_run) {
     result.diagnostic = absl::StrCat(
-        "Failed to recover a unique XLA dynamic batch size after solve-time "
-        "candidate filtering. solved_expressions=[",
+        "Failed to recover and validate one shared XLA dynamic root. "
+        "observations=[",
         absl::StrJoin(expr_summaries, " | "), "]");
     return result;
   }
@@ -472,7 +553,9 @@ DynamicSolveFilterDecision AnalyzeIgnoredDynamicArgumentOccurrences(
               : " element=",
           occurrence.dim_or_index, " expr=", occurrence.expr,
           " observed=", occurrence.observed_value,
-          " solved=", occurrence.solved_value));
+          " solved=", occurrence.solved_value.has_value()
+                          ? std::to_string(*occurrence.solved_value)
+                          : "<not invertible>"));
     }
     result.diagnostic = absl::StrCat(
         "Ignoring singleton-derived dynamic occurrences for XLA "
@@ -605,7 +688,10 @@ void StripIgnoredDynamicArgumentOccurrences(
               << " dim=" << occurrence.dim_or_index
               << " expr=" << occurrence.expr
               << " observed_value=" << occurrence.observed_value
-              << " solved_value=" << occurrence.solved_value;
+              << " solved_value="
+              << (occurrence.solved_value.has_value()
+                      ? std::to_string(*occurrence.solved_value)
+                      : "<not invertible>");
       TensorShape& shape = std::get<TensorShape>(arg.shape);
       shape.set_expression(occurrence.dim_or_index, xla::DExpr());
       continue;
@@ -616,7 +702,10 @@ void StripIgnoredDynamicArgumentOccurrences(
             << " element=" << occurrence.dim_or_index
             << " expr=" << occurrence.expr
             << " observed_value=" << occurrence.observed_value
-            << " solved_value=" << occurrence.solved_value;
+            << " solved_value="
+            << (occurrence.solved_value.has_value()
+                    ? std::to_string(*occurrence.solved_value)
+                    : "<not invertible>");
     SetConstantArgumentExpressionToLiteralValue(&arg, occurrence.dim_or_index);
   }
 }
@@ -636,51 +725,56 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeShapes(
   for (int i = 0; i < xla_input_shapes.size(); ++i) {
     const xla::Shape& xla_shape = xla_input_shapes[i];
     const int input_idx = get_runtime_input_index(i);
-    if (!xla_shape.IsArray() || xla_shape.expressions().empty() ||
-        input_idx < 0 || input_idx >= runtime_input_count) {
+    if (!xla_shape.IsArray() ||
+        !std::any_of(xla_shape.expressions().begin(),
+                     xla_shape.expressions().end(),
+                     [](const xla::DExpr& expr) {
+                       return expr && expr->is_dynamic();
+                     })) {
       continue;
+    }
+    if (input_idx < 0 || input_idx >= runtime_input_count) {
+      result.can_run = false;
+      result.diagnostic = "Dynamic XLA input has no mapped runtime argument";
+      return result;
     }
 
     const TensorShape& runtime_shape = get_runtime_input_shape(input_idx);
+    if (runtime_shape.dims() != xla_shape.dimensions().size() ||
+        xla_shape.expressions().size() > runtime_shape.dims()) {
+      result.can_run = false;
+      result.diagnostic = "Dynamic XLA input rank differs from runtime argument";
+      return result;
+    }
     const absl::string_view input_name = get_runtime_input_name(input_idx);
     for (int dim = 0; dim < xla_shape.expressions().size(); ++dim) {
       const xla::DExpr& expr = xla_shape.expressions(dim);
       if (!(expr && expr->is_dynamic())) {
         continue;
       }
-      xla::DExpr simplified_expr = expr.simplify();
       const int64_t size = runtime_shape.dim_size(dim);
-      std::optional<int64_t> dyn_val = simplified_expr->solve(size);
-      if (log_solves && dyn_val.has_value()) {
+      DynamicSolveEvidence evidence =
+          MakeSolveEvidence(expr, size, /*may_be_broadcast_singleton=*/true);
+      if (log_solves) {
         VLOG(1) << "Dynamic solve: cluster=" << cluster_name
                 << " runtime_input_index=" << input_idx
                 << " xla_input_index=" << i << " dim=" << dim
                 << " input_name=" << input_name
-                << " expr=" << DExprToString(simplified_expr)
-                << " target_size=" << size << " result=" << *dyn_val;
+                << " expr=" << evidence.expr
+                << " target_size=" << size << " root="
+                << (evidence.solved_value.has_value()
+                        ? std::to_string(*evidence.solved_value)
+                        : "<validation only>");
       }
-      if (!dyn_val.has_value()) {
-        if (log_solves) {
-          LOG(WARNING) << "Dynamic solve failed: cluster=" << cluster_name
-                       << " runtime_input_index=" << input_idx
-                       << " xla_input_index=" << i << " dim=" << dim
-                       << " input_name=" << input_name
-                       << " expr=" << DExprToString(simplified_expr)
-                       << " target_size=" << size;
-        }
-        continue;
-      }
-      const std::string expr_string = DExprToString(simplified_expr);
       const std::string context = absl::StrCat(
           "xla_input_index=", i, " runtime_input_index=", input_idx,
           " input_name=", input_name, " dim=", dim,
           " runtime_dim_size=", size,
-          " solved_dynamic_value=", *dyn_val);
-      variable_ids_to_candidates[simplified_expr->get_all_ids()].push_back(
-          DynamicSolveCandidate{
-              DynamicSolveEvidence{*dyn_val, size, expr_string,
-                                   /*may_be_broadcast_singleton=*/true},
-              context});
+          " solved_dynamic_value=", evidence.solved_value.has_value()
+                                        ? std::to_string(*evidence.solved_value)
+                                        : "<validation only>");
+      variable_ids_to_candidates[expr->get_all_ids()].push_back(
+          DynamicSolveCandidate{std::move(evidence), context});
     }
   }
 
@@ -747,7 +841,8 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeShapes(
   }
 
   if (dyn_vals.size() == 1 && expected_dyn_ids.has_value() &&
-      expected_dyn_ids->size() == 1 && !mismatched_dyn_ids) {
+      expected_dyn_ids->size() == 1 && !mismatched_dyn_ids &&
+      !candidate_filter_rejected) {
     result.has_batch_size = true;
     result.batch_size = *dyn_vals.begin();
     result.diagnostic = absl::StrCat(
@@ -766,10 +861,12 @@ DynamicBatchResolutionResult ResolveDynamicBatchSizeFromRuntimeShapes(
         absl::StrJoin(expr_summaries, " | "), "] all_values={",
         absl::StrJoin(dyn_vals, ", "), "}");
   } else if (dyn_vals.size() == 1 && mismatched_dyn_ids) {
+    result.can_run = false;
     result.diagnostic = absl::StrCat(
         "solved dynamic expressions do not share the same variable ids: ",
         absl::StrJoin(expr_summaries, " | "));
   } else if (dyn_vals.size() == 1) {
+    result.can_run = false;
     result.diagnostic = absl::StrCat(
         "solved dynamic expressions do not map to exactly one shared dynamic "
         "variable id: ",
@@ -1203,11 +1300,6 @@ absl::Status CompileToLocalExecutable(
                 std::get<TensorShape>(norm_args[arg_index].shape);
             const AttrValue& v = dyn_dim_attr->second;
             int64_t idx = v.i();
-            if (!filled_batch && xla_batch_matcher) {
-              filled_batch =
-                  xla_batch_matcher->get_xla_compile_batch(function.name(), shp.dim_size(idx));
-            }
-
             std::vector<xla::DExpr> dyn_exprs;
             for (int d : shp.dim_sizes()) {
               dyn_exprs.push_back(xla::DExpr::Const(d));
@@ -1222,45 +1314,6 @@ absl::Status CompileToLocalExecutable(
           const TensorShapeProto& proto = it->second.list().shape(0);
           const auto& exp = proto.expressions();
           TensorShape& shp = std::get<TensorShape>(norm_args[arg_index].shape);
-          if (!filled_batch && xla_batch_matcher) {
-            for (int idx = 0; idx < exp.size(); ++idx) {
-              // Look for dynamic expression. If found then compute padding
-              // value and exit loop.
-              auto e = normalize_dynamic_expr(DimExprFromProto(exp[idx]));
-              if (e->is_dynamic()) {
-                VLOG(1) << "Calling dynamic expression solve for compile "
-                          << "argument " << arg_index << " dimension " << idx
-                          << " expr=" << DExprToString(e)
-                          << " target_size=" << shp.dim_size(idx);
-                std::optional<int64_t> solved_value =
-                    e->solve(shp.dim_size(idx));
-                VLOG(1) << "Dynamic expression solve for compile argument "
-                          << arg_index << " dimension " << idx << " returned "
-                          << (solved_value.has_value()
-                                  ? std::to_string(*solved_value)
-                                  : std::string("<none>"));
-                int64_t var_value;
-                if (!solved_value.has_value()) {
-                  LOG(WARNING)
-                      << "Failed to solve dynamic dimension for argument "
-                      << arg_index << " dim " << idx << " with size "
-                      << shp.dim_size(idx)
-                      << "; falling back to original dimension size.";
-                  var_value = shp.dim_size(idx);
-                } else {
-                  var_value = *solved_value;
-                  VLOG(1) << "Solved dynamic dimension from "
-                          << shp.dim_size(idx) << " to " << var_value;
-                }
-                VLOG(1) << "Filled batch for function " << function.name()
-                          << " with value " << var_value;
-                filled_batch =
-                    xla_batch_matcher->get_xla_compile_batch(function.name(), var_value);
-                break;
-              }
-            }
-          }
-
           std::vector<xla::DExpr> dyn_exprs;
           for (int d : shp.dim_sizes()) {
             dyn_exprs.push_back(xla::DExpr::Const(d));
@@ -1294,29 +1347,10 @@ absl::Status CompileToLocalExecutable(
       LOG(WARNING) << solve_filter_decision.diagnostic;
       StripIgnoredDynamicArgumentOccurrences(
           solve_filter_decision.ignored_occurrences, &norm_args);
-      filled_batch = 0;
-      for (int arg_index = 0; arg_index < norm_args.size(); ++arg_index) {
-        if (!absl::holds_alternative<TensorShape>(norm_args[arg_index].shape)) {
-          continue;
-        }
-        TensorShape& shape = std::get<TensorShape>(norm_args[arg_index].shape);
-        for (int dim = 0; dim < shape.get_expressions().size(); ++dim) {
-          xla::DExpr expr = shape.get_expression(dim);
-          if (!(expr && expr->is_dynamic())) {
-            continue;
-          }
-          xla::DExpr simplified_expr = expr.simplify();
-          std::optional<int64_t> solved_value =
-              simplified_expr->solve(shape.dim_size(dim));
-          if (!solved_value.has_value()) {
-            continue;
-          }
-          if (!filled_batch && xla_batch_matcher) {
-            filled_batch =
-                xla_batch_matcher->get_xla_compile_batch(*solved_value);
-          }
-        }
-      }
+    }
+    if (solve_filter_decision.root_value.has_value() && xla_batch_matcher) {
+      filled_batch = xla_batch_matcher->get_xla_compile_batch(
+          function.name(), *solve_filter_decision.root_value);
     }
 
     struct SaveOldVar {

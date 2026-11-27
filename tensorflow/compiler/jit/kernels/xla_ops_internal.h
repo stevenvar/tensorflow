@@ -17,6 +17,7 @@ limitations under the License.
 #define TENSORFLOW_COMPILER_JIT_KERNELS_XLA_OPS_INTERNAL_H_
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -39,12 +40,14 @@ struct IgnoredDynamicArgumentOccurrence {
   int arg_index;
   int dim_or_index;
   int64_t observed_value;
-  int64_t solved_value;
+  std::optional<int64_t> solved_value;
   std::string expr;
 };
 
 struct DynamicSolveFilterDecision {
   bool can_run = true;
+  // Recovered from runtime-visible shapes and checked against all observations.
+  std::optional<int64_t> root_value;
   std::string diagnostic;
   std::vector<IgnoredDynamicArgumentOccurrence> ignored_occurrences;
 };

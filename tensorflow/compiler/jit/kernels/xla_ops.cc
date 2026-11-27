@@ -45,6 +45,7 @@ limitations under the License.
 #include "absl/types/span.h"
 #include "tensorflow/compiler/jit/device_compilation_profiler.h"
 #include "tensorflow/compiler/jit/device_compiler.h"
+#include "tensorflow/compiler/jit/dynamic_shape_bounds.h"
 #include "tensorflow/compiler/jit/encapsulate_subgraphs_pass.h"
 #include "tensorflow/compiler/jit/encapsulate_util.h"
 #include "tensorflow/compiler/jit/flags.h"
@@ -1348,6 +1349,17 @@ absl::Status CompileToLocalExecutable(
       StripIgnoredDynamicArgumentOccurrences(
           solve_filter_decision.ignored_occurrences, &norm_args);
     }
+    for (int i = 0; i < norm_args.size(); ++i) {
+      if (!absl::holds_alternative<TensorShape>(norm_args[i].shape)) continue;
+      const auto& shape = std::get<TensorShape>(norm_args[i].shape);
+      auto bounds_status = CheckDynamicShapeBounds(
+          shape.get_expressions(), absl::StrCat("compile argument ", i));
+      if (!bounds_status.ok()) {
+        if (dynamic_solve_conflict != nullptr) *dynamic_solve_conflict = true;
+        LOG(WARNING) << bounds_status;
+        return bounds_status;
+      }
+    }
     if (solve_filter_decision.root_value.has_value() && xla_batch_matcher) {
       filled_batch = xla_batch_matcher->get_xla_compile_batch(
           function.name(), *solve_filter_decision.root_value);
@@ -1420,6 +1432,10 @@ absl::Status CompileToLocalExecutable(
     auto status = xla_device_compiler->CompileIfNeeded(
         options, function, norm_args, compile_options, compile_mode, profiler,
         compilation_result, executable);
+    if (IsDynamicShapeBoundsError(status)) {
+      if (dynamic_solve_conflict != nullptr) *dynamic_solve_conflict = true;
+      LOG(WARNING) << status;
+    }
     // Restore the original runtime dimensions after compilation.
     if (filled_batch) {
       for (const auto& old_var : old_vars) {

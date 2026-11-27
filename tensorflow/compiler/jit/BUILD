@@ -767,6 +767,35 @@ tf_proto_library(
 )
 
 cc_library(
+    name = "dynamic_shape_bounds",
+    srcs = ["dynamic_shape_bounds.cc"],
+    hdrs = ["dynamic_shape_bounds.h"],
+    visibility = [":internal"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:cord",
+        "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/types:span",
+        "@local_xla//xla:printer",
+        "@local_xla//xla:shape_util",
+        "@local_xla//xla/service:hlo_proto",
+    ],
+)
+
+tf_cc_test(
+    name = "dynamic_shape_bounds_test",
+    srcs = ["dynamic_shape_bounds_test.cc"],
+    deps = [
+        ":dynamic_shape_bounds",
+        "//tensorflow/core/platform:test",
+        "@com_google_googletest//:gtest_main",
+        "@local_xla//xla:shape_util",
+        "@local_xla//xla/service:hlo_proto",
+    ],
+)
+
+cc_library(
     name = "device_compiler",
     hdrs = ["device_compiler.h"],
     copts = tf_copts(),
@@ -777,6 +806,7 @@ cc_library(
         ":device_compilation_profiler",
         ":device_compiler_client",
         ":device_executable_persistor",
+        ":dynamic_shape_bounds",
         ":flags_headers",
         ":tf_graph_to_hlo_compiler",
         ":xla_compile_util",
